@@ -300,6 +300,9 @@ class TestFleetCompCompatibility(unittest.TestCase):
         self.assertEqual(mcp_crew["composition"], rest_crew["composition"])
 
     def test_conflicting_persisted_fields_warn_and_normalize_to_comp(self):
+        from transport import crew as crew_mod
+
+        crew_mod._warned_comp_conflicts.clear()
         with self.assertLogs("transport.crew", level="WARNING") as captured:
             mcp_crew, rest_crew = self._build_payloads(
                 {"comp": "spec-ops", "composition": "worker"}
@@ -309,7 +312,8 @@ class TestFleetCompCompatibility(unittest.TestCase):
         self.assertEqual(mcp_crew["composition"], "spec-ops")
         self.assertEqual(rest_crew["comp"], "spec-ops")
         self.assertEqual(rest_crew["composition"], "spec-ops")
-        self.assertEqual(len(captured.records), 2)
+        # Both payload builders read the record, but the conflict is logged once.
+        self.assertEqual(len(captured.records), 1)
 
     def test_record_without_comp_fields_uses_spec_ops_default(self):
         mcp_crew, rest_crew = self._build_payloads({})

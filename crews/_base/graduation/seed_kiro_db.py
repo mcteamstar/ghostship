@@ -37,6 +37,7 @@ test before advancing the base-image pin.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import sqlite3
@@ -112,8 +113,10 @@ def seed_database(db: pathlib.Path | str) -> None:
     """Create the pre-migrated CLI database at db."""
     db = pathlib.Path(db)
     db.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(db)) as conn:
-        conn.executescript(SCHEMA_SQL)
+    # sqlite3's context manager commits but does not close; closing() does.
+    with contextlib.closing(sqlite3.connect(str(db))) as conn:
+        with conn:
+            conn.executescript(SCHEMA_SQL)
     os.chmod(str(db), 0o600)
     print(f"kiro-cli DB pre-seeded at {db}")
 

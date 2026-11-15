@@ -6,10 +6,10 @@ Ghostship will use `comp` and `comps` across tool interfaces, resources, APIs, c
 
 ## What Changes
 
-- Make `comp` the canonical `launch` argument and retain `composition` as an optional alias. Accept equal values when both are provided and reject conflicting values.
+- Make `comp` the canonical `launch` argument and retain `composition` as an optional alias. When both are provided, `comp` is authoritative; a conflicting `composition` is ignored with a warning.
 - Expose `transport://comps` as the canonical discovery resource and retain `transport://compositions` as an alias to the same content.
 - Use `comp` in crew records, MCP and REST payloads, Radar, internal implementation names, examples, and documentation. Read legacy `composition` data and preserve it at compatibility boundaries during the rollback window.
-- Use `comps` as the canonical registry key while accepting legacy `compositions`; reject conflicting values if both keys are present.
+- Use `comps` as the canonical registry key while accepting legacy `compositions`; if both keys are present with different values, `comps` wins and a warning is logged.
 - Implement the reviewed compatibility matrix under this same TRN-325 ticket and OpenSpec change, with behavior specs, tests, documentation, and installer examples.
 
 ## Capabilities

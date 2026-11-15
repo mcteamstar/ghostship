@@ -230,6 +230,15 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
         get_credential.assert_called_with("codex", "work")
         inject.assert_called_once_with(self.podman, CONTAINER, b"synthetic archive")
 
+    def test_restart_patches_config_with_crews_own_comp(self):
+        self.crews[CREW_ID].update({"comp": "worker", "composition": "worker"})
+        worker_entry = {"name": "worker", "dir": "worker", "description": ""}
+        with patch.object(self.life, "_resolve_comp", return_value=worker_entry) as resolve:
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        resolve.assert_called_once_with("worker")
+        args, _kwargs = self.life._patch_crew_config.call_args
+        self.assertIs(args[2], worker_entry)
+
     def test_restart_missing_named_profile_stops_provisional_container(self):
         self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
         with patch.object(self.life._cred_store, "get", return_value=None):

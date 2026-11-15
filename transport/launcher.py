@@ -401,6 +401,7 @@ class CrewLauncher:
             from lifecycle import (  # container
                 _get_podman,
                 _to_crew,
+                _resolve_comp,
                 _probe_gateway,
                 _get_crew,
                 _wait_gateway,
@@ -421,6 +422,7 @@ class CrewLauncher:
             from transport.lifecycle import (  # local dev
                 _get_podman,
                 _to_crew,
+                _resolve_comp,
                 _probe_gateway,
                 _get_crew,
                 _wait_gateway,
@@ -630,8 +632,14 @@ class CrewLauncher:
                 raise
 
             # TRN-259: re-patch from the crew's recorded backend, not the
-            # current transport default.
-            _patch_crew_config(podman, c.container, backend=c.acp_backend or "kiro")
+            # current transport default. Pass the crew's own comp so its
+            # manifest (not the spec-ops default) drives config.agents.
+            _patch_crew_config(
+                podman,
+                c.container,
+                _resolve_comp(c.comp),
+                backend=c.acp_backend or "kiro",
+            )
             podman.container_stop(c.container)
             podman.container_start(c.container)
             if not _wait_gateway(crew_url, timeout=60):

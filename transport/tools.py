@@ -105,9 +105,9 @@ except (ModuleNotFoundError, ImportError):
             pass
 
 try:
-    from crew import _comp_from_record  # container: flat /app/
+    from crew import comp_from_record  # container: flat /app/
 except ModuleNotFoundError:
-    from transport.crew import _comp_from_record  # local dev
+    from transport.crew import comp_from_record  # local dev
 
 try:
     from podman import _get_podman, _get_host_memory_gb_cached  # container: flat /app/
@@ -389,7 +389,7 @@ def _registry_guard(fn):
 
 def _crew_comp_fields(crew_id: str, info: dict) -> dict[str, str]:
     """Return canonical comp response fields, normalizing the legacy alias."""
-    comp = _comp_from_record(crew_id, info)
+    comp = comp_from_record(crew_id, info)
     return {"comp": comp, "composition": comp}
 
 
@@ -799,8 +799,8 @@ def launch(
                  unique. Use lowercase letters, numbers, hyphens.
         comp: Crew comp to launch (default: "spec-ops"). See the
               transport://comps resource for available comps.
-        composition: Legacy alias for ``comp``. If both are supplied, their
-                     values must match.
+        composition: Legacy alias for ``comp``. If both are supplied, ``comp``
+                     wins and the conflict is logged.
         dashboard: When True, allocates a dedicated port from the UI port range
                    and registers it with Portal (ga-portal) so the crew's
                    dashboard SPA is accessible via HTTPS. The SPA owns its
@@ -839,18 +839,13 @@ def launch(
     effective_dashboard = dashboard if dashboard is not None else cfg.ga_dashboard_default
 
     available_comps = list(COMP_REGISTRY.keys())
+    # `comp` is authoritative; legacy `composition` is used only when `comp`
+    # is omitted.
     if comp is not None and composition is not None and comp != composition:
-        return {
-            "error": "conflicting_comp_arguments",
-            "message": (
-                f"Conflicting values supplied for comp and composition: "
-                f"comp={comp!r}, composition={composition!r}. "
-                f"Available comps: {available_comps}"
-            ),
-            "comp": comp,
-            "composition": composition,
-            "available_comps": available_comps,
-        }
+        logger.warning(
+            "launch %s: conflicting comp=%r and legacy composition=%r — using comp",
+            crew_id, comp, composition,
+        )
     selected_comp = comp if comp is not None else composition
     if selected_comp is None:
         selected_comp = "spec-ops"
@@ -874,8 +869,7 @@ def launch(
     comp_entry = _resolve_comp(selected_comp)
     if comp_entry is None:
         return {
-            "error": "unknown_comp",
-            "message": f"Unknown comp {selected_comp!r}. Available comps: {available_comps}",
+            "error": f"Unknown comp {selected_comp!r}. Available comps: {available_comps}",
             "comp": selected_comp,
             "available_comps": available_comps,
         }

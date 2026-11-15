@@ -139,7 +139,7 @@ Registered as `ghostship`:
 | Tool | Name | Description |
 |:-:|:------|:-----|
 | <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
-| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `comp` selects the crew comp (default: `"spec-ops"`); legacy `composition` remains an alias. Equal values are accepted when both are provided; conflicts are rejected. `dashboard=True` allocates a port and returns a `dashboard_url`; default follows `GA_DASHBOARD_DEFAULT` (headless if unset). |
+| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `comp` selects the crew comp (default: `"spec-ops"`); legacy `composition` remains an alias. If both are provided, `comp` wins. `dashboard=True` allocates a port and returns a `dashboard_url`; default follows `GA_DASHBOARD_DEFAULT` (headless if unset). |
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace. |
 | <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, git bundle, or directory tar (`pack=True`) from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |

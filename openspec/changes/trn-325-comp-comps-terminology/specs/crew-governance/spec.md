@@ -4,7 +4,7 @@
 
 ### Requirement: Transport injects per-crew security policy at setup
 
-The transport SHALL inject a `security_policy.json` into `~/.kiro/crew/security_policy.json` inside each crew container after the gateway is ready and the `admiral_secret` has been written. The policy SHALL be selected by the resolved crew `comp`, falling back to the `default` template when no comp-specific template exists. The legacy `composition` launch argument remains an alias: matching values resolve to the same comp, while conflicting values make launch fail before policy selection. Policy templates live in `academy/policies/` and are available to the transport from `/policies/`.
+The transport SHALL inject a `security_policy.json` into `~/.kiro/crew/security_policy.json` inside each crew container after the gateway is ready and the `admiral_secret` has been written. The policy SHALL be selected by the resolved crew `comp`, falling back to the `default` template when no comp-specific template exists. The legacy `composition` launch argument remains an alias: when both are supplied, `comp` is authoritative and selects the policy template. Policy templates live in `academy/policies/` and are available to the transport from `/policies/`.
 
 #### Scenario: Policy injected for new crew with known comp
 - **WHEN** `launch(crew_id, composition="kirocrew")` completes setup using the legacy alias
@@ -22,6 +22,6 @@ The transport SHALL inject a `security_policy.json` into `~/.kiro/crew/security_
 - **WHEN** `launch(crew_id, comp="kirocrew", composition="kirocrew")` completes setup
 - **THEN** the `kirocrew` policy template is selected and injected
 
-#### Scenario: Conflicting comp and composition block policy resolution
+#### Scenario: Conflicting comp and composition select policy by comp
 - **WHEN** `launch(crew_id, comp="kirocrew", composition="spec-ops")` is called
-- **THEN** launch returns a clear error before policy template resolution, and no policy file is written
+- **THEN** the `kirocrew` policy template is selected and a warning naming both values is logged

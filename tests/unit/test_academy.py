@@ -600,14 +600,25 @@ def test_load_comp_registry_accepts_equal_keys(tmp_path) -> None:
     assert list(result) == ["test-crew"]
 
 
-def test_load_comp_registry_rejects_conflicting_keys(tmp_path) -> None:
-    import pytest
+def test_load_comp_registry_prefers_comps_on_conflict(tmp_path) -> None:
+    result = _load_registry_data_for_comp_alias_test(
+        tmp_path,
+        {
+            "comps": [{"name": "test-crew", "dir": "test-crew"}],
+            "compositions": [{"name": "other-crew", "dir": "other-crew"}],
+        },
+    )
 
-    with pytest.raises(ValueError, match="conflicting 'comps' and legacy 'compositions'"):
-        _load_registry_data_for_comp_alias_test(
-            tmp_path,
-            {
-                "comps": [{"name": "test-crew", "dir": "test-crew"}],
-                "compositions": [{"name": "other-crew", "dir": "other-crew"}],
-            },
-        )
+    assert list(result) == ["test-crew"]
+
+
+def test_load_comp_registry_uses_legacy_when_comps_not_a_list(tmp_path) -> None:
+    result = _load_registry_data_for_comp_alias_test(
+        tmp_path,
+        {
+            "comps": None,
+            "compositions": [{"name": "test-crew", "dir": "test-crew"}],
+        },
+    )
+
+    assert list(result) == ["test-crew"]

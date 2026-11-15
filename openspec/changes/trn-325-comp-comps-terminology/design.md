@@ -20,7 +20,7 @@ Ghostship currently exposes `composition` on the `launch` MCP tool and in crew p
 
 ### Launch input alias resolution
 
-`comp` is the canonical launch argument. `composition` remains an optional alias. Both inputs default to `None` so omission can be distinguished from explicit values; if both are omitted, apply the existing `spec-ops` default after alias resolution. Accept both when their values match. Reject different values with a clear error. Old spelling appears only in launch-boundary compatibility handling and documentation of that alias.
+`comp` is the canonical launch argument. `composition` remains an optional alias. Both inputs default to `None` so omission can be distinguished from explicit values; if both are omitted, apply the existing `spec-ops` default after alias resolution. When both are supplied, `comp` is authoritative; differing values log a warning and `comp` is used. Old spelling appears only in launch-boundary compatibility handling and documentation of that alias.
 
 ### Resource alias
 
@@ -32,7 +32,7 @@ Register `transport://comps` as the canonical resource and retain `transport://c
 
 ### Registry key compatibility
 
-The authored registry and loader use `comps` canonically and accept legacy `compositions`. If both keys are present with different values, fail with a clear configuration error. If equal, accept them as one registry. Registry entry names and directories stay stable.
+The authored registry and loader use `comps` canonically and accept legacy `compositions`. If both keys are present with different values, `comps` wins and the loader logs a warning; if `comps` is not a list, a valid `compositions` list is used. If equal, accept them as one registry. Registry entry names and directories stay stable.
 
 ### Internal names and rollout scope
 

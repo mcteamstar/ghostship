@@ -89,22 +89,27 @@ def _load_comp_registry() -> dict[str, dict]:
         logger.warning("Failed to parse crew registry %s: %s — using fallback", _CREW_REGISTRY_PATH, e)
         return fallback
 
-    has_comps = "comps" in data
-    has_legacy_key = "compositions" in data
-    if has_comps and has_legacy_key and data["comps"] != data["compositions"]:
-        raise ValueError(
-            f"Crew registry {_CREW_REGISTRY_PATH} defines conflicting "
-            "'comps' and legacy 'compositions' keys"
-        )
-
-    if has_comps:
-        comps_list = data["comps"]
-    elif has_legacy_key:
-        comps_list = data["compositions"]
+    # Canonical 'comps' wins over legacy 'compositions'. The legacy key is
+    # only read when 'comps' is absent or not a list.
+    comps_list = data.get("comps") if isinstance(data, dict) else None
+    legacy_list = data.get("compositions") if isinstance(data, dict) else None
+    if isinstance(comps_list, list):
+        if legacy_list is not None and legacy_list != comps_list:
+            logger.warning(
+                "Crew registry %s defines conflicting 'comps' and legacy "
+                "'compositions' keys — using 'comps'",
+                _CREW_REGISTRY_PATH,
+            )
+    elif isinstance(legacy_list, list):
+        if comps_list is not None:
+            logger.warning(
+                "Crew registry 'comps' is not a list — using legacy 'compositions'"
+            )
+        comps_list = legacy_list
     else:
-        comps_list = None
-    if not isinstance(comps_list, list):
-        logger.warning("Crew registry 'comps' is not a list — using fallback")
+        logger.warning(
+            "Crew registry has no 'comps' or legacy 'compositions' list — using fallback"
+        )
         return fallback
 
     registry: dict[str, dict] = {}

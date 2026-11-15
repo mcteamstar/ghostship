@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+import pytest
+
+from transport import crew as crew_mod
 from transport.crew import Crew
+
+
+@pytest.fixture(autouse=True)
+def _reset_conflict_warnings():
+    crew_mod._warned_comp_conflicts.clear()
+    yield
+    crew_mod._warned_comp_conflicts.clear()
 
 
 def test_new_crew_serialization_writes_canonical_and_legacy_fields() -> None:
@@ -55,3 +65,22 @@ def test_record_without_either_comp_field_uses_existing_default() -> None:
     crew = Crew.from_dict("test-crew", {"container": "gs-test-crew"})
 
     assert crew.comp == "spec-ops"
+
+
+def test_empty_comp_falls_back_to_legacy_composition() -> None:
+    crew = Crew.from_dict(
+        "test-crew",
+        {"container": "gs-test-crew", "comp": "", "composition": "worker"},
+    )
+
+    assert crew.comp == "worker"
+
+
+def test_conflicting_record_warns_only_once(caplog) -> None:
+    record = {"container": "gs-test-crew", "comp": "spec-ops", "composition": "worker"}
+
+    with caplog.at_level("WARNING", logger="transport.crew"):
+        for _ in range(3):
+            assert crew_mod.comp_from_record("test-crew", record) == "spec-ops"
+
+    assert caplog.text.count("conflicting persisted comp and composition values") == 1

@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Launch resolves crew type
-The `launch` tool SHALL accept canonical `comp` and the legacy `composition` alias, resolve the effective value from the crew registry, and use that entry's image and directory when creating the crew. Conflicting values SHALL return a clear error without creating a crew; if neither is supplied, the default SHALL be `"spec-ops"`.
+The `launch` tool SHALL accept canonical `comp` and the legacy `composition` alias, resolve the effective value from the crew registry, and use that entry's image and directory when creating the crew. When both are supplied, `comp` is authoritative and a conflicting `composition` is ignored with a warning; if neither is supplied, the default SHALL be `"spec-ops"`.
 
 #### Scenario: Launch with default crew type
 - **WHEN** `launch` is called without `comp` or `composition`
@@ -23,7 +23,7 @@ The `launch` tool SHALL accept canonical `comp` and the legacy `composition` ali
 
 #### Scenario: Conflicting comp and composition values
 - **WHEN** `launch` is called with `comp="worker"` and `composition="spec-ops"`
-- **THEN** the system returns an error naming both values and available comps and creates no crew
+- **THEN** the system uses `comp` (`"worker"`), resolves that entry, and logs a warning naming both values
 
 #### Scenario: Launch with unknown crew type
 - **WHEN** `launch` is called with a value not present in the loaded registry
@@ -63,9 +63,13 @@ The system SHALL load crew entries from `crews/registry.json` using canonical ke
 - **WHEN** `crews/registry.json` contains both keys with equal values
 - **THEN** the system treats them as one registry and loads each entry once
 
-#### Scenario: Registry rejects conflicting keys
+#### Scenario: Registry prefers comps on conflicting keys
 - **WHEN** `crews/registry.json` contains both keys with different values
-- **THEN** startup fails with a clear configuration error naming the conflict
+- **THEN** the system loads the `comps` entries, ignores `compositions`, and logs a warning naming the conflict
+
+#### Scenario: Registry falls back to legacy key when comps is not a list
+- **WHEN** `crews/registry.json` contains a `comps` key that is not a list and a valid `compositions` list
+- **THEN** the system loads the `compositions` entries and logs a warning
 
 #### Scenario: Registry is missing
 - **WHEN** `crews/registry.json` does not exist

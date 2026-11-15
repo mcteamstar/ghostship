@@ -52,21 +52,24 @@ def _patch_registry(test, crews: dict):
 class TestLaunchCompArguments(unittest.TestCase):
     """Canonical and legacy launch arguments resolve deterministically."""
 
-    def test_conflicting_comp_and_composition_rejects_before_container_setup(self):
+    def test_conflicting_comp_and_composition_warns_and_uses_comp(self):
         from transport.tools import launch
 
-        with patch("transport.tools._get_podman") as get_podman:
+        with (
+            patch("transport.tools.login._backend_enabled", return_value=True),
+            patch("transport.tools._resolve_comp", return_value={"name": "worker"}) as resolve,
+            patch("transport.tools._get_podman", side_effect=RuntimeError("stop after resolution")),
+            self.assertLogs("transport.tools", level="WARNING") as logs,
+        ):
             result = launch(
                 "launch-alias-check",
                 comp="worker",
                 composition="spec-ops",
             )
 
-        self.assertEqual(result["error"], "conflicting_comp_arguments")
-        self.assertEqual(result["comp"], "worker")
-        self.assertEqual(result["composition"], "spec-ops")
-        self.assertIn("Available comps", result["message"])
-        get_podman.assert_not_called()
+        resolve.assert_called_once_with("worker")
+        self.assertEqual(result, {"error": "stop after resolution"})
+        self.assertIn("conflicting comp='worker'", "\n".join(logs.output))
 
     def test_canonical_legacy_matching_and_default_values_resolve(self):
         from transport.tools import launch

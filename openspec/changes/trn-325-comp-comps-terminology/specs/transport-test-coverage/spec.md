@@ -17,9 +17,9 @@ The test suite SHALL cover canonical `comps` loading, the legacy `compositions` 
 - **WHEN** a registry fixture contains both keys with equal entries
 - **THEN** the test verifies the entries are loaded once
 
-#### Scenario: Conflicting registry keys fail startup
+#### Scenario: Conflicting registry keys prefer comps
 - **WHEN** a registry fixture contains both keys with different entries
-- **THEN** the test verifies startup reports a clear configuration error
+- **THEN** the test verifies the `comps` entries are loaded and `compositions` is ignored
 
 ### Requirement: Launch alias resolution has test coverage
 The test suite SHALL cover canonical `comp`, legacy `composition`, matching dual values, conflicting values, and the default when neither argument is supplied.
@@ -36,9 +36,9 @@ The test suite SHALL cover canonical `comp`, legacy `composition`, matching dual
 - **WHEN** launch is called with equal `comp` and `composition` values
 - **THEN** the test verifies the matching registry entry is used
 
-#### Scenario: Conflicting comp aliases reject launch
+#### Scenario: Conflicting comp aliases use comp
 - **WHEN** launch is called with different `comp` and `composition` values
-- **THEN** the test verifies a clear error is returned and no crew is created
+- **THEN** the test verifies `comp` is resolved and a warning is logged
 
 #### Scenario: Omitted comp arguments use the default
 - **WHEN** launch is called without either argument

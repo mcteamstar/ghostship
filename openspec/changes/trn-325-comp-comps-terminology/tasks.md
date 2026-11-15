@@ -21,9 +21,9 @@
 
 ## 4. Implementation (after delta specs)
 
-- [x] 4.1 Implement canonical `comp` launch input with the `composition` alias, equal-value acceptance, conflicting-value rejection, and the existing default; verify the generated MCP schema and launch behavior.
+- [x] 4.1 Implement canonical `comp` launch input with the `composition` alias, `comp` authoritative when both are supplied (warn on conflict), and the existing default; verify the generated MCP schema and launch behavior.
 - [x] 4.2 Register `transport://comps` and retain `transport://compositions` as an identical-content alias; verify both are discoverable and readable.
-- [x] 4.3 Rename registry loading to canonical `comps`, accept legacy `compositions`, reject conflicts, and update the authored registry; verify legacy, canonical, matching, and conflicting configurations.
+- [x] 4.3 Rename registry loading to canonical `comps`, accept legacy `compositions`, prefer `comps` on conflict, and update the authored registry; verify legacy, canonical, matching, and conflicting configurations.
 - [x] 4.4 Make `Crew.comp` canonical; read legacy persisted `composition`, write both same-value fields during the rollback window, and warn when both disagree; verify legacy record loading and serialization.
 - [x] 4.5 Emit canonical `comp` plus equal `composition` aliases in MCP and REST crew payloads; update Radar to read `comp` first and fall back to legacy responses; verify both payload contracts and UI filtering/display.
 - [x] 4.6 Rename internal Python symbols and user-facing errors/descriptions to comp terminology, leaving old terms only in explicit compatibility code; verify no unintended old-name references remain in runtime code.

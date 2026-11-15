@@ -7,7 +7,7 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ## Requirements
 
 ### Requirement: Crew creation via launch
-The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew registry using the canonical `comp` argument. The legacy `composition` argument remains an accepted alias during the rollback window. If both arguments are present, they SHALL have equal values; conflicting values SHALL return a structured error naming both values and available comps without creating a container. If only `composition` is present, its value SHALL be used. If neither is present, the existing `"spec-ops"` default SHALL be applied. At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
+The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew registry using the canonical `comp` argument. The legacy `composition` argument remains an accepted alias during the rollback window. If both arguments are present, `comp` SHALL be authoritative; when the values differ, the system SHALL use `comp` and log a warning naming both values. If only `composition` is present, its value SHALL be used. If neither is present, the existing `"spec-ops"` default SHALL be applied. At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
 
 `launch` gains a `dashboard` parameter (default `null`). When `dashboard=true`, `launch` allocates a port from the configured range, registers it with Portal, stores `dashboard_port` in the registry, and returns `dashboard_url` in the response. When `dashboard=false` or when `dashboard=null` (default) and `GA_DASHBOARD_DEFAULT` is unset or false, no port is allocated and `dashboard_url` is `null`.
 
@@ -35,7 +35,7 @@ When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call behaves as if `dashboard
 
 #### Scenario: Conflicting comp and composition values
 - **WHEN** `launch` is called with `comp="worker"` and `composition="spec-ops"`
-- **THEN** the response contains a structured error naming both values and available comps, and no container is created
+- **THEN** the system uses `comp` (`"worker"`), resolves that crew entry, and logs a warning naming both values
 
 #### Scenario: Neither comp argument is provided
 - **WHEN** `launch` is called without `comp` or `composition`
