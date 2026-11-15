@@ -9,7 +9,7 @@
 **Crew image** (`crews/spec-ops/Containerfile`) — extends the KiroCrew v0.12.2 base image pinned to index digest `sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e` (bundled Kiro CLI 2.27.1). Built locally at install time as `localhost/spec-ops:latest` in three stages:
 
 1. **`base-admission`** — mail stack and auth layer: installs `mailutils`, `msmtp-mta`, provisions Maildir structure, adds `maildeliver` and `verify-admiral-sig`.
-2. **`spec-ops` composition** — adds Node.js 24 LTS and the `openspec` CLI. Optional backend toolchains (`claude`, `codex`) are layered here when enabled.
+2. **`spec-ops` comp** — adds Node.js 24 LTS and the `openspec` CLI. Optional backend toolchains (`claude`, `codex`) are layered here when enabled.
 3. **`base-graduation`** — pre-seeds the kiro-cli SQLite DB schema so auth injection works at launch without running migrations.
 
 See [configuration.md](configuration.md#extending-the-crew-image) to add packages.
@@ -18,7 +18,7 @@ See [configuration.md](configuration.md#extending-the-crew-image) to add package
 
 ![Fleet and crew hierarchy](images/docs-fleet-hierarchy.png)
 
-Every ghostship shares the same foundation: `academy/agents/`, `academy/skills/`, and `academy/steering/` — bind-mounted into the transport and copied into every crew at `launch`, filtered by the crew type's manifest (`crews/<crew-type>/manifest.json`).
+Every ghostship shares the same foundation: `academy/agents/`, `academy/skills/`, and `academy/steering/` — bind-mounted into the transport and copied into every crew at `launch`, filtered by the comp manifest (`crews/<comp>/manifest.json`).
 
 ### Agents
 
@@ -197,14 +197,14 @@ ghostship/
 ├── .claude-plugin/        # Agent Plugins + Claude Code plugin package
 │   └── skills/
 │       ├── ghostship-admin/       # install, connect, upgrade
-│       ├── ghostship-capability/  # configure agent personas, skills, crew compositions
+│       ├── ghostship-capability/  # configure agent personas, skills, crew comps
 │       └── ghostship-command/     # drive a connected fleet
 ├── config/                # ghostship.yaml.example
 ├── crews/                 # crew type definitions
 │   ├── _base/             # base-admission + base-graduation stages
 │   ├── _worker/           # minimal worker image (no openspec, no backends)
-│   ├── registry.json      # crew type registry
-│   └── spec-ops/          # spec-ops composition (Node.js + openspec)
+│   ├── registry.json      # comp registry
+│   └── spec-ops/          # spec-ops comp (Node.js + openspec)
 ├── tests/                 # unit/, integration/, e2e/
 ├── openspec/              # this project's own OpenSpec state
 └── docs/                  # documentation

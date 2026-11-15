@@ -4,7 +4,7 @@
 
 - [x] 1.1 Trace MCP launch arguments and resource registrations; record current schemas, URIs, metadata, errors, and available alias mechanisms in `compatibility-matrix.md`, verifying each entry against source and relevant OpenSpec requirements.
 - [x] 1.2 Trace crew listing/API payloads, Radar display, and persisted registry fields; record consumers and migration risks in the matrix, verifying the inventory against source, tests, and API specs.
-- [x] 1.3 Trace configuration, manifests, policy naming, docs, agent instructions, and CLI surfaces; classify each as public, persisted, or internal and verify each current name against source/docs (record when no CLI launch surface exists).
+- [x] 1.3 Trace configuration, manifests, policy naming, repo-local docs and agent-facing guidance, and CLI surfaces; classify each as public, persisted, or internal and verify each current name against source/docs (record when no CLI launch surface exists).
 
 ## 2. Assess alias and migration behavior
 
@@ -21,15 +21,15 @@
 
 ## 4. Implementation (after delta specs)
 
-- [ ] 4.1 Implement canonical `comp` launch input with the `composition` alias, equal-value acceptance, conflicting-value rejection, and the existing default; verify the generated MCP schema and launch behavior.
-- [ ] 4.2 Register `transport://comps` and retain `transport://compositions` as an identical-content alias; verify both are discoverable and readable.
-- [ ] 4.3 Rename registry loading to canonical `comps`, accept legacy `compositions`, reject conflicts, and update the authored registry; verify legacy, canonical, matching, and conflicting configurations.
-- [ ] 4.4 Make `Crew.comp` canonical; read legacy persisted `composition`, write both same-value fields during the rollback window, and warn when both disagree; verify legacy record loading and serialization.
-- [ ] 4.5 Emit canonical `comp` plus equal `composition` aliases in MCP and REST crew payloads; update Radar to read `comp` first and fall back to legacy responses; verify both payload contracts and UI filtering/display.
-- [ ] 4.6 Rename internal Python symbols and user-facing errors/descriptions to comp terminology, leaving old terms only in explicit compatibility code; verify no unintended old-name references remain in runtime code.
-- [ ] 4.7 Update OpenSpec main specs, tests, README/docs, and installer examples. Coordinate updates to `ghostship-command` and `ghostship-capability` in the sibling executor repo; classify remaining old-term references as aliases or historical text.
-- [ ] 4.8 Run focused compatibility tests and the relevant transport suite, validate the OpenSpec change, review rollback behavior, and keep TRN-325 open until all implementation tasks are complete.
+- [x] 4.1 Implement canonical `comp` launch input with the `composition` alias, equal-value acceptance, conflicting-value rejection, and the existing default; verify the generated MCP schema and launch behavior.
+- [x] 4.2 Register `transport://comps` and retain `transport://compositions` as an identical-content alias; verify both are discoverable and readable.
+- [x] 4.3 Rename registry loading to canonical `comps`, accept legacy `compositions`, reject conflicts, and update the authored registry; verify legacy, canonical, matching, and conflicting configurations.
+- [x] 4.4 Make `Crew.comp` canonical; read legacy persisted `composition`, write both same-value fields during the rollback window, and warn when both disagree; verify legacy record loading and serialization.
+- [x] 4.5 Emit canonical `comp` plus equal `composition` aliases in MCP and REST crew payloads; update Radar to read `comp` first and fall back to legacy responses; verify both payload contracts and UI filtering/display.
+- [x] 4.6 Rename internal Python symbols and user-facing errors/descriptions to comp terminology, leaving old terms only in explicit compatibility code; verify no unintended old-name references remain in runtime code.
+- [x] 4.7 Update OpenSpec main specs, tests, README/docs, and installer examples; classify remaining old-term references as aliases or historical text.
+- [x] 4.8 Run focused compatibility tests and the relevant transport suite, validate the OpenSpec change, review rollback behavior, and keep TRN-325 open until all implementation tasks are complete.
 
 ## Next action
 
-Run `/openspec-continue-change trn-325-comp-comps-terminology` to create the missing behavior delta specs. Refine implementation tasks against those specs before using `/forge`; do not implement code until the specs are present and validated.
+Repo-local implementation tasks are complete. Keep TRN-325 open and do not archive this change.

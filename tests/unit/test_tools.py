@@ -47,6 +47,79 @@ def _patch_registry(test, crews: dict):
     return backing["crews"]
 
 
+# ── Launch comp compatibility ────────────────────────────────────────────────
+
+class TestLaunchCompArguments(unittest.TestCase):
+    """Canonical and legacy launch arguments resolve deterministically."""
+
+    def test_conflicting_comp_and_composition_rejects_before_container_setup(self):
+        from transport.tools import launch
+
+        with patch("transport.tools._get_podman") as get_podman:
+            result = launch(
+                "launch-alias-check",
+                comp="worker",
+                composition="spec-ops",
+            )
+
+        self.assertEqual(result["error"], "conflicting_comp_arguments")
+        self.assertEqual(result["comp"], "worker")
+        self.assertEqual(result["composition"], "spec-ops")
+        self.assertIn("Available comps", result["message"])
+        get_podman.assert_not_called()
+
+    def test_canonical_legacy_matching_and_default_values_resolve(self):
+        from transport.tools import launch
+
+        cases = (
+            ({"comp": "worker"}, "worker"),
+            ({"composition": "worker"}, "worker"),
+            ({"comp": "worker", "composition": "worker"}, "worker"),
+            ({}, "spec-ops"),
+        )
+        for kwargs, expected in cases:
+            with self.subTest(kwargs=kwargs):
+                with (
+                    patch("transport.tools.login._backend_enabled", return_value=True),
+                    patch("transport.tools._resolve_comp", return_value={"name": expected}) as resolve,
+                    patch("transport.tools._get_podman", side_effect=RuntimeError("stop after resolution")),
+                ):
+                    result = launch("launch-alias-check", **kwargs)
+
+                resolve.assert_called_once_with(expected)
+                self.assertEqual(result, {"error": "stop after resolution"})
+
+
+class TestCompResourceAliases(unittest.TestCase):
+    def test_canonical_and_legacy_uris_register_the_same_resource_handler(self):
+        from transport.tools import register_tools
+
+        class RecordingMCP:
+            def __init__(self):
+                self.resources = {}
+
+            def tool(self):
+                return lambda fn: fn
+
+            def resource(self, uri, **metadata):
+                def decorator(fn):
+                    self.resources[uri] = (metadata, fn)
+                    return fn
+                return decorator
+
+        mcp = RecordingMCP()
+        with (
+            patch("transport.tools._caddy_portal", None),
+            patch("transport.tools._dashboard_gate", None),
+        ):
+            register_tools(mcp, None, None)
+
+        canonical = mcp.resources["transport://comps"]
+        legacy = mcp.resources["transport://compositions"]
+        self.assertEqual(canonical[1](), legacy[1]())
+        self.assertEqual(canonical[0]["name"], "comps")
+        self.assertIn("comps", canonical[0]["title"].lower())
+
 # ── TestNuke ──────────────────────────────────────────────────────────────────
 
 class TestNuke(unittest.TestCase):

@@ -23,7 +23,7 @@ These variables are written into the transport container's environment by `insta
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
 | `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. Checked against `MemAvailable` from `/proc/meminfo` (falls back to `MemFree`), polled every 5 s for up to 60 s. Set to `0` to disable. |
-| `GA_START_MEM_ESTIMATE_GB` | `1.0` | Memory (GB) assumed for each crew start still in flight. Subtracted from the live reading when admitting another start, so concurrent wakes cannot pass the `GA_MIN_FREE_MEM_GB` gate on the same free memory. Raise it for heavy crew compositions. |
+| `GA_START_MEM_ESTIMATE_GB` | `1.0` | Memory (GB) assumed for each crew start still in flight. Subtracted from the live reading when admitting another start, so concurrent wakes cannot pass the `GA_MIN_FREE_MEM_GB` gate on the same free memory. Raise it for heavy crew comps. |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) for Ghost Academy. Set to `false` to use the default socket. |
 | `GA_MACHINE_CPUS` | `8` | vCPUs for the dedicated Podman machine VM (macOS only; a cap, not a reservation). Ignored on Linux. |
 | `GA_MACHINE_MEMORY` | `8192` | Memory in MB for the dedicated Podman machine VM (macOS only). A ceiling backed on demand by Apple's Virtualization.framework; idle usage stays well below this. 8 GB is sufficient for 3 concurrent crew containers. Ignored on Linux. |
@@ -372,7 +372,7 @@ The new image is built at install time. Existing crews use the old image until n
 
 ## MCP server catalogue
 
-Crew agents can be given MCP servers (external tools) that vary by composition. Server definitions live in a catalogue at `academy/mcp/`; compositions opt in via their `manifest.json`.
+Crew agents can be given MCP servers (external tools) that vary by comp. Server definitions live in a catalogue at `academy/mcp/`; comps opt in via their `manifest.json`.
 
 ### Catalogue format (`academy/mcp/`)
 
@@ -413,9 +413,9 @@ Each JSON object conforms to the kiro-cli `mcpServers` entry format: at minimum 
 
 An empty catalogue is valid — no `mcp.json` is written into crew containers and agents run with only their built-in tools.
 
-### Declaring servers in a composition (`manifest.json → mcpServers`)
+### Declaring servers in a comp (`manifest.json → mcpServers`)
 
-A composition's `crews/<name>/manifest.json` gains an optional `mcpServers` array of catalogue server names:
+A comp's `crews/<name>/manifest.json` gains an optional `mcpServers` array of catalogue server names:
 
 ```json
 {
@@ -445,7 +445,7 @@ Pass secrets into the transport environment via the same `install.sh` configurat
 
 ### Per-agent servers
 
-Individual agent JSON files in `academy/agents/` may declare their own `mcpServers` map for servers specific to that agent. kiro-cli resolves agent-level entries before the composition-level `mcp.json`, so a name declared in both is served from the agent's entry. An agent may set `includeMcpJson: false` to opt out of the composition-level `mcp.json` entirely.
+Individual agent JSON files in `academy/agents/` may declare their own `mcpServers` map for servers specific to that agent. kiro-cli resolves agent-level entries before the comp-level `mcp.json`, so a name declared in both is served from the agent's entry. An agent may set `includeMcpJson: false` to opt out of the comp-level `mcp.json` entirely.
 
 ## Fixed headless overrides
 

@@ -10,7 +10,7 @@ Ghostship will use `comp` and `comps` across tool interfaces, resources, APIs, c
 - Expose `transport://comps` as the canonical discovery resource and retain `transport://compositions` as an alias to the same content.
 - Use `comp` in crew records, MCP and REST payloads, Radar, internal implementation names, examples, and documentation. Read legacy `composition` data and preserve it at compatibility boundaries during the rollback window.
 - Use `comps` as the canonical registry key while accepting legacy `compositions`; reject conflicting values if both keys are present.
-- Implement the reviewed compatibility matrix under this same TRN-325 ticket and OpenSpec change, with behavior specs, tests, documentation, and coordinated shared-skill updates.
+- Implement the reviewed compatibility matrix under this same TRN-325 ticket and OpenSpec change, with behavior specs, tests, documentation, and installer examples.
 
 ## Capabilities
 
@@ -26,4 +26,4 @@ Ghostship will use `comp` and `comps` across tool interfaces, resources, APIs, c
 
 ## Impact
 
-Implementation will cover `transport/tools.py`, registry and crew persistence, Radar and REST payloads, MCP resource registration, internal identifiers, installer examples, relevant OpenSpec specs, tests, docs, and shared Ghostship skills in the sibling executor repository. Existing comp identifiers, directory names, policy filenames, manifest schema, and environment variables remain unchanged. No alias-removal date is set in this change.
+Implementation will cover `transport/tools.py`, registry and crew persistence, Radar and REST payloads, MCP resource registration, internal identifiers, installer examples, relevant OpenSpec specs, tests, and repo documentation. Existing comp identifiers, directory names, policy filenames, manifest schema, and environment variables remain unchanged. No alias-removal date is set in this change.

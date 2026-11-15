@@ -20,7 +20,7 @@ When `GA_API_KEY` is set, you will be redirected to `/dashboard/login` first. Lo
 | Crew | Crew ID with activity badges (see below) |
 | Status | `running` (green glow) or `stopped` (dimmed row) |
 | Backend | `kiro`, `claude`, or `codex` |
-| Composition | e.g. `spec-ops` |
+| Comp | e.g. `spec-ops` |
 | Uptime | Running time for live crews; `—` for stopped |
 | Last Task | Relative time since last dispatch (e.g. `3m ago`) |
 | Dashboard | Link to per-crew KC dashboard (when `dashboard=True` at launch) |
@@ -56,6 +56,7 @@ Response shape:
       "status": "running",
       "acp_backend": "kiro",
       "acp_profile": "default",
+      "comp": "spec-ops",
       "composition": "spec-ops",
       "uptime_secs": 1842,
       "last_task_at": "2026-10-29T12:34:56Z",
@@ -75,6 +76,8 @@ Response shape:
   "max_active_crews": 6
 }
 ```
+
+`comp` is canonical. During the rollback window, `composition` is an equal-value compatibility alias; clients should read `comp` first and use `composition` as a fallback.
 
 `captain` is `null` when no Captain schedule exists for that crew.
 

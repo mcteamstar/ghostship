@@ -15,6 +15,10 @@ function captainIsStale(cap) {
   return (Date.now() - new Date(cap.last_checkin_at).getTime()) > interval * 3;
 }
 
+function crewComp(crew) {
+  return crew.comp || crew.composition || "spec-ops";
+}
+
 /* ── row builder ─────────────────────────────────────────────── */
 
 export function buildRow(crew) {
@@ -56,7 +60,7 @@ export function buildRow(crew) {
     "<td>" + esc(crew.crew_id) + copyBtn + agentBadge + captainBadge + "</td>" +
     "<td>" + statusBadge(crew.status) + (crew.status !== "stopped" && crew.gateway_healthy === false ? " <span class=\"badge badge-warn\" title=\"Gateway unreachable\">⚠</span>" : "") + "</td>" +
     "<td>" + esc(crew.acp_backend || "kiro") + "</td>" +
-    "<td>" + esc(crew.composition || "kirocrew") + "</td>" +
+    "<td>" + esc(crewComp(crew)) + "</td>" +
     "<td>" + (crew.status === "running" ? fmtUptime(crew.uptime_secs) : fmtDate(crew.created_at)) + "</td>" +
     "<td>" + fmtDate(crew.last_task_at) + "</td>" +
     "<td>" + dashLink + "</td>" +
@@ -77,7 +81,7 @@ export function renderTable(data, filter) {
   const crews = filter
     ? allCrews.filter(function (c) {
         return c.crew_id.toLowerCase().includes(filter) ||
-               (c.composition || "").toLowerCase().includes(filter);
+               crewComp(c).toLowerCase().includes(filter);
       })
     : allCrews;
 

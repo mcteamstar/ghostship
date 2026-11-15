@@ -105,6 +105,11 @@ except (ModuleNotFoundError, ImportError):
             pass
 
 try:
+    from crew import _comp_from_record  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.crew import _comp_from_record  # local dev
+
+try:
     from podman import _get_podman, _get_host_memory_gb_cached  # container: flat /app/
 except ModuleNotFoundError:
     from transport.podman import _get_podman, _get_host_memory_gb_cached  # local dev
@@ -160,16 +165,16 @@ except ModuleNotFoundError:
 
 try:
     from academy import (  # container: flat /app/
-        COMPOSITION_REGISTRY,
+        COMP_REGISTRY,
         _AGENTS_DIR,
-        _resolve_composition,
+        _resolve_comp,
         _resolve_image,
     )
 except ImportError:
     from transport.academy import (  # local dev
-        COMPOSITION_REGISTRY,
+        COMP_REGISTRY,
         _AGENTS_DIR,
-        _resolve_composition,
+        _resolve_comp,
         _resolve_image,
     )
 
@@ -382,6 +387,12 @@ def _registry_guard(fn):
     return _wrapped
 
 
+def _crew_comp_fields(crew_id: str, info: dict) -> dict[str, str]:
+    """Return canonical comp response fields, normalizing the legacy alias."""
+    comp = _comp_from_record(crew_id, info)
+    return {"comp": comp, "composition": comp}
+
+
 def _build_crews_payload(podman) -> dict:
     """Assemble the full fleet payload dict shared by the MCP ``crews`` tool and
     the REST ``GET /api/crews`` endpoint.
@@ -441,7 +452,7 @@ def _build_crews_payload(podman) -> dict:
             "crew_id": cid,
             "container": info["container"],
             "status": status,
-            "composition": info.get("composition", "kirocrew"),
+            **_crew_comp_fields(cid, info),
             "created_at": info.get("created_at"),
             "last_task_at": info.get("last_task_at"),
             "gateway_healthy": gateway_healthy,
@@ -574,7 +585,7 @@ def _build_internal_fleet_payload(podman) -> dict:
        8601 timestamp of the most recent completed check-in as recorded in the
        registry, or ``None`` when no check-in has been recorded yet).
 
-    All other fields (``crew_id``, ``status``, ``composition``, ``acp_backend``,
+    All other fields (``crew_id``, ``status``, ``comp``, ``composition``, ``acp_backend``,
     ``uptime_secs``, ``last_task_at``, ``dashboard_url``, ``policy_version``,
     ``gateway_healthy``, ``container``) are identical to ``_build_crews_payload``.
     """
@@ -609,7 +620,7 @@ def _build_internal_fleet_payload(podman) -> dict:
             "crew_id": cid,
             "container": info["container"],
             "status": status,
-            "composition": info.get("composition", "kirocrew"),
+            **_crew_comp_fields(cid, info),
             "created_at": info.get("created_at"),
             "last_task_at": info.get("last_task_at"),
             "gateway_healthy": gateway_healthy,
@@ -751,12 +762,12 @@ def crews() -> dict:
     return _build_crews_payload(podman)
 
 
-def resource_compositions() -> str:
-    """Return available crew compositions from the registry."""
-    if not COMPOSITION_REGISTRY:
-        return "No compositions registered. Defaulting to 'kirocrew'."
+def resource_comps() -> str:
+    """Return available crew comps from the registry."""
+    if not COMP_REGISTRY:
+        return "No comps registered. Defaulting to 'spec-ops'."
     lines = []
-    for entry in COMPOSITION_REGISTRY.values():
+    for entry in COMP_REGISTRY.values():
         image_note = f" (image: {entry['image']})" if entry.get("image") else ""
         lines.append(f"## {entry['name']}\n{entry['description']}{image_note}")
     return "\n\n".join(lines)
@@ -765,7 +776,8 @@ def resource_compositions() -> str:
 @_registry_guard
 def launch(
     crew_id: str,
-    composition: str = "spec-ops",
+    comp: str | None = None,
+    composition: str | None = None,
     dashboard: bool | None = None,
     backend: str | None = None,
     profile: str | None = None,
@@ -785,8 +797,10 @@ def launch(
     Args:
         crew_id: Name for this crew (e.g. 'general', 'srv-refactor'). Must be
                  unique. Use lowercase letters, numbers, hyphens.
-        composition: Crew composition to launch (default: "spec-ops"). See the
-                     transport://compositions resource for available compositions.
+        comp: Crew comp to launch (default: "spec-ops"). See the
+              transport://comps resource for available comps.
+        composition: Legacy alias for ``comp``. If both are supplied, their
+                     values must match.
         dashboard: When True, allocates a dedicated port from the UI port range
                    and registers it with Portal (ga-portal) so the crew's
                    dashboard SPA is accessible via HTTPS. The SPA owns its
@@ -824,6 +838,23 @@ def launch(
     # Resolve effective dashboard: explicit arg wins; None falls back to site default.
     effective_dashboard = dashboard if dashboard is not None else cfg.ga_dashboard_default
 
+    available_comps = list(COMP_REGISTRY.keys())
+    if comp is not None and composition is not None and comp != composition:
+        return {
+            "error": "conflicting_comp_arguments",
+            "message": (
+                f"Conflicting values supplied for comp and composition: "
+                f"comp={comp!r}, composition={composition!r}. "
+                f"Available comps: {available_comps}"
+            ),
+            "comp": comp,
+            "composition": composition,
+            "available_comps": available_comps,
+        }
+    selected_comp = comp if comp is not None else composition
+    if selected_comp is None:
+        selected_comp = "spec-ops"
+
     if not re.match(r'^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$', crew_id):
         return {"error": "crew_id must be lowercase alphanumeric/hyphens, 1-50 chars"}
 
@@ -839,13 +870,17 @@ def launch(
             "instructions": login._backend_not_enabled_message(backend),
         }
 
-    # Resolve crew type from registry
-    composition_entry = _resolve_composition(composition)
-    if composition_entry is None:
-        available = list(COMPOSITION_REGISTRY.keys())
-        return {"error": f"Unknown composition '{composition}'. Available: {available}"}
+    # Resolve comp from registry
+    comp_entry = _resolve_comp(selected_comp)
+    if comp_entry is None:
+        return {
+            "error": "unknown_comp",
+            "message": f"Unknown comp {selected_comp!r}. Available comps: {available_comps}",
+            "comp": selected_comp,
+            "available_comps": available_comps,
+        }
 
-    image = _resolve_image(composition_entry)
+    image = _resolve_image(comp_entry)
     container = f"{CREW_CONTAINER_PREFIX}{crew_id}"
     volume = f"{CREW_VOLUME_PREFIX}{crew_id}"
     home_volume = f"{CREW_HOME_VOLUME_PREFIX}{crew_id}"
@@ -1169,7 +1204,7 @@ def launch(
                 registry._reg["crews"].pop(crew_id, None)
             return {"error": f"Gateway not ready within 60s for crew {crew_id}"}
 
-        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, composition, composition_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend, acp_profile=resolved_profile, credential=_cred)
+        result = _finish_crew_setup(podman, crew_id, container, volume, home_volume, auth_b64, selected_comp, comp_entry, admiral_secret=_admiral_secret_hex, dashboard=effective_dashboard, backend=backend, acp_profile=resolved_profile, credential=_cred)
         # _finish_crew_setup error-dict paths have already called _cleanup_crew
         # (removing the admiral secret and Podman resources). The registry placeholder
         # entry written before the try block still exists and must be removed here.
@@ -2578,12 +2613,19 @@ def register_tools(mcp_instance, caddy_portal, dashboard_gate) -> None:
 
     # Resources (@mcp.resource(...) with explicit metadata).
     mcp_instance.resource(
+        "transport://comps",
+        name="comps",
+        title="Available Crew Comps",
+        description="Lists the crew comps available for launch — name, description, and optional image override for each.",
+        mime_type="text/plain",
+    )(resource_comps)
+    mcp_instance.resource(
         "transport://compositions",
         name="compositions",
-        title="Available Crew Compositions",
-        description="Lists the crew compositions available for launch — name, description, and optional image override for each.",
+        title="Available Crew Compositions (legacy alias)",
+        description="Compatibility alias for transport://comps. Returns the same crew comp listing.",
         mime_type="text/plain",
-    )(resource_compositions)
+    )(resource_comps)
     mcp_instance.resource(
         "transport://agents",
         name="agents",

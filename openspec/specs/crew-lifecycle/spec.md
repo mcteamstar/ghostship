@@ -7,7 +7,7 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ## Requirements
 
 ### Requirement: Crew creation via launch
-The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew-type registry based on the optional `composition` parameter (defaulting to `"kirocrew"`). At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
+The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew registry using the canonical `comp` argument. The legacy `composition` argument remains an accepted alias during the rollback window. If both arguments are present, they SHALL have equal values; conflicting values SHALL return a structured error naming both values and available comps without creating a container. If only `composition` is present, its value SHALL be used. If neither is present, the existing `"spec-ops"` default SHALL be applied. At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
 
 `launch` gains a `dashboard` parameter (default `null`). When `dashboard=true`, `launch` allocates a port from the configured range, registers it with Portal, stores `dashboard_port` in the registry, and returns `dashboard_url` in the response. When `dashboard=false` or when `dashboard=null` (default) and `GA_DASHBOARD_DEFAULT` is unset or false, no port is allocated and `dashboard_url` is `null`.
 
@@ -17,13 +17,29 @@ When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call behaves as if `dashboard
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
 - **THEN** a new crew container and volumes are created and the crew is registered as "running"
 
-#### Scenario: Launch with composition parameter
-- **WHEN** `launch` is called with a valid `crew_id` and `composition="worker"`
+#### Scenario: Launch with canonical comp parameter
+- **WHEN** `launch` is called with a valid `crew_id` and canonical `comp="worker"`
 - **THEN** the system resolves the `"worker"` crew type's image and manifest from the registry and uses them instead of the hardcoded defaults
 
-#### Scenario: Launch with unknown composition
-- **WHEN** `launch` is called with a `composition` value not found in the loaded crew-type registry
+#### Scenario: Launch with unknown comp
+- **WHEN** `launch` is called with a legacy `composition` value not found in the loaded crew registry
 - **THEN** the system returns an error listing the available crew types and creates no container
+
+#### Scenario: Launch with legacy composition alias
+- **WHEN** `launch` is called with a valid `crew_id` and `composition="worker"` but no `comp`
+- **THEN** the system resolves the `"worker"` crew entry and uses its image and manifest
+
+#### Scenario: Matching comp and composition values
+- **WHEN** `launch` is called with `comp="worker"` and `composition="worker"`
+- **THEN** the system resolves the `"worker"` crew entry and uses its image and manifest
+
+#### Scenario: Conflicting comp and composition values
+- **WHEN** `launch` is called with `comp="worker"` and `composition="spec-ops"`
+- **THEN** the response contains a structured error naming both values and available comps, and no container is created
+
+#### Scenario: Neither comp argument is provided
+- **WHEN** `launch` is called without `comp` or `composition`
+- **THEN** the crew is created using the default `"spec-ops"` registry entry
 
 #### Scenario: Invalid crew_id
 - **WHEN** `launch` is called with a `crew_id` that does not match lowercase alphanumeric/hyphen, 1-50 characters

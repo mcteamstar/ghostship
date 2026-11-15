@@ -27,6 +27,7 @@ The response shape SHALL be:
       "crew_id": "<string>",
       "container": "<string>",
       "status": "running | stopped",
+      "comp": "<string>",
       "composition": "<string>",
       "acp_backend": "<string>",
       "created_at": "<iso8601 | null>",
@@ -57,6 +58,8 @@ The response shape SHALL be:
 }
 ```
 
+`comp` SHALL be the canonical crew comp name. `composition` SHALL be a same-value compatibility alias during the rollback window. Legacy-only persisted records SHALL resolve `comp` from `composition`; if both persisted fields differ, `comp` SHALL be authoritative, the mismatch SHALL be logged, and the response SHALL emit both fields with the authoritative value.
+
 #### Scenario: Authenticated request returns fleet JSON
 - **WHEN** `GET /api/crews` is requested with a valid `gs_session` cookie
 - **THEN** Caddy's `forward_auth` check passes and the transport returns HTTP 200
@@ -70,6 +73,18 @@ The response shape SHALL be:
 #### Scenario: Empty fleet returns valid response
 - **WHEN** no crews are registered and `GET /api/crews` is called
 - **THEN** the response is HTTP 200 with `{"crews": [], "active_crews": 0, ...}`
+
+#### Scenario: Crew response exposes canonical comp and equal alias
+- **WHEN** a crew is launched with `comp="spec-ops"` and `GET /api/crews` is called
+- **THEN** its entry includes `"comp": "spec-ops"` and `"composition": "spec-ops"`
+
+#### Scenario: Legacy persisted record resolves comp from composition
+- **WHEN** a persisted crew record contains only `"composition": "worker"`
+- **THEN** the response includes `"comp": "worker"` and `"composition": "worker"`
+
+#### Scenario: Mismatched persisted fields normalize to comp
+- **WHEN** a persisted crew record contains `"comp": "spec-ops"` and `"composition": "worker"`
+- **THEN** the mismatch is logged and the response includes both fields as `"spec-ops"`
 
 ### Requirement: `GET /api/crews` includes captain schedule state per crew
 

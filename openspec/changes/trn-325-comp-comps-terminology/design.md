@@ -14,7 +14,7 @@ Ghostship currently exposes `composition` on the `launch` MCP tool and in crew p
 **Non-Goals:**
 - Rename comp identifiers or directory paths, policy filenames, manifest keys, or environment variables.
 - Set an alias removal date; that requires usage evidence and a separate decision.
-- Change code in the sibling executor repository as part of this repo-local OpenSpec change. Its shared skills are coordinated work under the same Plane ticket.
+- Keep implementation and documentation changes within this repository.
 
 ## Decisions
 
@@ -36,13 +36,13 @@ The authored registry and loader use `comps` canonically and accept legacy `comp
 
 ### Internal names and rollout scope
 
-Rename internal Python symbols to `comp` terminology; confine legacy spellings to explicit normalization and serialization compatibility code. Update the installer example, product docs, OpenSpec requirements and tests, and shared executor skills. The sibling executor repo is outside this change's repo-local edit roots, so its two Ghostship skills are coordinated TRN-325 work rather than edits in this change directory.
+Rename internal Python symbols to `comp` terminology; confine legacy spellings to explicit normalization and serialization compatibility code. Update the installer example, product docs, OpenSpec requirements, and tests within this repository.
 
 ## Risks / Trade-offs
 
 - [Strict clients reject additive response fields] → Confirm MCP/REST consumers and retain same-value aliases for the agreed compatibility window; update contracts and examples together.
 - [Persisted records differ across versions] → Read legacy-only records, write both fields during rollback compatibility, treat `comp` as authoritative on mismatch, and cover this behavior with tests.
-- [Some surfaces keep old terminology] → Track source, UI, docs, installer output, specs, and shared skills as explicit implementation tasks; old spelling remains only where alias behavior requires it.
+- [Some surfaces keep old terminology] → Track source, UI, docs, installer output, and specs as explicit implementation tasks; old spelling remains only where alias behavior requires it.
 
 ## Migration Plan
 

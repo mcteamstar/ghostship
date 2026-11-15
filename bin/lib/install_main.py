@@ -976,7 +976,7 @@ def _post_install(ghostship_dir: str, ga_host_url: str, interactive_mode: bool) 
         print(f"  kiro-cli mcp add --name ghostship --url {mcp_url} --scope global")
         print("")
         print("Then from Kiro CLI, create the first crew:")
-        print('  ghostship__launch(crew_id="general")')
+        print('  ghostship__launch(crew_id="general", comp="spec-ops")')
         print("")
 
     # ghostship CLI link

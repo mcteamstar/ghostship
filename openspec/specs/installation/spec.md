@@ -297,29 +297,41 @@ On Linux, the machine teardown SHALL remove only the dedicated `containers/` sto
 - **WHEN** `uninstall.sh --config ./my.conf` runs and `my.conf` exports `GA_MACHINE_NAME=academy`, and a dedicated machine named `academy` exists
 - **THEN** `uninstall.sh` detects and removes the `academy` machine, not a machine named `ghost-academy`
 
-### Requirement: Base crew image built before composition images
+### Requirement: Base crew image built before comp images
 
-`install.sh` SHALL build `localhost/base:latest` from `crews/_base/Containerfile` before building any composition image. The `_base` directory is an internal build dependency and SHALL NOT appear as a composition in `crews/registry.json`.
+`install.sh` SHALL build `localhost/base:latest` from `crews/_base/Containerfile` before building any comp image. The `_base` directory is an internal build dependency and SHALL NOT appear as a comp in `crews/registry.json`.
 
 #### Scenario: Fresh install builds base then spec-ops
 - **WHEN** `install.sh` runs
 - **THEN** it builds `localhost/base:latest` first, then builds `localhost/spec-ops:latest` from that base
 
-#### Scenario: _base not exposed as a composition
-- **WHEN** a client calls `crews()` or reads `transport://compositions`
-- **THEN** `_base` does not appear as an available composition
+#### Scenario: _base not exposed as a comp
+- **WHEN** a client calls `crews()` or reads `transport://comps`
+- **THEN** `_base` does not appear as an available comp
 
-### Requirement: Composition image version includes composition name
+### Requirement: Comp image version includes comp name
 
-The `org.ghostship.version` OCI label on each composition image SHALL be `<VERSION>-<composition-name>` (e.g. `0.1.0-spec-ops`), where `VERSION` is the ghostship monorepo version passed as a build arg and the composition name matches the composition's directory name. This lets `crews()` identify both the ghostship release and which composition a crew was built from.
+The `org.ghostship.version` OCI label on each comp image SHALL be `<VERSION>-<comp-name>` (e.g. `0.1.0-spec-ops`), where `VERSION` is the ghostship monorepo version passed as a build arg and the comp name matches its directory name. This lets `crews()` identify both the ghostship release and which comp a crew was built from.
 
 #### Scenario: spec-ops crew reports versioned label
 - **WHEN** `crews()` is called and a spec-ops crew is registered
 - **THEN** `crew_image_version` reads `"<VERSION>-spec-ops"` (e.g. `"0.1.0-spec-ops"`)
 
-#### Scenario: Future composition follows same convention
-- **WHEN** a new composition `research` is built with ghostship version `0.2.0`
+#### Scenario: Future comp follows same convention
+- **WHEN** a new comp `research` is built with ghostship version `0.2.0`
 - **THEN** its OCI label reads `"0.2.0-research"` and `crews()` reports that value
+
+### Requirement: transport://comps is the canonical discovery resource
+
+The system SHALL expose `transport://comps` as the canonical MCP resource for listing available crew comps. The legacy `transport://compositions` URI SHALL remain an alias that returns identical content during the rollback window.
+
+#### Scenario: transport://comps lists available comps
+- **WHEN** a client reads `transport://comps`
+- **THEN** the response lists each available comp with its name, description, and optional image override, and the resource name and title use “comps”
+
+#### Scenario: Legacy compositions URI remains readable
+- **WHEN** a client reads `transport://compositions` during the rollback window
+- **THEN** the response is identical to `transport://comps` and lists the same available comps
 
 ### Requirement: Transport service definition generated as a Compose file
 `install.sh` SHALL generate a `compose.yml` in `${DATA_DIR}` after building images, containing the complete `ga-transport` service definition: image, ports, volumes, environment variables, network, restart policy, and security options. The Podman socket path and all machine-specific values SHALL be baked in at generation time so the file is self-contained and usable without re-running `install.sh`.

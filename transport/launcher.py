@@ -746,8 +746,8 @@ class CrewLauncher:
         volume: str,
         home_volume: str,
         auth_b64: str,
-        composition: str = "spec-ops",
-        composition_entry: dict | None = None,
+        comp: str = "spec-ops",
+        comp_entry: dict | None = None,
         *,
         admiral_secret: str,
         dashboard: bool = False,
@@ -869,7 +869,7 @@ class CrewLauncher:
 
         policy_signing_key = __import__("secrets").token_hex(32)
 
-        _patch_crew_config(podman, container, composition_entry, backend=backend)
+        _patch_crew_config(podman, container, comp_entry, backend=backend)
 
         podman.container_stop(container)
         podman.container_start(container)
@@ -880,7 +880,7 @@ class CrewLauncher:
             }
 
         # Copy agents/skills/steering via AcademyLoader
-        _loader = AcademyLoader(podman, container, composition_entry, acp_backend=backend)
+        _loader = AcademyLoader(podman, container, comp_entry, acp_backend=backend)
         _loader_result = _loader.copy_all()
         copied_agents = _loader_result["agents"]
 
@@ -890,7 +890,7 @@ class CrewLauncher:
         policy_warning: str | None = None
         try:
             policy_version = _inject_policy(
-                podman, container, composition, policy_signing_key
+                podman, container, comp, policy_signing_key
             )
         except Exception as e:
             policy_warning = str(e)
@@ -941,7 +941,7 @@ class CrewLauncher:
             cookie=cookie,
             internal_cookie=internal_cookie or "",
             status="running",
-            composition=composition,
+            comp=comp,
             acp_backend=backend,
             acp_profile=acp_profile,
             created_at=datetime.now(timezone.utc).isoformat(),

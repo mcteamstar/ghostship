@@ -283,7 +283,8 @@ The `crews()` MCP tool SHALL return a JSON object with a top-level `crews` array
 - `crew_id` (string)
 - `container` (string)
 - `status` (string: `"running"` | `"stopped"`)
-- `composition` (string)
+- `comp` (string) — the canonical crew comp name
+- `composition` (string) — a same-value compatibility alias during the rollback window
 - `created_at` (ISO 8601 string)
 - `last_task_at` (ISO 8601 string | null) — timestamp of the last task dispatched to this crew; null if no task has ever been dispatched
 - `uptime_secs` (integer | null) — seconds elapsed since the container started, derived from the container's `StartedAt` timestamp; present only when `status == "running"`, absent (or null) otherwise
@@ -300,6 +301,8 @@ The `crews()` MCP tool SHALL return a JSON object with a top-level `crews` array
 The `agents` entries SHALL NOT include a `last_tool` field. `last_tool` is removed from the response.
 
 The top-level response object SHALL also include `host_memory_available_gb`, `active_crews`, and `max_active_crews` as before.
+
+When persisted data has only `composition`, the response SHALL resolve `comp` from that value. When persisted `comp` and `composition` differ, `comp` SHALL be authoritative, the mismatch SHALL be logged, and the response SHALL emit both fields with the authoritative value.
 
 #### Scenario: crews() omits last_tool from agent entries
 
@@ -325,3 +328,15 @@ The top-level response object SHALL also include `host_memory_available_gb`, `ac
 
 - **WHEN** `crews()` is called and a crew has never had a task dispatched
 - **THEN** that crew's `last_task_at` is null
+
+#### Scenario: Crew entry exposes comp and equal compatibility alias
+- **WHEN** a crew was launched with `comp="spec-ops"`
+- **THEN** its entry includes `"comp": "spec-ops"` and `"composition": "spec-ops"`
+
+#### Scenario: Legacy persisted record resolves comp from composition
+- **WHEN** a persisted crew record contains only `"composition": "spec-ops"`
+- **THEN** the response includes `"comp": "spec-ops"` and `"composition": "spec-ops"`
+
+#### Scenario: Mismatched persisted fields normalize to comp
+- **WHEN** a persisted crew record contains `"comp": "spec-ops"` and `"composition": "worker"`
+- **THEN** the mismatch is logged and the response includes both fields as `"spec-ops"`
