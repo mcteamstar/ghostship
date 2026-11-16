@@ -9,3 +9,7 @@
 
 - [x] 2.1 Update confirmed `nuke` to log and return a distinct cleanup-failure status with resource names when removals fail, while completing the existing registry/Caddy teardown sequence. Verify successful teardown retains its existing response and partial teardown never returns unqualified success.
 - [x] 2.2 Add response-shape coverage for complete and partial cleanup, and run the focused nuke tests in `tests/unit/test_tools.py`.
+
+## 3. Clarify destructive nuke intent
+
+- [x] 3.1 Update the `nuke` tool docstring and alias guidance to describe irreversible workspace destruction, distinguish it from routine cleanup, state that idle crews stop and restart automatically, exclude `clean up` as an alias, and describe cleanup attempts and failures without promising residue-free teardown.
