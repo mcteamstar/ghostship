@@ -99,6 +99,11 @@ try:
 except ModuleNotFoundError:
     from transport.podman import PodmanClient, _get_podman  # local dev
 
+try:
+    from podman import MemoryInfoUnavailable  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.podman import MemoryInfoUnavailable  # local dev
+
 # _NUKED_DURING_RESTART is defined in lifecycle.py and is the sentinel returned
 # by _ensure_crew_running when a concurrent nuke() removes the crew between
 # container_start and post-start setup.  We import it here to maintain identity
@@ -347,7 +352,12 @@ class CrewLauncher:
         if GA_MIN_FREE_MEM_GB <= 0:
             return
 
-        live_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 0)
+        try:
+            live_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 0)
+        except MemoryInfoUnavailable as exc:
+            raise RuntimeError(
+                f"Unable to determine available memory to start crew {crew_id}: {exc}"
+            ) from exc
         in_flight = len(self._start_reservations)
         free_gb = live_gb - GA_START_MEM_ESTIMATE_GB * in_flight
         if free_gb < GA_MIN_FREE_MEM_GB:

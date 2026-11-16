@@ -357,6 +357,23 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
 class TestEnsureRunning(_EnsureRunningBase):
     """CrewLauncher.ensure_running: happy path + nuked-during-restart sentinel."""
 
+    def test_memory_stat_failure_fails_closed_without_starting_crew(self):
+        from transport.podman import MemoryInfoUnavailable
+
+        with (
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 2.0),
+            patch.object(
+                self.life,
+                "_wait_for_memory",
+                side_effect=MemoryInfoUnavailable("MemAvailable not found in /proc/meminfo"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "Unable to determine available memory"),
+        ):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+        self.assertNotIn("container_start", [call[0] for call in self.podman.calls])
+
     def test_stopped_crew_starts_and_returns_running_dict(self):
         crew = dict(self.crews[CREW_ID])
         result = self.launcher.ensure_running(crew, CREW_ID)
