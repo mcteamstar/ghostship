@@ -584,6 +584,7 @@ The test suite SHALL include a dedicated `tests/unit/test_lifecycle.py` module c
 #### Scenario: test_lifecycle.py runs within the existing unit suite
 - **WHEN** `pytest tests/unit/` is executed
 - **THEN** `test_lifecycle.py` tests are included in the run alongside `test_config.py`, `test_login.py`, `test_registry_lock.py`, and `test_sentinel.py`
+
 ### Requirement: CaddyPortal port pool allocation
 
 The test suite SHALL exercise `CaddyPortal.allocate_port` and `release_port`,
@@ -993,7 +994,6 @@ it stubs).
 - **THEN** it logs an error and returns the default comps
 
 ### Requirement: Crew registry key compatibility has test coverage
-
 The test suite SHALL cover canonical `comps` loading, the legacy `compositions` alias, matching dual keys, and conflicting dual keys.
 
 #### Scenario: Canonical comps key is loaded
@@ -1013,7 +1013,6 @@ The test suite SHALL cover canonical `comps` loading, the legacy `compositions` 
 - **THEN** the test verifies the `comps` entries are loaded and `compositions` is ignored
 
 ### Requirement: Launch alias resolution has test coverage
-
 The test suite SHALL cover canonical `comp`, legacy `composition`, matching dual values, conflicting values, and the default when neither argument is supplied.
 
 #### Scenario: Canonical comp launches a crew
@@ -1037,7 +1036,6 @@ The test suite SHALL cover canonical `comp`, legacy `composition`, matching dual
 - **THEN** the test verifies the default `"spec-ops"` entry is used
 
 ### Requirement: Crew persistence and MCP payload compatibility have test coverage
-
 The test suite SHALL verify that canonical and legacy persisted fields are resolved consistently and that MCP crew payload aliases carry equal values.
 
 #### Scenario: New crew records contain canonical comp and alias
@@ -1053,7 +1051,6 @@ The test suite SHALL verify that canonical and legacy persisted fields are resol
 - **THEN** the test verifies a mismatch is logged and the MCP response emits both fields using `comp`
 
 ### Requirement: Comp discovery resource aliases have test coverage
-
 The test suite SHALL verify that both discovery URIs are registered, readable, and return identical comp listings.
 
 #### Scenario: Canonical comps resource is discoverable
@@ -1065,7 +1062,6 @@ The test suite SHALL verify that both discovery URIs are registered, readable, a
 - **THEN** the test verifies `transport://compositions` is listed and returns content identical to `transport://comps`
 
 ### Requirement: REST crew payload compatibility has test coverage
-
 The test suite SHALL verify that REST crew records expose canonical `comp`, a same-value `composition` alias, and values matching MCP output.
 
 #### Scenario: REST and MCP crew fields match

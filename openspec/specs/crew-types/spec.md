@@ -7,7 +7,6 @@ Defines how comps are declared, discovered, validated, and resolved at launch ti
 ## Requirements
 
 ### Requirement: Crew-type registry file
-
 The system SHALL load crew entries from `crews/registry.json` using canonical key `comps` and SHALL continue accepting legacy key `compositions` during the rollback window. Each entry maps a comp name to its configuration. If both keys are present, equal values SHALL be treated as one registry and different values SHALL produce a clear startup configuration error.
 
 #### Scenario: Registry lists available types
@@ -35,7 +34,7 @@ The system SHALL load crew entries from `crews/registry.json` using canonical ke
 - **THEN** the system falls back to the single implicit `"spec-ops"` entry with current hardcoded defaults (`KC_IMAGE`, `crews/spec-ops/manifest.json`, `crews/spec-ops/Containerfile`)
 
 #### Scenario: Registry entry references a nonexistent directory
-- **WHEN** a comp entry points to a `crews/<name>/` directory that does not exist
+- **WHEN** a crew entry points to a `crews/<name>/` directory that does not exist
 - **THEN** the system logs a warning and excludes that entry from the available set
 
 ### Requirement: Crew-type definition schema
@@ -55,7 +54,6 @@ Each comp entry in `crews/registry.json` SHALL contain: `name` (string, kebab-ca
 - **THEN** the system logs a warning and excludes that entry from the available set
 
 ### Requirement: Launch resolves crew type
-
 The `launch` tool SHALL accept canonical `comp` and the legacy `composition` alias, resolve the effective value from the crew registry, and use that entry's image and directory when creating the crew. When both are supplied, `comp` is authoritative and a conflicting `composition` is ignored with a warning; if neither is supplied, the default SHALL be `"spec-ops"`.
 
 #### Scenario: Launch with default crew type
@@ -83,7 +81,6 @@ The `launch` tool SHALL accept canonical `comp` and the legacy `composition` ali
 - **THEN** the system returns an error naming the unknown value and listing available comps
 
 ### Requirement: Crew type stored in registry entry
-
 The system SHALL store the canonical `comp` in each crew record and expose it to downstream consumers. During the rollback window, `composition` SHALL be retained as a same-value compatibility alias. Readers SHALL accept legacy records containing only `composition`; when both fields differ, `comp` SHALL be authoritative, the mismatch SHALL be logged, and subsequent serialization SHALL write both fields with the `comp` value.
 
 #### Scenario: Registry entry includes crew type
@@ -101,4 +98,3 @@ The system SHALL store the canonical `comp` in each crew record and expose it to
 #### Scenario: Existing crews without type field
 - **WHEN** the system reads a pre-migration record with neither `comp` nor `composition`
 - **THEN** it treats the crew as `"spec-ops"` for display and operational purposes
-

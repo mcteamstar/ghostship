@@ -9,15 +9,9 @@ requiring an MCP session.
 ## Requirements
 
 ### Requirement: `GET /api/crews` returns the fleet list
+The transport SHALL expose `GET /api/crews` as an HTTP endpoint protected by the `DashboardGate` session mechanism at the Caddy layer (same `gs_session` cookie and `forward_auth` chain as `/` and `/crews/*/ui`). The response SHALL be JSON with `Content-Type: application/json` and SHALL contain the same fleet data returned by the MCP `crews()` tool.
 
-The transport SHALL expose `GET /api/crews` as an HTTP endpoint protected by the
-`DashboardGate` session mechanism at the Caddy layer (same `gs_session` cookie and
-`forward_auth` chain as `/` and `/crews/*/ui`). The response SHALL be JSON with
-`Content-Type: application/json` and SHALL contain the same fleet data returned by
-the MCP `crews()` tool.
-
-In `BearerAuthMiddleware`, `GET /api/crews` SHALL be listed in `public_routes` —
-session enforcement is at the Caddy layer, not at the transport bearer layer.
+In `BearerAuthMiddleware`, `GET /api/crews` SHALL be listed in `public_routes` — session enforcement is at the Caddy layer, not at the transport bearer layer.
 
 The response shape SHALL be:
 ```json
@@ -28,7 +22,7 @@ The response shape SHALL be:
       "container": "<string>",
       "status": "running | stopped",
       "comp": "<string>",
-      "composition": "<string>",
+      "composition": "<same value as comp>",
       "acp_backend": "<string>",
       "created_at": "<iso8601 | null>",
       "last_task_at": "<iso8601 | null>",
@@ -62,8 +56,7 @@ The response shape SHALL be:
 
 #### Scenario: Authenticated request returns fleet JSON
 - **WHEN** `GET /api/crews` is requested with a valid `gs_session` cookie
-- **THEN** Caddy's `forward_auth` check passes and the transport returns HTTP 200
-  with `Content-Type: application/json`
+- **THEN** Caddy's `forward_auth` check passes and the transport returns HTTP 200 with `Content-Type: application/json`
 - **THEN** the response body matches the schema above
 
 #### Scenario: Unauthenticated request is redirected to login
@@ -85,6 +78,10 @@ The response shape SHALL be:
 #### Scenario: Mismatched persisted fields normalize to comp
 - **WHEN** a persisted crew record contains `"comp": "spec-ops"` and `"composition": "worker"`
 - **THEN** the mismatch is logged and the response includes both fields as `"spec-ops"`
+
+#### Scenario: REST and MCP comp values match
+- **WHEN** `GET /api/crews` and the MCP `crews()` tool are called for the same fleet state
+- **THEN** both responses report the same `comp` and `composition` values for every crew
 
 ### Requirement: `GET /api/crews` includes captain schedule state per crew
 

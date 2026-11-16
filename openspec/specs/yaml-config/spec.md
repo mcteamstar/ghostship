@@ -21,74 +21,11 @@ operators only specify keys they want to change from built-in defaults.
 - **THEN** install.sh SHALL proceed using built-in defaults only
 
 ### Requirement: YAML config schema with logical sections
-The YAML config SHALL be organised into logical top-level sections: `network`, `crew`,
-`model`, `backends`, `portal`, `machine`. Each section groups related keys into
-sub-sections where semantically appropriate. Per-backend config lives under
-`backends.<backend>`. The `images` section is merged into `machine.images`.
-
-The canonical section structure is:
-
-```
-network:
-  host, port, host_url, api_key
-  tls:
-    certfile, keyfile
-
-crew:
-  max_crews, max_active, idle_timeout_secs, subagent_timeout_secs
-  batch_max_tasks, pickup_max_poll_secs, orders_dir
-  git:
-    author:
-      name, email
-  memory:
-    min_free_mem_gb, spawn_min_memory_gb, resource_pressure_gb
-    resource_critical_gb, spawn_pressure_escalate_cycles
-
-model:
-  default              # global fallback only — no global override
-
-backends:
-  default: scalar       # implicit runtime backend; defaults to kiro
-  kiro:
-    model:
-      override: ""     # forces all kiro agents to this model
-      default: ""      # kiro fallback when no per-agent model set
-    identity_center:
-      url, region
-  claude:
-    model:
-      override: ""
-      default: ""
-    base_url
-  codex:
-    model:
-      override: ""
-      default: ""
-    base_url
-
-portal:
-  tls_mode, domain, session_ttl_secs
-  dashboard:
-    default
-    port_range:
-      start, size
-  rate_limit:
-    enabled, login_get, login_post, mcp, files, crew_api, dashboard_auth
-
-machine:
-  dedicated, name
-  resources:
-    cpus, memory_mb, disk_gb
-  images:              # was top-level images: section
-    podman_socket, kc_image, kc_base_image
-```
-
-`backends.default` SHALL be a scalar backend name, defaulting to `kiro`. Kiro is always
-enabled. Claude and Codex SHALL be enabled when their `backends.<name>` sections are
-present, including empty mappings such as `backends.claude: {}`. The installer derives
-the internal comma-separated `GA_CREW_AGENT` value from this scalar and the present
-optional backend sections. The legacy list form SHALL be rejected with migration
-guidance.
+The YAML config SHALL be organised into logical top-level sections. Configuration
+under optional `backends.claude` or `backends.codex` SHALL also declare that backend
+enabled for toolchain installation. Kiro SHALL remain a built-in enabled backend.
+`backends.default` SHALL be a scalar backend name selecting the implicit runtime
+backend, defaulting to Kiro when omitted; it SHALL not be a list of enabled backends.
 
 #### Scenario: Full config structure accepted
 - **WHEN** `config/ghostship.yaml` contains all sections with valid values
@@ -96,7 +33,7 @@ guidance.
 
 #### Scenario: Unknown keys warned
 - **WHEN** `config/ghostship.yaml` contains an unrecognised key
-- **THEN** install.sh SHALL warn the operator and continue (not abort)
+- **THEN** install.sh SHALL warn the operator and continue without aborting
 
 #### Scenario: backends.default as scalar
 - **WHEN** `config/ghostship.yaml` sets `backends.default: claude` and contains `backends.claude: {}`
@@ -358,11 +295,9 @@ A nonempty backend model default SHALL be consumed by the crew runtime when no h
 - **THEN** the model fallback comes from that crew’s backend settings
 
 ### Requirement: Backend model defaults avoid automatic routing
-Shipped backend profiles SHALL provide concrete model defaults: Haiku 5.5 for Kiro
-and Claude using their backend-specific identifiers, and Luna 6 for Codex. When an
-operator explicitly clears a backend default, Ghostship SHALL preserve the harness
-`auto` fallback. An unavailable selected pin SHALL retain the upstream
- harness’s rejection/fallback behavior.
+Shipped backend profiles SHALL provide concrete model defaults while leaving shipped
+persona definitions unpinned. The harness `auto` fallback SHALL remain available when
+an operator explicitly clears the relevant backend model default.
 
 #### Scenario: Kiro backend default
 - **WHEN** a Kiro crew has no higher-precedence model selection
@@ -378,11 +313,15 @@ operator explicitly clears a backend default, Ghostship SHALL preserve the harne
 
 #### Scenario: Explicitly cleared default delegates to harness
 - **WHEN** an operator explicitly clears the selected backend's model default and no higher-precedence model applies
-- **THEN** Ghostship supplies `auto` and the harness chooses the model
+- **THEN** Ghostship SHALL supply `auto` rather than silently inserting a concrete model
+
+#### Scenario: Explicit selection retains precedence
+- **WHEN** a dispatch model or backend override is supplied
+- **THEN** that explicit selection SHALL take precedence over the backend default
 
 #### Scenario: Rejected pin is distinct from unset selection
-- **WHEN** the crew runtime rejects an unavailable selected persona model
-- **THEN** documentation identifies the resulting harness-selected default as distinct from a configured Ghostship fallback
+- **WHEN** the runtime rejects a configured backend model
+- **THEN** the resulting harness-selected model SHALL be reported as a rejected configured pin, not as the normal configured fallback
 
 ### Requirement: Reapplying generated model settings clears obsolete fallback state
 Reapplying crew configuration SHALL remove obsolete generated model-fallback state and reflect the current resolved fallback. Clearing a previously configured fallback SHALL restore inheritance without retaining that earlier generated model. Operator YAML and stored credentials SHALL remain unchanged.
@@ -405,3 +344,17 @@ The six shipped persona files SHALL omit explicit model pins. Operator backend o
 #### Scenario: Backend override applies to an unpinned persona
 - **WHEN** an operator configures a backend model override and a persona has no model or uses auto
 - **THEN** that persona uses the backend override unless dispatch explicitly selects a model
+
+### Requirement: Backend default has scalar compatibility semantics
+`backends.default` SHALL accept a scalar backend name. The legacy list form SHALL
+not silently select multiple enabled backends; install.sh SHALL reject it with a
+migration error or provide an explicit, documented migration to a scalar default
+and backend sections.
+
+#### Scenario: Scalar default accepted
+- **WHEN** `backends.default: claude` is configured
+- **THEN** the generated runtime configuration SHALL identify Claude as the implicit backend
+
+#### Scenario: Legacy list rejected or migrated
+- **WHEN** `backends.default: [claude, kiro]` is configured
+- **THEN** install.sh SHALL either fail with an actionable migration message or convert it to `default: claude` while enabling the corresponding backend sections

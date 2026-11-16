@@ -7,37 +7,42 @@ Defines how the ACP agent backend (kiro-cli vs Claude Code) is selected per crew
 ## Requirements
 
 ### Requirement: GA_CREW_ACP_BACKEND selects the agent runtime
+The transport SHALL use the scalar backend default resolved from `backends.default`
+for new crews launched without a `backend` argument, defaulting to built-in Kiro.
+Kiro is always enabled; Claude and Codex are enabled by their backend sections. The
+per-backend model settings applied to a crew SHALL come from that crew's backend.
 
-The transport SHALL use the scalar `backends.default` value as the default backend for
-new crews launched without a `backend` argument. Valid values are `"kiro"`,
-`"claude"` and `"codex"`; Kiro is always enabled, while Claude and Codex are enabled
-by their backend sections. When unset, the default is `"kiro"`. When a crew's
-backend is `"claude"`, the crew SHALL have `acp_backend: "claude"` written into its
-crew config during `_patch_crew_config`. When a crew's backend is `"codex"`, the
-crew SHALL have `acp_backend: "codex"` written into its crew config during
-`_patch_crew_config`. When a crew's backend is `"kiro"`, existing behaviour is
-unchanged. The per-backend model default and override applied to a crew SHALL be
-those of the crew's backend.
+#### Scenario: Scalar default selects runtime
+- **WHEN** `backends.default: claude` and `backends.claude` are configured and a crew is launched without `backend`
+- **THEN** the crew SHALL use Claude and record `acp_backend: "claude"`
+
+#### Scenario: Explicit enabled backend overrides default
+- **WHEN** Claude is the default, `backends.kiro` is configured, and `launch(..., backend="kiro")` is called
+- **THEN** the crew SHALL use Kiro and receive Kiro's backend model settings
+
+#### Scenario: Explicit absent backend is rejected
+- **WHEN** `launch(..., backend="codex")` is called and `backends.codex` is absent
+- **THEN** launch SHALL return an error naming Codex and the configured enabled backends without creating a crew
 
 #### Scenario: Default backend is kiro
-- **WHEN** `GA_CREW_ACP_BACKEND` is unset or set to `"kiro"` and a crew is launched without a `backend` argument
-- **THEN** `acp_backend` is not written to the crew config (KiroCrew defaults to kiro-cli)
+- **WHEN** `backends.default: kiro` and `backends.kiro` are configured and a crew is launched without a backend argument
+- **THEN** the crew SHALL use Kiro
 
 #### Scenario: Claude backend selected
-- **WHEN** `GA_CREW_ACP_BACKEND=claude`, claude is enabled, and a crew is launched without a `backend` argument
-- **THEN** `_patch_crew_config` writes `acp_backend: "claude"` into the crew's config before the gateway starts
+- **WHEN** `backends.default: claude` and `backends.claude` are configured and a crew is launched without a backend argument
+- **THEN** the crew SHALL use Claude
 
 #### Scenario: Codex backend selected
-- **WHEN** `GA_CREW_ACP_BACKEND=codex`, codex is enabled, and a crew is launched without a `backend` argument
-- **THEN** `_patch_crew_config` writes `acp_backend: "codex"` into the crew's config before the gateway starts
+- **WHEN** `backends.default: codex` and `backends.codex` are configured and a crew is launched without a backend argument
+- **THEN** the crew SHALL use Codex
 
 #### Scenario: Per-backend model settings follow the crew
-- **WHEN** `backends.kiro.model.override` and `backends.claude.model.override` are set to different models, the default is `claude`, and a crew is launched with `backend="kiro"`
-- **THEN** the crew's agents are patched to the kiro override, not the claude one
+- **WHEN** backend model settings differ and a crew is launched with an explicit backend
+- **THEN** the crew SHALL receive the settings for its selected backend
 
 #### Scenario: Invalid backend value is rejected at startup
-- **WHEN** `GA_CREW_ACP_BACKEND` is set to an unrecognised value (e.g. `"opencode"`)
-- **THEN** the transport logs an error at startup and exits rather than launching with an unknown backend
+- **WHEN** the scalar default names an unrecognised backend
+- **THEN** startup SHALL reject the configuration rather than launching with an unknown backend
 
 ### Requirement: Backend selection is recorded in the crew registry
 
@@ -178,20 +183,30 @@ A Codex-backend crew SHALL require codex to hold an active credential (`api-key`
 - **THEN** both crews run concurrently, each on its own backend, and `crews()` reports each crew's `acp_backend`
 
 ### Requirement: Requested backend must be enabled
+The backend requested from `launch` SHALL be present in the enabled backend set
+derived from backend configuration sections, with Kiro always included as the
+built-in backend. A missing optional backend section SHALL not be treated as enabled
+merely because the backend name is supported.
 
-The backend requested from `launch` SHALL be an enabled backend, as defined by the `agent-backends` capability. Otherwise `launch` SHALL return an error that names the requested backend and lists the enabled backends, and SHALL create no container, volume or registry entry.
+#### Scenario: Absent backend request fails
+- **WHEN** only `backends.claude` is configured and `launch(crew_id="a", backend="codex")` is called
+- **THEN** launch SHALL return an error and create no container, volume, or registry entry
+
+#### Scenario: Present backend request succeeds past enablement validation
+- **WHEN** `backends.claude` and `backends.kiro` are configured and `launch(crew_id="a", backend="kiro")` is called
+- **THEN** Kiro SHALL pass backend enablement validation and launch authentication/credential checks
 
 #### Scenario: Disabled backend requested
-- **WHEN** only kiro and claude are enabled and `launch(crew_id="a", backend="codex")` is called
-- **THEN** `launch` returns an error naming `codex` and listing `kiro, claude`, and no crew is created
+- **WHEN** only `backends.claude` is configured and `launch(crew_id="a", backend="codex")` is called
+- **THEN** launch SHALL return an error and create no crew
 
 #### Scenario: Unknown backend requested
 - **WHEN** `launch(crew_id="a", backend="gemini")` is called
-- **THEN** `launch` returns an error listing the enabled backends, and no crew is created
+- **THEN** launch SHALL return an error listing the enabled backends and create no crew
 
 #### Scenario: Kiro is always launchable
-- **WHEN** the backend list in configuration is `claude` only and `launch(crew_id="a", backend="kiro")` is called with a stored kiro credential
-- **THEN** the crew launches on kiro
+- **WHEN** `backends.kiro` is absent and `launch(crew_id="a", backend="kiro")` is called
+- **THEN** launch SHALL accept Kiro as the built-in enabled backend, subject to authentication
 
 ### Requirement: Launch authentication follows the crew's backend
 

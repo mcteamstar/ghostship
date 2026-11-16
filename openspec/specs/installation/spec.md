@@ -298,7 +298,6 @@ On Linux, the machine teardown SHALL remove only the dedicated `containers/` sto
 - **THEN** `uninstall.sh` detects and removes the `academy` machine, not a machine named `ghost-academy`
 
 ### Requirement: Base crew image built before comp images
-
 `install.sh` SHALL build `localhost/base:latest` from `crews/_base/Containerfile` before building any comp image. The `_base` directory is an internal build dependency and SHALL NOT appear as a comp in `crews/registry.json`.
 
 #### Scenario: Fresh install builds base then spec-ops
@@ -322,7 +321,6 @@ The `org.ghostship.version` OCI label on each comp image SHALL be `<VERSION>-<co
 - **THEN** its OCI label reads `"0.2.0-research"` and `crews()` reports that value
 
 ### Requirement: transport://comps is the canonical discovery resource
-
 The system SHALL expose `transport://comps` as the canonical MCP resource for listing available crew comps. The legacy `transport://compositions` URI SHALL remain an alias that returns identical content during the rollback window.
 
 #### Scenario: transport://comps lists available comps
@@ -992,7 +990,6 @@ describing all three states, and SHALL NOT include `network.require_api_key`.
 - **WHEN** an operator opens `config/ghostship.yaml.example`
 - **THEN** `network.api_key` is present with a comment explaining string, unset,
   and `false`, and `network.require_api_key` is absent
-
 
 ### Requirement: Skills upgrade flow is documented in operator-facing docs
 
