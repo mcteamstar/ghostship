@@ -6,6 +6,7 @@ Coverage:
 (a) Missing socket after max retries raises RuntimeError with a diagnostic message.
 (b) Linux socket path computed correctly from XDG_RUNTIME_DIR.
 (c) Dedicated-instance systemd unit content contains correct --root and --runroot paths.
+(d) Dedicated Linux containers.conf exists before systemd starts the service.
 """
 from __future__ import annotations
 
@@ -197,6 +198,29 @@ class TestWriteSystemdUnit:
 # ---------------------------------------------------------------------------
 
 class TestSetupPodmanLinux:
+    def test_containers_conf_exists_before_service_starts(self, tmp_path: Path) -> None:
+        config = _config(
+            dedicated=True,
+            xdg_runtime_dir=str(tmp_path / "run"),
+            home_dir=str(tmp_path / "home"),
+        )
+        Path(config.home_dir).mkdir(parents=True, exist_ok=True)
+        conf_path = (
+            Path(config.home_dir)
+            / ".config" / config.machine_name / "containers.conf"
+        )
+        observed_at_service_start: list[bool] = []
+
+        def mock_run(cmd, check=False, **kwargs):
+            if cmd[:3] == ["systemctl", "--user", "enable"] and "--now" in cmd:
+                observed_at_service_start.append(conf_path.is_file())
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch.object(Path, "is_socket", return_value=True):
+            setup_podman_linux(config, run=mock_run)
+
+        assert observed_at_service_start == [True]
+
     def test_dedicated_creates_unit_file(self, tmp_path: Path) -> None:
         config = _config(
             dedicated=True,

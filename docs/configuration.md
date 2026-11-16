@@ -190,14 +190,15 @@ The wizard:
 3. Writes `config/ghostship.yaml` (mode `600`) from an internal template, with the operator's choices uncommented and other keys commented at their defaults. If a `config/ghostship.yaml` already exists it prompts before overwriting. Then builds and starts the transport.
 4. After the transport is ready, offers `ghostship auth login <backend>` for each enabled backend that `ghostship auth status` reports as unconfigured (using the installed URL and key), then offers to run `ghostship setup` for harness registration.
 
-Multiple backends can be enabled at once — the transport holds config for all of them simultaneously, and the first entry is the runtime default:
+Multiple backends can be enabled at once. `backends.default` selects the
+implicit runtime backend. Kiro is always enabled; the presence of `claude` or
+`codex` sections enables those optional backends:
 
 ```yaml
 backends:
-  default:
-    - kiro
-    - claude
-    - codex
+  default: kiro
+  claude: {}
+  codex: {}
 ```
 
 ## Config file
@@ -254,7 +255,7 @@ default, is documented in **`config/ghostship.yaml.example`** — copy it to
 | `crew` | `max_crews`, `max_active`, `idle_timeout_secs`, `subagent_timeout_secs`, `orders_dir`, `git.author.name`/`git.author.email` | `GA_MAX_CREWS`, `GA_MAX_ACTIVE_CREWS`, … |
 | `crew.memory` | `min_free_mem_gb`, `start_mem_estimate_gb`, `spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb` | `GA_MIN_FREE_MEM_GB`, … |
 | `model` | `default` | `KC_MODEL_DEFAULT` |
-| `backends` | `default` (list); `<b>.model.override`/`<b>.model.default`; `kiro.identity_center.url`/`.region`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KC_MODEL_<B>_OVERRIDE`/`_DEFAULT`, `KIRO_IDENTITY_PROVIDER`, … |
+| `backends` | `default` (scalar); optional `claude`/`codex` sections enable those backends; `<b>.model.override`/`<b>.model.default`; `kiro.identity_center.url`/`.region`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KC_MODEL_<B>_OVERRIDE`/`_DEFAULT`, `KIRO_IDENTITY_PROVIDER`, … |
 | `portal` | `tls_mode`, `domain`, `session_ttl_secs`, `dashboard.default`, `dashboard.port_range.start`/`.size`, `rate_limit.*` | `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, … |
 | `machine` | `dedicated`, `name`, `resources.cpus`/`resources.memory_mb`/`resources.disk_gb` | `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, … |
 | `machine.images` | `podman_socket`, `kc_image`, `kc_base_image`, `agents_ref` | `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE`, _(pin; forces image rebuild on change)_ |

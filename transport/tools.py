@@ -819,9 +819,10 @@ def launch(
                    slot=False) to avoid this overhead. Use dashboard=True only
                    when you actually intend to watch the crew in a browser.
         backend: Agent runtime for this crew: "kiro", "claude" or "codex".
-                 None (default) uses the transport default (the first entry of
-                 backends.default). Must be an enabled backend — kiro always is;
-                 claude/codex only when listed in backends.default — otherwise
+                 None (default) uses the backend named by scalar
+                 backends.default. Must be an enabled backend — kiro always is;
+                 Claude/Codex are enabled when their backends.<name> sections
+                 are present — otherwise
                  launch returns backend_not_enabled with the enabled list. The
                  crew keeps this backend for its whole life, including restarts;
                  authentication uses that backend's stored credential.

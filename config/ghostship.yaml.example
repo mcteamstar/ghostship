@@ -160,27 +160,28 @@ backends:
       url: ""
       region: ""
 
-  claude:
-    # Per-backend model control for claude crews (see kiro.model above).
-    # Claude Code's native model IDs are hyphenated (claude-haiku-5-5); it
-    # also accepts the dotted kiro form (claude-haiku-5.5) the personas use.
-    model:
-      override: ""
-      default: "claude-haiku-5-5"
-
-    # Anthropic-compatible base URL (e.g. a local LiteLLM proxy).
-    # Credentials go via `ghostship auth login claude`, not here.
-    base_url: ""
-
-  codex:
-    # Per-backend model control for codex crews (see kiro.model above).
-    model:
-      override: ""
-      default: "gpt-6-luna"
-
-    # OpenAI-compatible base URL. Empty = https://api.openai.com/v1.
-    # Credentials go via `ghostship auth login codex`, not here.
-    base_url: ""
+  # Uncomment an optional backend section to enable it.
+  # claude:
+  #   # Per-backend model control for claude crews (see kiro.model above).
+  #   # Claude Code's native model IDs are hyphenated (claude-haiku-5-5); it
+  #   # also accepts the dotted kiro form (claude-haiku-5.5) the personas use.
+  #   model:
+  #     override: ""
+  #     default: "claude-haiku-5-5"
+  #
+  #   # Anthropic-compatible base URL (e.g. a local LiteLLM proxy).
+  #   # Credentials go via `ghostship auth login claude`, not here.
+  #   base_url: ""
+  #
+  # codex:
+  #   # Per-backend model control for codex crews (see kiro.model above).
+  #   model:
+  #     override: ""
+  #     default: "gpt-6-luna"
+  #
+  #   # OpenAI-compatible base URL. Empty = https://api.openai.com/v1.
+  #   # Credentials go via `ghostship auth login codex`, not here.
+  #   base_url: ""
 
 # ── Portal (Caddy reverse proxy) ──────────────────────────────────────────────
 
