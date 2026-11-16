@@ -346,12 +346,27 @@ class TestKiroAuthCycle(unittest.TestCase):
         )
         self.assertEqual(logout_resp.status_code, 200, logout_resp.text[:200])
 
+        status_resp = httpx.get(
+            f"{GHOSTSHIP_E2E_URL}/login/kiro", headers=headers, timeout=10.0
+        )
+        self.assertEqual(status_resp.status_code, 200, status_resp.text[:200])
+        identity_center = status_resp.json().get("identity_center") or {}
+        start_url = identity_center.get("start_url")
+        region = identity_center.get("region")
+        if start_url and region:
+            login_path = "/login/kiro/identity-center"
+            login_body = {"start_url": start_url, "region": region}
+        else:
+            login_path = "/login/kiro/builder-id"
+            login_body = None
+
         login_resp = httpx.post(
-            f"{GHOSTSHIP_E2E_URL}/login/kiro/builder-id",
+            f"{GHOSTSHIP_E2E_URL}{login_path}",
             headers=headers,
             # Starting the ephemeral Kiro auth container can exceed the normal
             # request timeout on a cold Podman machine.
             timeout=60.0,
+            json=login_body,
         )
         self.assertEqual(login_resp.status_code, 200, login_resp.text[:200])
         login_body = login_resp.json()
