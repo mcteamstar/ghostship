@@ -1303,6 +1303,50 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
         pass
 
 
+def _cleanup_crew_for_nuke(
+    podman: PodmanClient, container: str, volume: str, home_volume: str
+) -> list[dict[str, str]]:
+    """Remove crew resources for confirmed nuke and return failed removals.
+
+    Stopping is best-effort: force-removal below can still succeed after a stop
+    error. PodmanClient treats 404 removal responses as already removed, but
+    also recognize them here so callers and test doubles preserve that contract.
+    """
+    try:
+        podman.container_stop(container)
+    except Exception:
+        pass
+
+    failures: list[dict[str, str]] = []
+    removals = (
+        (container, "container_remove", podman.container_remove),
+        (volume, "volume_remove", podman.volume_remove),
+        (home_volume, "volume_remove", podman.volume_remove),
+    )
+    for resource, operation, remove in removals:
+        try:
+            remove(resource)
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            if getattr(response, "status_code", None) == 404:
+                continue
+            failures.append({
+                "resource": resource,
+                "operation": operation,
+                "error": str(exc) or type(exc).__name__,
+            })
+
+    # Keep secret cleanup best-effort just as it is for launch rollback.
+    try:
+        if container.startswith(CREW_CONTAINER_PREFIX):
+            crew_id = container[len(CREW_CONTAINER_PREFIX):]
+            podman.secret_remove(f"admiral-pubkey-{crew_id}")
+    except Exception:
+        pass
+
+    return failures
+
+
 def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
     """Reconcile tracked jobs with gateway state after a crew becomes available.
 

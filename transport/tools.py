@@ -187,6 +187,7 @@ try:
         CrewUnresponsiveError,
         _NUKED_DURING_RESTART,
         _cleanup_crew,
+        _cleanup_crew_for_nuke,
         _crew_api,
         _crew_api_with_recovery,
         _crew_url,
@@ -217,6 +218,7 @@ except ModuleNotFoundError:
         CrewUnresponsiveError,
         _NUKED_DURING_RESTART,
         _cleanup_crew,
+        _cleanup_crew_for_nuke,
         _crew_api,
         _crew_api_with_recovery,
         _crew_url,
@@ -1456,17 +1458,18 @@ def evac(
 
 @_registry_guard
 def nuke(crew_id: str, confirm: bool = False) -> dict:
-    """Step 6: destroy the crew and both volumes when work is done — tear down its container and both volumes completely.
+    """Permanently destroy a crew and both volumes.
 
-    Always evac first — nuke is irreversible. There is no undo.
+    Use only when you intend to discard the workspace. Nuke is irreversible;
+    evac first if you need to preserve data.
 
-    With confirm=True: stops and removes the container and both volumes.
-    Total teardown — no residue.
+    With confirm=True: attempts to stop and remove the container and both volumes.
+    Any resource-removal failures are returned with resource details.
     Without confirm: shows what would be nuked.
     Also: destroy, teardown, kill.
 
-    Idle crews stop and restart automatically — use nuke only when you want to
-    discard the workspace entirely.
+    Idle crews stop and restart automatically. Nuke is not a routine post-task
+    operation.
 
     Args:
         crew_id: The crew to nuke.
@@ -1530,7 +1533,7 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         except Exception as e:
             logger.warning("nuke: failed to cancel cron %s for crew %s: %s", job_id, crew_id, e)
 
-    _cleanup_crew(podman, container, vol, home_vol)
+    cleanup_failures = _cleanup_crew_for_nuke(podman, container, vol, home_vol)
 
     with registry:
         # Read the dashboard port and remove the registry entry atomically.
@@ -1613,6 +1616,22 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             _ensure_running_locks.pop(crew_id, None)
     except Exception:
         pass  # server may not be loaded yet (e.g. tests); skip silently
+
+    if cleanup_failures:
+        for failure in cleanup_failures:
+            logger.error(
+                "nuke: failed to remove %s via %s for crew %s: %s",
+                failure["resource"],
+                failure["operation"],
+                crew_id,
+                failure["error"],
+            )
+        return {
+            "crew_id": crew_id,
+            "status": "cleanup_failed",
+            "container": container,
+            "cleanup_failures": cleanup_failures,
+        }
 
     logger.info("Crew %s nuked", crew_id)
     return {"crew_id": crew_id, "status": "nuked", "container": container}
