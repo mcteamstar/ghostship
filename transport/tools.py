@@ -1458,17 +1458,18 @@ def evac(
 
 @_registry_guard
 def nuke(crew_id: str, confirm: bool = False) -> dict:
-    """Step 6: destroy the crew and both volumes when work is done — tear down its container and both volumes completely.
+    """Permanently destroy a crew and both volumes.
 
-    Always evac first — nuke is irreversible. There is no undo.
+    Use only when you intend to discard the workspace. Nuke is irreversible;
+    evac first if you need to preserve data.
 
-    With confirm=True: stops and removes the container and both volumes.
-    Total teardown — no residue.
+    With confirm=True: attempts to stop and remove the container and both volumes.
+    Any resource-removal failures are returned with resource details.
     Without confirm: shows what would be nuked.
     Also: destroy, teardown, kill.
 
-    Idle crews stop and restart automatically — use nuke only when you want to
-    discard the workspace entirely.
+    Idle crews stop and restart automatically. Nuke is not a routine post-task
+    operation.
 
     Args:
         crew_id: The crew to nuke.
