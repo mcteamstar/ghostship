@@ -20,5 +20,5 @@
 
 ## 4. Integration Verification
 
-- [ ] 4.1 Run the complete relevant unit and integration test suites and verify no backend-selection, image-build, or config migration regressions remain.
+- [x] 4.1 Run the complete relevant unit and integration test suites and verify no backend-selection, image-build, or config migration regressions remain.
 - [x] 4.2 Run a local install using the migrated config, verify the generated toolchain set and default backend through a live launch/crew inspection, and record the result.
