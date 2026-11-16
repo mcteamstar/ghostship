@@ -39,6 +39,18 @@ _NEVER_FIRE_AT: float = 9_999_999_999.0
 
 _registry_lock = threading.Lock()
 
+# Serializes container state transitions for each crew across the idle monitor
+# and CrewLauncher. This is deliberately separate from _registry_lock so slow
+# Podman calls do not block unrelated registry reads and writes.
+_crew_lifecycle_locks: dict[str, threading.Lock] = {}
+_crew_lifecycle_locks_lock = threading.Lock()
+
+
+def _get_crew_lifecycle_lock(crew_id: str) -> threading.Lock:
+    """Return the process-local lock shared by stop and wake paths for a crew."""
+    with _crew_lifecycle_locks_lock:
+        return _crew_lifecycle_locks.setdefault(crew_id, threading.Lock())
+
 
 def _write_secret_file(path: Path, data: bytes | str) -> None:
     """Atomically write *data* to *path* with mode 0600.
