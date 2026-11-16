@@ -156,6 +156,13 @@ class TestResolveConfig(unittest.TestCase):
         # crew defaults still present (merged over built-in defaults)
         self.assertEqual(merged["crew"]["max_active"], "3")
 
+    def test_backend_presence_merges_across_repo_and_xdg(self):
+        repo = self._write("repo.yaml", "backends:\n  claude: {}\n")
+        xdg = self._write("xdg.yaml", "backends:\n  codex: {}\n")
+        merged = yaml_config.resolve_config(repo, xdg, None)
+        env = yaml_config.flatten_to_env(merged)
+        self.assertEqual(env["GA_CREW_AGENT"], "kiro,claude,codex")
+
 
 class TestFlattenToEnv(unittest.TestCase):
     def test_all_defaults_map(self):
@@ -445,48 +452,70 @@ class TestDeprecatedYamlPaths(unittest.TestCase):
 
     def test_new_path_wins_when_both_present(self):
         env, warnings = self._resolve_env(
-            "backends:\n  agent: kiro\n  default: [kiro, claude]\n"
+            "backends:\n  agent: kiro\n  default: claude\n  claude: {}\n"
         )
-        self.assertEqual(env["GA_CREW_AGENT"], "kiro,claude")
+        self.assertEqual(env["GA_CREW_AGENT"], "claude,kiro")
         # No deprecation warning for backends.agent — the new path already set it.
         self.assertNotIn("backends.agent", warnings)
 
 
-class TestBackendsDefaultList(unittest.TestCase):
-    """TRN-257: backends.default accepts a list (canonical) or string (deprecated)."""
+class TestBackendsDefaultScalar(unittest.TestCase):
+    """Backend sections enable optional toolchains; default is a scalar selector."""
 
-    def test_list_joined_to_comma_string(self):
-        env = yaml_config.flatten_to_env({"backends": {"default": ["kiro", "claude"]}})
+    def test_list_form_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "must be a scalar"):
+            yaml_config.flatten_to_env({"backends": {"default": ["kiro", "claude"]}})
+
+    def test_empty_default_uses_kiro(self):
+        env = yaml_config.flatten_to_env({"backends": {"default": ""}})
+        self.assertEqual(env["GA_CREW_AGENT"], "kiro")
+
+    def test_optional_backend_section_enables_backend(self):
+        env = yaml_config.flatten_to_env(
+            {"backends": {"default": "claude", "claude": {}}}
+        )
+        self.assertEqual(env["GA_CREW_AGENT"], "claude,kiro")
+
+    def test_resolved_empty_optional_section_enables_backend(self):
+        path = tempfile.mktemp(suffix=".yaml")
+        Path(path).write_text("backends:\n  claude: {}\n", encoding="utf-8")
+        try:
+            env = yaml_config.flatten_to_env(yaml_config.resolve_config("", "", path))
+        finally:
+            os.unlink(path)
         self.assertEqual(env["GA_CREW_AGENT"], "kiro,claude")
 
-    def test_single_element_list(self):
-        env = yaml_config.flatten_to_env({"backends": {"default": ["kiro"]}})
+    def test_resolved_absent_optional_section_does_not_enable_backend(self):
+        path = tempfile.mktemp(suffix=".yaml")
+        Path(path).write_text("backends:\n  default: kiro\n", encoding="utf-8")
+        try:
+            env = yaml_config.flatten_to_env(yaml_config.resolve_config("", "", path))
+        finally:
+            os.unlink(path)
         self.assertEqual(env["GA_CREW_AGENT"], "kiro")
 
-    def test_string_form_warns_but_resolves(self):
-        import contextlib
-        import io
+    def test_default_must_name_enabled_optional_backend(self):
+        path = tempfile.mktemp(suffix=".yaml")
+        Path(path).write_text("backends:\n  default: claude\n", encoding="utf-8")
+        try:
+            with self.assertRaisesRegex(ValueError, "not enabled"):
+                yaml_config.flatten_to_env(yaml_config.resolve_config("", "", path))
+        finally:
+            os.unlink(path)
 
-        buf = io.StringIO()
-        with contextlib.redirect_stderr(buf):
-            env = yaml_config.flatten_to_env(
-                {"backends": {"default": "kiro,codex"}}
-            )
-        self.assertEqual(env["GA_CREW_AGENT"], "kiro,codex")
-        self.assertIn("backends.default", buf.getvalue())
-        self.assertIn("deprecated", buf.getvalue())
+    def test_optional_backend_must_be_mapping(self):
+        path = tempfile.mktemp(suffix=".yaml")
+        Path(path).write_text("backends:\n  claude: true\n", encoding="utf-8")
+        try:
+            with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                yaml_config.resolve_config("", "", path)
+        finally:
+            os.unlink(path)
 
-    def test_default_install_uses_list_no_warning(self):
-        import contextlib
-        import io
-
-        buf = io.StringIO()
-        with contextlib.redirect_stderr(buf):
-            merged = yaml_config.resolve_config("", "", None)
-            env = yaml_config.flatten_to_env(merged)
+    def test_default_install_uses_kiro(self):
+        merged = yaml_config.resolve_config("", "", None)
+        env = yaml_config.flatten_to_env(merged)
         self.assertEqual(env["GA_CREW_AGENT"], "kiro")
-        # The built-in default is a list, so no string-deprecation warning fires.
-        self.assertNotIn("backends.default as a string", buf.getvalue())
 
 
 class TestPerBackendModelEnvVars(unittest.TestCase):
@@ -504,7 +533,12 @@ class TestPerBackendModelEnvVars(unittest.TestCase):
             "KC_MODEL_CODEX_DEFAULT",
         ):
             self.assertIn(var, env)
-            self.assertEqual(env[var], "")
+        self.assertEqual(env["KC_MODEL_KIRO_OVERRIDE"], "")
+        self.assertEqual(env["KC_MODEL_KIRO_DEFAULT"], "claude-haiku-5.5")
+        self.assertEqual(env["KC_MODEL_CLAUDE_OVERRIDE"], "")
+        self.assertEqual(env["KC_MODEL_CLAUDE_DEFAULT"], "claude-haiku-5-5")
+        self.assertEqual(env["KC_MODEL_CODEX_OVERRIDE"], "")
+        self.assertEqual(env["KC_MODEL_CODEX_DEFAULT"], "gpt-6-luna")
 
     def test_kiro_override_resolves(self):
         env = yaml_config.flatten_to_env(

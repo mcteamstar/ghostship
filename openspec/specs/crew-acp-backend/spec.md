@@ -8,7 +8,16 @@ Defines how the ACP agent backend (kiro-cli vs Claude Code) is selected per crew
 
 ### Requirement: GA_CREW_ACP_BACKEND selects the agent runtime
 
-The transport SHALL read `GA_CREW_ACP_BACKEND` at startup and use it as the default backend for new crews launched without a `backend` argument. Valid values are `"kiro"`, `"claude"` and `"codex"`; the value SHALL also be an enabled backend, as defined by the `agent-backends` capability. When unset, the default is `"kiro"`. When a crew's backend is `"claude"`, the crew SHALL have `acp_backend: "claude"` written into its crew config during `_patch_crew_config`. When a crew's backend is `"codex"`, the crew SHALL have `acp_backend: "codex"` written into its crew config during `_patch_crew_config`. When a crew's backend is `"kiro"`, existing behaviour is unchanged. The per-backend model override and default applied to a crew SHALL be those of the crew's backend.
+The transport SHALL use the scalar `backends.default` value as the default backend for
+new crews launched without a `backend` argument. Valid values are `"kiro"`,
+`"claude"` and `"codex"`; Kiro is always enabled, while Claude and Codex are enabled
+by their backend sections. When unset, the default is `"kiro"`. When a crew's
+backend is `"claude"`, the crew SHALL have `acp_backend: "claude"` written into its
+crew config during `_patch_crew_config`. When a crew's backend is `"codex"`, the
+crew SHALL have `acp_backend: "codex"` written into its crew config during
+`_patch_crew_config`. When a crew's backend is `"kiro"`, existing behaviour is
+unchanged. The per-backend model default and override applied to a crew SHALL be
+those of the crew's backend.
 
 #### Scenario: Default backend is kiro
 - **WHEN** `GA_CREW_ACP_BACKEND` is unset or set to `"kiro"` and a crew is launched without a `backend` argument

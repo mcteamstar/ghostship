@@ -7,14 +7,17 @@ Defines the set of agent backends a Ghost Academy transport enables, the default
 
 ### Requirement: GA_AGENT_BACKENDS selects the enabled agent backends
 
-The transport SHALL read `GA_AGENT_BACKENDS` at startup as a comma-separated list of backend names. Valid names are `kiro`, `claude` and `codex`. Names SHALL be matched case-insensitively with surrounding whitespace ignored. Empty entries and duplicates SHALL be ignored. The enabled set SHALL always contain `kiro`, plus each valid name listed.
+The transport SHALL read the derived backend set at startup. Valid names are `kiro`,
+`claude` and `codex`. Kiro SHALL always be enabled; Claude and Codex SHALL be enabled
+when their backend configuration sections are present. Names SHALL be normalized
+case-insensitively and duplicates SHALL be ignored.
 
 #### Scenario: Default set is kiro only
 - **WHEN** `GA_AGENT_BACKENDS` is unset or empty
 - **THEN** the enabled set is `{kiro}`, and no Claude or Codex login or default backend is accepted
 
 #### Scenario: Multiple backends enabled
-- **WHEN** `GA_AGENT_BACKENDS=claude, codex` is set
+- **WHEN** the resolved configuration contains `backends.claude` and `backends.codex`
 - **THEN** the enabled set is `{kiro, claude, codex}`
 
 #### Scenario: Empty entries, duplicates and case are normalised

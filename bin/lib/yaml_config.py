@@ -117,11 +117,11 @@ DEFAULTS: dict[str, str] = {
     "OPENAI_BASE_URL": "",
     # ── per-backend model control (TRN-257) ──
     "KC_MODEL_KIRO_OVERRIDE": "",
-    "KC_MODEL_KIRO_DEFAULT": "",
+    "KC_MODEL_KIRO_DEFAULT": "claude-haiku-5.5",
     "KC_MODEL_CLAUDE_OVERRIDE": "",
-    "KC_MODEL_CLAUDE_DEFAULT": "",
+    "KC_MODEL_CLAUDE_DEFAULT": "claude-haiku-5-5",
     "KC_MODEL_CODEX_OVERRIDE": "",
-    "KC_MODEL_CODEX_DEFAULT": "",
+    "KC_MODEL_CODEX_DEFAULT": "gpt-6-luna",
     # ── user-defined orders ──
     "GA_ORDERS_DIR": "",
     # ── images (advanced) ──
@@ -447,16 +447,13 @@ def _defaults_tree() -> dict[str, Any]:
         if env not in DEFAULTS:
             continue
         value: Any = DEFAULTS[env]
-        # backends.default is canonically a YAML list; the DEFAULTS table stores
-        # the comma-string form "kiro" for GA_CREW_AGENT, so expand it to a list
-        # here. This keeps flatten_to_env on the list path (no spurious
-        # string-deprecation warning on an unconfigured install).
-        if path == ("backends", "default"):
-            value = [p for p in str(value).split(",") if p]
         cursor = tree
         for segment in path[:-1]:
             cursor = cursor.setdefault(segment, {})
         cursor[path[-1]] = value
+    # Optional backend defaults are available for inheritance but do not opt a
+    # backend into the image until its section appears in an operator layer.
+    tree["__ghostship_meta"] = {"configured_optional_backends": []}
     return tree
 
 
@@ -473,17 +470,38 @@ def resolve_config(
     Without it: built-in defaults -> repo -> XDG (D2).
     """
     merged = _defaults_tree()
+    configured_optional: set[str] = set()
+
+    def apply_layer(layer: dict[str, Any]) -> None:
+        nonlocal merged
+        _rewrite_deprecated_yaml_paths(layer)
+        backends = layer.get("backends")
+        if isinstance(backends, dict):
+            for name in ("claude", "codex"):
+                if name in backends:
+                    configured_optional.add(name)
+                    # A bare ``claude:`` is treated as an empty mapping for
+                    # enablement and inherits the built-in backend defaults.
+                    if backends[name] is None:
+                        backends[name] = {}
+                    elif not isinstance(backends[name], dict):
+                        raise ValueError(
+                            f"backends.{name} must be a mapping (use {{}} to enable "
+                            "the backend with built-in defaults)"
+                        )
+        merged = deep_merge(merged, layer)
+
     if explicit_path:
         layer = load_yaml(explicit_path)
-        _rewrite_deprecated_yaml_paths(layer)
-        merged = deep_merge(merged, layer)
+        apply_layer(layer)
     else:
         repo_layer = load_yaml(repo_path)
-        _rewrite_deprecated_yaml_paths(repo_layer)
-        merged = deep_merge(merged, repo_layer)
+        apply_layer(repo_layer)
         xdg_layer = load_yaml(xdg_path)
-        _rewrite_deprecated_yaml_paths(xdg_layer)
-        merged = deep_merge(merged, xdg_layer)
+        apply_layer(xdg_layer)
+    merged.setdefault("__ghostship_meta", {})["configured_optional_backends"] = sorted(
+        configured_optional
+    )
     return merged
 
 
@@ -518,7 +536,7 @@ def flatten_to_env(merged: dict[str, Any]) -> dict[str, str]:
         if value is _MISSING:
             continue
         if path == ("backends", "default"):
-            env[var] = _normalise_backends_default(value)
+            env[var] = _normalise_backends_default(value, merged)
             continue
         if path == _API_KEY_PATH:
             continue  # three-state; handled by _api_key_env below
@@ -591,23 +609,33 @@ def is_loopback(host: str) -> bool:
         return False
 
 
-def _normalise_backends_default(value: Any) -> str:
-    """Normalise ``backends.default`` to the comma-string ``GA_CREW_AGENT`` wants.
-
-    The canonical form is a YAML list (``[kiro, claude]`` -> ``"kiro,claude"``).
-    A bare string is the deprecated TRN-253 form (``backends.agent: "kiro"``);
-    it is accepted as-is with a deprecation warning. Any other scalar is coerced
-    through ``_normalise_scalar`` for robustness.
-    """
+def _normalise_backends_default(value: Any, merged: dict[str, Any] | None = None) -> str:
+    """Derive the internal backend list from scalar default and backend sections."""
     if isinstance(value, list):
-        return ",".join(_normalise_scalar(item) for item in value)
-    if isinstance(value, str):
-        sys.stderr.write(
-            "warning: backends.default as a string is deprecated; "
-            "use a YAML list instead (e.g. backends.default: [kiro, claude]).\n"
+        raise ValueError(
+            "backends.default must be a scalar backend name; migrate the old list "
+            "to a scalar default and add backends.<name>: {} sections to enable "
+            "optional toolchains"
         )
-        return value
-    return _normalise_scalar(value)
+    default = _normalise_scalar(value).strip().lower() or "kiro"
+    if default not in {"kiro", "claude", "codex"}:
+        raise ValueError(
+            f"backends.default names unknown backend {default!r}; valid names are "
+            "kiro, claude, codex"
+        )
+
+    meta = (merged or {}).get("__ghostship_meta", {})
+    configured = meta.get("configured_optional_backends") if isinstance(meta, dict) else None
+    if configured is None:
+        backends = (merged or {}).get("backends", {})
+        configured = [name for name in ("claude", "codex") if isinstance(backends, dict) and name in backends]
+    enabled = {str(name).strip().lower() for name in configured}
+    enabled.add("kiro")
+    if default not in enabled:
+        raise ValueError(
+            f"backends.default={default!r} is not enabled; add backends.{default}: {{}}"
+        )
+    return ",".join([default] + sorted(enabled - {default}))
 
 
 _MISSING = object()
@@ -643,6 +671,8 @@ def collect_unknown_paths(
             return
         for key, value in node.items():
             here = path + (key,)
+            if here == ("__ghostship_meta",):
+                continue
             if here in _KEY_MAP or here == _REQUIRE_API_KEY_PATH:
                 continue  # mapped leaf (or deprecated-but-accepted)
             if here in known_prefixes:

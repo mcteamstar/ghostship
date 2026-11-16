@@ -35,7 +35,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
 | `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
 | `GA_TASK_TIMESTAMP_TTL_SECS` | `3600` | TTL (seconds) for completed-task timestamp entries kept in process memory. Entries older than this are evicted; no floor — reduce on high-throughput transports to limit memory growth. |
-| `GA_CREW_AGENT` | `kiro` | Which agent backend to build and run. Comma-separated list for multi-toolchain builds; first entry is the runtime default for crews launched without a `backend` argument. Any enabled backend can be chosen per crew with `launch(crew_id, backend="claude")`; the crew keeps it for its whole life, including restarts. Values: `kiro` (default, KiroCrew-native kiro-cli), `claude` (Claude Code ACP backend), `codex` (Codex ACP backend). Kiro is always in the enabled set (appended if not listed). `install.sh` builds one toolchain per listed backend and passes the full list as the container environment. Login routes (`POST /login/{backend}/{method}`) only accept enabled backends. Re-run `ghostship install` after changing it. |
+| `GA_CREW_AGENT` | `kiro` | Derived internal backend set. YAML uses scalar `backends.default` for the implicit runtime backend; Kiro is always enabled, while Claude and Codex are enabled by the presence of `backends.claude` / `backends.codex`. Any enabled backend can be chosen per crew with `launch(crew_id, backend="claude")`; the crew keeps it for its whole life, including restarts. Re-run `ghostship install` after changing backend sections. |
 | Backend credentials | _(not config)_ | Backend credentials are managed via `ghostship auth login|logout|status` and stored in `DATA_DIR/credentials/<backend>/<profile>.json` (default profile: `default`). Multiple named profiles per backend are supported — see [auth.md](auth.md). `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, and `KIRO_API_KEY` are not config file variables — the installer ignores them. See [auth.md](auth.md). |
 | `ANTHROPIC_BASE_URL` | _(unset)_ | Claude backend. Optional Anthropic-compatible endpoint URL injected as `ANTHROPIC_BASE_URL` into crew containers when `GA_CREW_AGENT=claude`. When set, allows operators to redirect Claude-backend crew traffic to a local LLM proxy (litellm, OpenRouter, LM Studio, etc.) without image changes. Has no effect when `GA_CREW_AGENT` does not include `claude`. |
 | `OPENAI_BASE_URL` | _(unset)_ | Codex backend. Optional OpenAI-compatible endpoint URL injected as `OPENAI_BASE_URL` into crew containers when `GA_CREW_AGENT=codex`. When set, redirects Codex-backend crew traffic to an OpenAI-compatible endpoint without image changes, and the `launch()` network WARNING names this endpoint instead of `api.openai.com`. Has no effect when `GA_CREW_AGENT` does not include `codex`. |
@@ -126,10 +126,11 @@ so clearing a previous fallback restores inheritance. Reapplying configuration
 also removes the obsolete generated `agent.default_model` field. Levels 1 and 3
 are applied by the gateway at dispatch time.
 
-All shipped model defaults are `""` (unset), and the six shipped personas omit
-their `model` field so they inherit the configured backend/global fallback or
-harness-selected default. Operator backend overrides also apply to unpinned
-personas. `backends.default` chooses the
+The shipped backend defaults are `claude-haiku-5.5` for Kiro, `claude-haiku-5-5`
+for Claude, and `gpt-6-luna` for Codex. The six shipped personas omit their
+`model` field so they inherit the selected backend's configured fallback rather
+than falling through to expensive automatic routing. Operator backend overrides
+also apply to unpinned personas. `backends.default` chooses the
 **agent harness**, whereas `backends.<b>.model.default` chooses that harness’s
 configured **model fallback**. A model default does not override a persona pin;
 use `backends.<b>.model.override` for an operator-level model lock.
@@ -166,8 +167,12 @@ selection until a new session or process starts after configuration is reapplied
   model:
     default: "gemma"            # every other backend falls back to this
   ```
-- **One fallback everywhere**: set only `model.default`.
-- **KiroCrew default everywhere**: leave all of them unset.
+- **Opt into an additional backend with built-in defaults**:
+  ```yaml
+  backends:
+    claude: {}
+    codex: {}
+  ```
 
 
 ## Interactive setup

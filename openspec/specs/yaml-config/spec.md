@@ -48,7 +48,7 @@ model:
   default              # global fallback only — no global override
 
 backends:
-  default: [list]      # first entry is runtime default
+  default: scalar       # implicit runtime backend; defaults to kiro
   kiro:
     model:
       override: ""     # forces all kiro agents to this model
@@ -83,9 +83,12 @@ machine:
     podman_socket, kc_image, kc_base_image
 ```
 
-`backends.default` SHALL accept either a YAML list (canonical) or a comma-separated
-string (deprecated, accepted for backwards compatibility). `yaml_config.py` normalises
-either form to a comma-separated string for `GA_CREW_AGENT`.
+`backends.default` SHALL be a scalar backend name, defaulting to `kiro`. Kiro is always
+enabled. Claude and Codex SHALL be enabled when their `backends.<name>` sections are
+present, including empty mappings such as `backends.claude: {}`. The installer derives
+the internal comma-separated `GA_CREW_AGENT` value from this scalar and the present
+optional backend sections. The legacy list form SHALL be rejected with migration
+guidance.
 
 #### Scenario: Full config structure accepted
 - **WHEN** `config/ghostship.yaml` contains all sections with valid values
@@ -95,13 +98,17 @@ either form to a comma-separated string for `GA_CREW_AGENT`.
 - **WHEN** `config/ghostship.yaml` contains an unrecognised key
 - **THEN** install.sh SHALL warn the operator and continue (not abort)
 
-#### Scenario: backends.default as list
-- **WHEN** `config/ghostship.yaml` sets `backends.default: [kiro, claude]`
-- **THEN** `GA_CREW_AGENT` SHALL be set to `kiro,claude`
+#### Scenario: backends.default as scalar
+- **WHEN** `config/ghostship.yaml` sets `backends.default: claude` and contains `backends.claude: {}`
+- **THEN** `GA_CREW_AGENT` SHALL be derived as `claude,kiro`
 
-#### Scenario: backends.default as string (backwards compat)
-- **WHEN** `config/ghostship.yaml` sets `backends.default: "kiro,claude"`
-- **THEN** `GA_CREW_AGENT` SHALL be set to `kiro,claude` and a deprecation warning is printed
+#### Scenario: Missing default uses Kiro
+- **WHEN** `config/ghostship.yaml` omits `backends.default`
+- **THEN** Kiro SHALL be the implicit runtime backend
+
+#### Scenario: Legacy list is rejected
+- **WHEN** `config/ghostship.yaml` sets `backends.default: [kiro, claude]`
+- **THEN** install.sh SHALL fail with migration guidance
 
 ### Requirement: Per-backend model control
 Each backend SHALL support two model knobs under `backends.<b>.model`:
@@ -350,12 +357,28 @@ A nonempty backend model default SHALL be consumed by the crew runtime when no h
 - **WHEN** a crew is launched on a backend different from the transport’s default backend
 - **THEN** the model fallback comes from that crew’s backend settings
 
-### Requirement: Empty shipped model defaults preserve harness selection
-Shipped backend model defaults and the global model default SHALL remain empty strings. When no model selection applies, Ghostship SHALL leave model selection to the harness without inserting a concrete model. An unavailable selected pin SHALL retain the upstream harness’s rejection/fallback behavior; an empty default SHALL NOT imply task-sensitive automatic routing.
+### Requirement: Backend model defaults avoid automatic routing
+Shipped backend profiles SHALL provide concrete model defaults: Haiku 5.5 for Kiro
+and Claude using their backend-specific identifiers, and Luna 6 for Codex. When an
+operator explicitly clears a backend default, Ghostship SHALL preserve the harness
+`auto` fallback. An unavailable selected pin SHALL retain the upstream
+ harness’s rejection/fallback behavior.
 
-#### Scenario: Out-of-box model delegation
-- **WHEN** all model settings and persona selections are unset
-- **THEN** Ghostship supplies no concrete model pin and the harness chooses the model
+#### Scenario: Kiro backend default
+- **WHEN** a Kiro crew has no higher-precedence model selection
+- **THEN** Ghostship uses `claude-haiku-5.5` rather than automatic routing
+
+#### Scenario: Claude backend default
+- **WHEN** a Claude crew has no higher-precedence model selection
+- **THEN** Ghostship uses `claude-haiku-5-5` rather than automatic routing
+
+#### Scenario: Codex backend default
+- **WHEN** a Codex crew has no higher-precedence model selection
+- **THEN** Ghostship uses `gpt-6-luna` rather than automatic routing
+
+#### Scenario: Explicitly cleared default delegates to harness
+- **WHEN** an operator explicitly clears the selected backend's model default and no higher-precedence model applies
+- **THEN** Ghostship supplies `auto` and the harness chooses the model
 
 #### Scenario: Rejected pin is distinct from unset selection
 - **WHEN** the crew runtime rejects an unavailable selected persona model
