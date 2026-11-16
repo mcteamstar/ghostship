@@ -181,7 +181,7 @@ class TestBackendRejected(_LaunchHarness):
     def test_disabled_backend(self):
         self._assert_rejected("codex")
         result = self.launch(backend="codex")
-        self.assertIn("backends.default in ghostship.yaml", result["instructions"])
+        self.assertIn("backends.codex section in ghostship.yaml", result["instructions"])
 
     def test_unknown_backend(self):
         self._assert_rejected("gemini")
