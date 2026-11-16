@@ -187,6 +187,7 @@ try:
         CrewUnresponsiveError,
         _NUKED_DURING_RESTART,
         _cleanup_crew,
+        _cleanup_crew_for_nuke,
         _crew_api,
         _crew_api_with_recovery,
         _crew_url,
@@ -217,6 +218,7 @@ except ModuleNotFoundError:
         CrewUnresponsiveError,
         _NUKED_DURING_RESTART,
         _cleanup_crew,
+        _cleanup_crew_for_nuke,
         _crew_api,
         _crew_api_with_recovery,
         _crew_url,
@@ -1530,7 +1532,7 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
         except Exception as e:
             logger.warning("nuke: failed to cancel cron %s for crew %s: %s", job_id, crew_id, e)
 
-    _cleanup_crew(podman, container, vol, home_vol)
+    cleanup_failures = _cleanup_crew_for_nuke(podman, container, vol, home_vol)
 
     with registry:
         # Read the dashboard port and remove the registry entry atomically.
@@ -1613,6 +1615,22 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
             _ensure_running_locks.pop(crew_id, None)
     except Exception:
         pass  # server may not be loaded yet (e.g. tests); skip silently
+
+    if cleanup_failures:
+        for failure in cleanup_failures:
+            logger.error(
+                "nuke: failed to remove %s via %s for crew %s: %s",
+                failure["resource"],
+                failure["operation"],
+                crew_id,
+                failure["error"],
+            )
+        return {
+            "crew_id": crew_id,
+            "status": "cleanup_failed",
+            "container": container,
+            "cleanup_failures": cleanup_failures,
+        }
 
     logger.info("Crew %s nuked", crew_id)
     return {"crew_id": crew_id, "status": "nuked", "container": container}

@@ -147,6 +147,86 @@ class TestCleanupCrew(unittest.TestCase):
         self.assertFalse(self.podman.was_called("secret_remove"))
 
 
+class TestCleanupCrewForNuke(unittest.TestCase):
+    """Confirmed nuke reports failed removals while attempting every resource."""
+
+    def setUp(self):
+        from transport.lifecycle import _cleanup_crew_for_nuke
+
+        self._cleanup = _cleanup_crew_for_nuke
+        self.podman = FakePodmanClient()
+        self.podman.add_container("gs-abc", running=True)
+        self.podman.volume_create("gs-vol-abc")
+        self.podman.volume_create("gs-home-abc")
+
+    def test_absent_resources_are_already_removed(self):
+        podman = FakePodmanClient()
+        failures = self._cleanup(podman, "gs-missing", "gs-vol-missing", "gs-home-missing")
+        self.assertEqual(failures, [])
+
+    def test_removal_404s_are_already_removed(self):
+        def _not_found():
+            error = RuntimeError("not found")
+            error.response = SimpleNamespace(status_code=404)
+            return error
+
+        self.podman.container_remove = MagicMock(side_effect=_not_found())
+        self.podman.volume_remove = MagicMock(side_effect=[_not_found(), _not_found()])
+        failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+        self.assertEqual(failures, [])
+        self.podman.container_remove.assert_called_once_with("gs-abc")
+        self.assertEqual(self.podman.volume_remove.call_count, 2)
+
+    def test_container_remove_failure_does_not_skip_volumes(self):
+        def _fail(name):
+            self.podman.calls.append(("container_remove", name))
+            raise RuntimeError("container removal failed")
+
+        self.podman.container_remove = _fail
+        failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+        self.assertEqual(failures, [{
+            "resource": "gs-abc",
+            "operation": "container_remove",
+            "error": "container removal failed",
+        }])
+        self.assertEqual(len(self.podman.calls_for("volume_remove")), 2)
+
+    def test_each_volume_remove_failure_is_reported_and_other_volume_attempted(self):
+        for failed_volume in ("gs-vol-abc", "gs-home-abc"):
+            with self.subTest(failed_volume=failed_volume):
+                self.podman = FakePodmanClient()
+                self.podman.add_container("gs-abc", running=True)
+                self.podman.volume_create("gs-vol-abc")
+                self.podman.volume_create("gs-home-abc")
+                real_remove = self.podman.volume_remove
+                attempted = []
+
+                def _remove(name, *, failed=failed_volume):
+                    attempted.append(name)
+                    if name == failed:
+                        raise RuntimeError(f"{name} removal failed")
+                    real_remove(name)
+
+                self.podman.volume_remove = _remove
+                failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+                self.assertEqual([failure["resource"] for failure in failures], [failed_volume])
+                self.assertEqual(attempted, ["gs-vol-abc", "gs-home-abc"])
+
+    def test_stop_failure_followed_by_successful_force_removal_is_complete(self):
+        def _fail_stop(name):
+            self.podman.calls.append(("container_stop", name))
+            raise RuntimeError("stop failed")
+
+        self.podman.container_stop = _fail_stop
+        failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+        self.assertEqual(failures, [])
+        self.assertFalse(self.podman.container_exists("gs-abc"))
+
+
 # ── ensure_running patch harness ──────────────────────────────────────────────
 
 class _EnsureRunningBase(unittest.TestCase):
