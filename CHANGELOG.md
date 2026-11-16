@@ -2,6 +2,12 @@
 
 ## v0.12.2
 
+### Truthful nuke cleanup (TRN-330)
+
+- Nuke now reports container or volume removal failures instead of claiming a
+  complete teardown, and its docs clarify that it permanently destroys a crew's
+  workspace.
+
 ### Fix dedicated Linux Podman startup
 
 - Create the Ghostship-scoped `containers.conf` before starting the dedicated
