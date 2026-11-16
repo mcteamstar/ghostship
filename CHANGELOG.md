@@ -40,6 +40,17 @@
   recorded comp, not the spec-ops default.
 - The kiro-cli database seed closes its SQLite connection explicitly.
 
+### Backend configuration and model defaults (TRN-327)
+
+- `backends.default` is now a scalar selecting the implicit backend and defaults
+  to `kiro`. Kiro remains built in; Claude and Codex toolchains are included when
+  their respective `backends.claude` / `backends.codex` sections are present.
+  Empty mappings (`claude: {}` or `codex: {}`) enable a backend with its defaults.
+- The old list form for `backends.default` is rejected with migration guidance.
+- Backend model defaults are Haiku 5.5 for Kiro (`claude-haiku-5.5`) and Claude
+  (`claude-haiku-5-5`), and GPT-6 Luna for Codex (`gpt-6-luna`). Shipped agent
+  personas remain unpinned and inherit the selected backend's default.
+
 ## v0.12.1
 
 ### Wake cleanup and in-flight memory admission (TRN-320)
