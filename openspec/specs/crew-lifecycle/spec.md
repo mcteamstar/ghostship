@@ -7,7 +7,7 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ## Requirements
 
 ### Requirement: Crew creation via launch
-The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew-type registry based on the optional `composition` parameter (defaulting to `"kirocrew"`). At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
+The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew registry using the canonical `comp` argument. The legacy `composition` argument remains an accepted alias during the rollback window. If both arguments are present, `comp` SHALL be authoritative; when the values differ, the system SHALL use `comp` and log a warning naming both values. If only `composition` is present, its value SHALL be used. If neither is present, the existing `"spec-ops"` default SHALL be applied. At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
 
 `launch` gains a `dashboard` parameter (default `null`). When `dashboard=true`, `launch` allocates a port from the configured range, registers it with Portal, stores `dashboard_port` in the registry, and returns `dashboard_url` in the response. When `dashboard=false` or when `dashboard=null` (default) and `GA_DASHBOARD_DEFAULT` is unset or false, no port is allocated and `dashboard_url` is `null`.
 
@@ -17,13 +17,29 @@ When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call behaves as if `dashboard
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
 - **THEN** a new crew container and volumes are created and the crew is registered as "running"
 
-#### Scenario: Launch with composition parameter
-- **WHEN** `launch` is called with a valid `crew_id` and `composition="worker"`
+#### Scenario: Launch with canonical comp parameter
+- **WHEN** `launch` is called with a valid `crew_id` and canonical `comp="worker"`
 - **THEN** the system resolves the `"worker"` crew type's image and manifest from the registry and uses them instead of the hardcoded defaults
 
-#### Scenario: Launch with unknown composition
-- **WHEN** `launch` is called with a `composition` value not found in the loaded crew-type registry
+#### Scenario: Launch with unknown comp
+- **WHEN** `launch` is called with a legacy `composition` value not found in the loaded crew registry
 - **THEN** the system returns an error listing the available crew types and creates no container
+
+#### Scenario: Launch with legacy composition alias
+- **WHEN** `launch` is called with a valid `crew_id` and `composition="worker"` but no `comp`
+- **THEN** the system resolves the `"worker"` crew entry and uses its image and manifest
+
+#### Scenario: Matching comp and composition values
+- **WHEN** `launch` is called with `comp="worker"` and `composition="worker"`
+- **THEN** the system resolves the `"worker"` crew entry and uses its image and manifest
+
+#### Scenario: Conflicting comp and composition values
+- **WHEN** `launch` is called with `comp="worker"` and `composition="spec-ops"`
+- **THEN** the system uses `comp` (`"worker"`), resolves that crew entry, and logs a warning naming both values
+
+#### Scenario: Neither comp argument is provided
+- **WHEN** `launch` is called without `comp` or `composition`
+- **THEN** the crew is created using the default `"spec-ops"` registry entry
 
 #### Scenario: Invalid crew_id
 - **WHEN** `launch` is called with a `crew_id` that does not match lowercase alphanumeric/hyphen, 1-50 characters
@@ -58,15 +74,26 @@ When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call behaves as if `dashboard
 - **THEN** no dashboard is allocated and `dashboard_url` is null — existing default behaviour preserved
 
 ### Requirement: Crew teardown via nuke
-The system SHALL require explicit confirmation before tearing down a crew, and SHALL remove the crew's container and both volumes completely once confirmed. When `GA_DASHBOARD_PORT_ENABLED=true` and the crew has a `dashboard_port` assigned, `nuke` SHALL stop the listener and release the port before removing the registry entry. The system SHALL NOT frame `nuke` as routine cleanup or a normal post-task step; its documentation and tooling aliases SHALL communicate that it is a destructive workspace teardown intended only when the operator wants to permanently discard the workspace.
+The system SHALL require explicit confirmation before tearing down a crew. Once confirmed, it SHALL attempt to remove the crew's container and both volumes and remove the crew from the registry after all cleanup attempts. When `GA_DASHBOARD_PORT_ENABLED=true` and the crew has a `dashboard_port` assigned, `nuke` SHALL stop the listener and release the port before removing the registry entry. The system SHALL NOT frame `nuke` as routine cleanup or a normal post-task step; its documentation and tooling aliases SHALL communicate that it is a destructive workspace teardown intended only when the operator wants to permanently discard the workspace. If any Podman resource cannot be removed, `nuke` SHALL return a cleanup-failure status and identify each resource whose cleanup failed; it SHALL NOT report an unqualified successful teardown.
 
 #### Scenario: Nuke without confirmation
 - **WHEN** `nuke` is called for an existing `crew_id` without `confirm=True`
 - **THEN** the system returns the container name, both volume names, and the count of currently active (non-done) tasks, and removes nothing
 
 #### Scenario: Nuke with confirmation
-- **WHEN** `nuke` is called for an existing `crew_id` with `confirm=True`
-- **THEN** the system stops and removes the crew's container, removes its workspace and home volumes, and removes the crew from the registry
+- **WHEN** `nuke` is called for an existing `crew_id` with `confirm=True` and all Podman resource cleanup succeeds
+- **THEN** the system attempts to stop and remove the crew's container, remove its workspace and home volumes, and remove the crew from the registry
+- **THEN** the response reports successful teardown
+
+#### Scenario: Nuke reports incomplete Podman cleanup
+- **WHEN** `nuke` is called with `confirm=True` and one or more container or volume removal operations fail
+- **THEN** the system continues attempting cleanup of the remaining resources and removes the crew from the registry after those attempts
+- **THEN** the response reports cleanup failure and identifies every resource whose cleanup failed
+- **THEN** the response does not claim an unqualified successful teardown
+
+#### Scenario: Stop failure followed by successful removal is complete
+- **WHEN** stopping the container fails but force-removal of the container and removal of both volumes succeed
+- **THEN** `nuke` reports successful teardown because no Podman resource remains
 
 #### Scenario: Nuke an unknown crew
 - **WHEN** `nuke` is called with a `crew_id` that has no registry entry
@@ -505,22 +532,30 @@ The `crews` tool response SHALL include `created_at` (ISO 8601 UTC, from the exi
 
 ### Requirement: Pre-launch memory gate
 
-Before starting a stopped crew container, the transport SHALL query available
-host memory via the Podman info API and gate the launch on sufficient free
-memory.
+Before starting a stopped crew container, the transport SHALL check available
+memory and gate the launch on sufficient headroom. On Linux, the transport SHALL
+use the kernel's `MemAvailable` value from `/proc/meminfo`; on non-Linux hosts,
+it SHALL use the Podman info API's available-memory value.
 
 The gate is controlled by three environment variables:
 
 | Variable | Type | Default | Description |
 |:---------|:-----|:--------|:------------|
-| `GA_MIN_FREE_MEM_GB` | float | 2.0 | Minimum free memory (GB) required to proceed with launch |
+| `GA_MIN_FREE_MEM_GB` | float | 2.0 | Minimum available memory (GB) required to proceed with launch |
 | `GA_MEMORY_WAIT_SECS` | int | 60 | Maximum seconds to wait for memory to become available |
 | `GA_SPAWN_MIN_MEMORY_GB` | float | 1.5 | Value patched into KiroCrew's `spawn_min_memory_gb` config |
 
 The system SHALL poll in 5-second increments until either sufficient memory is
 available or the timeout expires. If timeout expires, the system SHALL return a
-human-readable error message including the crew ID, current free memory, and
+human-readable error message including the crew ID, current available memory, and
 required threshold — without crashing or triggering an OOM.
+If the Linux `MemAvailable` value cannot be read or parsed, the system SHALL fail
+closed and report that available memory could not be determined; it SHALL NOT
+substitute raw `MemFree` for admission.
+
+#### Scenario: Linux admission uses MemAvailable
+- **WHEN** a stopped crew container is being restarted on Linux and `/proc/meminfo` reports `MemAvailable` above `GA_MIN_FREE_MEM_GB`
+- **THEN** the container starts immediately even if `MemFree` is below the threshold
 
 #### Scenario: Memory available immediately
 - **WHEN** a stopped crew container is being restarted AND available memory exceeds `GA_MIN_FREE_MEM_GB`
@@ -532,7 +567,15 @@ required threshold — without crashing or triggering an OOM.
 
 #### Scenario: Memory does not free within timeout
 - **WHEN** a stopped crew container is being restarted AND available memory remains below `GA_MIN_FREE_MEM_GB` for the full `GA_MEMORY_WAIT_SECS` duration
-- **THEN** the system returns an error: `"Insufficient available memory to start crew <id>: <N>GB free, <T>GB required. Retry in a moment."`
+- **THEN** the system returns an error: `"Insufficient available memory to start crew <id>: <N>GB available, <T>GB required. Retry in a moment."`
+
+#### Scenario: Linux available memory cannot be determined
+- **WHEN** the transport cannot read or parse `MemAvailable` from `/proc/meminfo`
+- **THEN** it does not start the crew and returns a clear error that available memory could not be determined
+
+#### Scenario: Non-Linux memory source
+- **WHEN** a stopped crew container is being restarted on a non-Linux host
+- **THEN** the transport uses the available-memory value reported by Podman info
 
 #### Scenario: Memory gate disabled
 - **WHEN** `GA_MIN_FREE_MEM_GB` is set to `0`
@@ -998,3 +1041,16 @@ to the caller.
 - **WHEN** `dispatch()` is called with `slot=True`
 - **THEN** the transport logs a WARNING indicating `slot=True` is not a valid value
 - **THEN** the dispatch proceeds as if `slot=None` was passed
+
+### Requirement: Idle stop and crew wake are serialized
+The transport SHALL coordinate an idle monitor's container stop with any concurrent operation that wakes or restarts the same crew. A wake SHALL NOT report success while an idle stop can still stop that crew afterward. If an idle stop has already begun, the wake SHALL wait for that stop to finish and then ensure the crew is running before returning.
+
+#### Scenario: Wake starts after idle stop is claimed
+- **WHEN** the idle monitor has claimed an idle crew for stopping and a dispatch concurrently requires that crew
+- **THEN** the dispatch does not report the crew running before the stop completes
+- **THEN** the dispatch ensures the container is running after the stop and the final registry status is `running`
+
+#### Scenario: Crew activity advances before idle stop is claimed
+- **WHEN** a crew is touched by a wake or dispatch before the idle monitor claims its stop
+- **THEN** the idle monitor observes the activity and skips stopping the crew
+- **THEN** the crew remains running

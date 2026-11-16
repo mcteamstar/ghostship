@@ -201,6 +201,20 @@ ghostship auth login kiro
 
 **Wrong model-ID spelling** — for example `claude-haiku-5-5` instead of `claude-haiku-5.5` (hyphens vs dots). Update the model ID in your configuration and re-run `./install.sh` to apply it.
 
+Backend selection is configured separately from model selection. Set a scalar
+`backends.default` for the implicit backend; Kiro is always built in, while Claude
+and Codex are bundled only when their sections are present. Use an empty mapping to
+enable an optional backend with its built-in defaults:
+
+```yaml
+backends:
+  default: kiro
+  claude: {}
+  codex: {}
+```
+
+The legacy list form (`backends.default: [kiro, claude]`) is no longer accepted.
+
 ## Dedicated Podman Machine
 
 These issues apply only when `GA_DEDICATED_MACHINE=true`.

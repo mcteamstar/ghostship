@@ -994,8 +994,9 @@ def _backend_not_enabled_message(backend: str) -> str:
             f"{', '.join(sorted(_ACP_BACKEND_VALUES))}."
         )
     return (
-        f"The {backend} backend is not enabled on this transport. Add {backend} to "
-        f"backends.default in ghostship.yaml, then re-run `ghostship install`."
+        f"The {backend} backend is not enabled on this transport. Add a "
+        f"backends.{backend} section in ghostship.yaml, then "
+        f"re-run `ghostship install`."
     )
 
 

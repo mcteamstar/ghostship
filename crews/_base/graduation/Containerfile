@@ -15,21 +15,19 @@ FROM ${MID_IMAGE}
 # At launch, transport only needs to INSERT auth_kv rows — no migration wait,
 # no restart needed.
 #
-# ⚠️  FRAGILITY WARNING — read before updating kirocrew:
-# This schema and migration count (6 rows, versions 0–5) was extracted from
-# kiro-cli as shipped with kirocrew v0.12.0 stable (kiro-cli 2.27.1, verified
-# 2026-11-05 by static layer inspection — see seed_kiro_db.py header). If kiro-cli
-# adds new migrations in a future kirocrew release, this pre-seeded DB will be
-# missing them and kiro-cli may fail to start or behave incorrectly in crew
-# containers.
+# ⚠️  FRAGILITY WARNING — read before updating KiroCrew:
+# This schema and migration count (11 rows, versions 0–10) were extracted from
+# the KiroCrew v0.12.2 image (kiro-cli 2.27.1, verified 2026-11-14 by static
+# image-layer inspection — see seed_kiro_db.py). The active kiro-cli-chat runtime
+# includes migrations through 010_pinned_bin_versions, including a BLOB state
+# value and conversation tables. Re-verify both CLI and chat migrations when the
+# base image changes.
 #
-# When updating the FROM ghcr.io/kirodotdev/kirocrew pin to a newer version:
-#   1. Spin up a crew with the old image, run launch normally
-#   2. In the running container: python3 -c "import sqlite3; conn=sqlite3.connect(
-#      '/home/kirocrew/.local/share/kiro-cli/data.sqlite3');
-#      print(conn.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
-#   3. If count or max version changed, update seed_kiro_db.py below to match
-#   4. If schema changed, update the CREATE TABLE statements in seed_kiro_db.py too
+# When updating the FROM image pin:
+#   1. Start a disposable crew and run the normal CLI and chat task paths
+#   2. Inspect the migrations table and all resulting table definitions in the
+#      running container, including auth_kv and state
+#   3. Update seed_kiro_db.py and its focused schema test to match
 #
 # Tracked in: README.md — "Extending the crew image"
 COPY --chown=kirocrew:kirocrew seed_kiro_db.py /tmp/seed_kiro_db.py

@@ -36,7 +36,8 @@ MCP tools and resources (registered by ``transport.tools.register_tools``):
   supply     — get a presigned URL to deliver files into a crew workspace
 
   transport://agents       — available agents and their roles
-  transport://compositions — available crew compositions for launch
+  transport://comps — available crew comps for launch
+  transport://compositions — legacy URI alias for transport://comps
   transport://orders       — built-in standing-order templates
   transport://version      — transport version and per-crew image versions
   transport://jobs         — scheduled jobs across all running crews
@@ -822,24 +823,24 @@ except ModuleNotFoundError:
         _write_dashboard_cookie,
     )
 
-# Academy composition/manifest/validation surface — extracted from lifecycle
-# to transport/academy.py. server reads COMPOSITION_REGISTRY (in
-# resource_compositions), _AGENTS_DIR (in resource_agents), and the helper
+# Academy comp/manifest/validation surface — extracted from lifecycle
+# to transport/academy.py. server reads COMP_REGISTRY (in
+# resource_comps), _AGENTS_DIR (in resource_agents), and the helper
 # functions. It imports them from academy directly rather than re-through
 # lifecycle. Note: tests still dual-patch these names on
 # BOTH `lifecycle` and `server` (e.g. patch.object(lifecycle,
-# "COMPOSITION_REGISTRY") + patch.object(server, ...)) and also patch
+# "COMP_REGISTRY") + patch.object(server, ...)) and also patch
 # transport.academy; that dual/triple-patch is intentional pending full
 # test migration to patch transport.academy exclusively.
 try:
     from academy import (  # container: flat /app/
-        COMPOSITION_REGISTRY,
+        COMP_REGISTRY,
         _AGENTS_DIR,
         _CREW_REGISTRY_PATH,
-        _load_composition_registry,
+        _load_comp_registry,
         _load_crew_manifest,
         _manifest_selects,
-        _resolve_composition,
+        _resolve_comp,
         _resolve_image,
         _resolve_manifest_path,
         _substitute_env_vars,
@@ -850,13 +851,13 @@ except ImportError:
     # directory shadows the flat-path module as a namespace package in local
     # dev, so `from academy import <name>` raises ImportError there.
     from transport.academy import (  # local dev
-        COMPOSITION_REGISTRY,
+        COMP_REGISTRY,
         _AGENTS_DIR,
         _CREW_REGISTRY_PATH,
-        _load_composition_registry,
+        _load_comp_registry,
         _load_crew_manifest,
         _manifest_selects,
-        _resolve_composition,
+        _resolve_comp,
         _resolve_image,
         _resolve_manifest_path,
         _substitute_env_vars,

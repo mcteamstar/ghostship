@@ -175,6 +175,14 @@ class TestWithoutApiKey:
         # No bearer header gate
         assert "header" not in match
 
+    def test_mcp_route_keeps_transport_upstream(self) -> None:
+        doc = _doc(ga_api_key="")
+        route = _find_route(doc, "ga-transport-mcp")
+        assert route is not None
+        assert route["handle"][0]["upstreams"] == [
+            {"dial": "ga-transport:64057"}
+        ]
+
     def test_no_files_presigned_route(self) -> None:
         doc = _doc(ga_api_key="")
         assert "ga-transport-files-presigned" not in _route_ids(doc)

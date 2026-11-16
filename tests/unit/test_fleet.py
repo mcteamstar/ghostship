@@ -279,6 +279,50 @@ class TestBuildCrewsPayloadDashboardUrl(unittest.TestCase):
         self.assertIn("62000", url)
 
 
+class TestFleetCompCompatibility(unittest.TestCase):
+    def _build_payloads(self, info: dict) -> tuple[dict, dict]:
+        _build_crews_payload = _import_build_crews_payload()
+        _build_internal_fleet_payload = _import_build_internal_fleet_payload()
+        _reg_mod = _import_registry_module()
+        registry_data = {"crews": {"alpha": {"container": "gs-alpha", "status": "stopped", **info}}}
+        with patch.object(_reg_mod, "_load_registry", return_value=registry_data):
+            mcp_payload = _build_crews_payload(None)
+            rest_payload = _build_internal_fleet_payload(None)
+        return mcp_payload["crews"][0], rest_payload["crews"][0]
+
+    def test_legacy_only_field_is_returned_as_equal_aliases(self):
+        mcp_crew, rest_crew = self._build_payloads({"composition": "worker"})
+
+        for crew in (mcp_crew, rest_crew):
+            self.assertEqual(crew["comp"], "worker")
+            self.assertEqual(crew["composition"], "worker")
+        self.assertEqual(mcp_crew["comp"], rest_crew["comp"])
+        self.assertEqual(mcp_crew["composition"], rest_crew["composition"])
+
+    def test_conflicting_persisted_fields_warn_and_normalize_to_comp(self):
+        from transport import crew as crew_mod
+
+        crew_mod._warned_comp_conflicts.clear()
+        with self.assertLogs("transport.crew", level="WARNING") as captured:
+            mcp_crew, rest_crew = self._build_payloads(
+                {"comp": "spec-ops", "composition": "worker"}
+            )
+
+        self.assertEqual(mcp_crew["comp"], "spec-ops")
+        self.assertEqual(mcp_crew["composition"], "spec-ops")
+        self.assertEqual(rest_crew["comp"], "spec-ops")
+        self.assertEqual(rest_crew["composition"], "spec-ops")
+        # Both payload builders read the record, but the conflict is logged once.
+        self.assertEqual(len(captured.records), 1)
+
+    def test_record_without_comp_fields_uses_spec_ops_default(self):
+        mcp_crew, rest_crew = self._build_payloads({})
+
+        for crew in (mcp_crew, rest_crew):
+            self.assertEqual(crew["comp"], "spec-ops")
+            self.assertEqual(crew["composition"], "spec-ops")
+
+
 # ── _handle_internal_crews_get tests ─────────────────────────────────────────
 
 class TestHandleInternalCrewsGet(unittest.TestCase):

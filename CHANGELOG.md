@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.12.2
+
+### Truthful nuke cleanup (TRN-330)
+
+- Nuke now reports container or volume removal failures instead of claiming a
+  complete teardown, and its docs clarify that it permanently destroys a crew's
+  workspace.
+
+### Fix dedicated Linux Podman startup
+
+- Create the Ghostship-scoped `containers.conf` before starting the dedicated
+  Podman service, so Podman can load its configuration and create its socket.
+
+### Base image bump to KiroCrew v0.12.2 (TRN-324)
+
+- Pin the crew base image to the verified multi-arch index digest
+  `sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e`
+  for Linux amd64 and arm64. The image label reports Kiro CLI 2.27.1.
+- Update the pre-seeded CLI database to migrations 0–10, including the BLOB
+  state schema and conversation/version tables found in the v0.12.2 chat runtime.
+- The release-note review and static image evidence are recorded in
+  `docs/dependency-review-2026-11-14.md`.
+- Verified on arm64 (macOS): the local image build seeds the database, and a
+  fresh kiro crew completed a task and continued its session with no schema
+  errors. Headless ACP dispatch persists sessions under `~/.kiro/sessions`
+  and leaves `conversations_v2` empty; the table is seeded for the interactive
+  chat path. A stopped crew restarted by the transport kept an identical
+  `config.local.json` and completed a task afterwards. Not yet verified: amd64
+  at runtime.
+
+### Comp terminology (TRN-325)
+
+- `comp` is now the canonical name for a crew composition. `launch` takes
+  `comp`, `crews/registry.json` uses a `comps` key, crew records and the crews
+  payload carry `comp`, and the comp list is published at `transport://comps`.
+- The legacy names stay as aliases: the `composition` launch argument, the
+  `compositions` registry key, the `composition` field in records and payloads,
+  and the `transport://compositions` resource.
+- `comp` is authoritative. When both spellings are present with different
+  values, the canonical one wins and a warning is logged (once per crew for
+  persisted records); a launch or registry conflict no longer fails.
+- An unknown comp returns a readable `error` that lists the available comps.
+
+### Fixes
+
+- A stopped crew restarted on demand now re-patches its config from its own
+  recorded comp, not the spec-ops default.
+- The kiro-cli database seed closes its SQLite connection explicitly.
+
+### Backend configuration and model defaults (TRN-327)
+
+- `backends.default` is now a scalar selecting the implicit backend and defaults
+  to `kiro`. Kiro remains built in; Claude and Codex toolchains are included when
+  their respective `backends.claude` / `backends.codex` sections are present.
+  Empty mappings (`claude: {}` or `codex: {}`) enable a backend with its defaults.
+- The old list form for `backends.default` is rejected with migration guidance.
+- Backend model defaults are Haiku 5.5 for Kiro (`claude-haiku-5.5`) and Claude
+  (`claude-haiku-5-5`), and GPT-6 Luna for Codex (`gpt-6-luna`). Shipped agent
+  personas remain unpinned and inherit the selected backend's default.
+
 ## v0.12.1
 
 ### Wake cleanup and in-flight memory admission (TRN-320)

@@ -31,6 +31,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO_ROOT / "bin" / "install.sh"
 INSTALL_MAIN_PY = REPO_ROOT / "bin" / "lib" / "install_main.py"
+README = REPO_ROOT / "README.md"
+CONFIGURATION_DOC = REPO_ROOT / "docs" / "configuration.md"
 
 # The four backend credential secrets that the installer used to manage.
 CREDENTIAL_SECRET_NAMES = (
@@ -84,6 +86,30 @@ class TestInstallSecretWiring:
         # The non-credential secrets are still managed.
         assert "ga-api-key" in install_main_py_text
         assert "ga-transport-secret" in install_main_py_text
+
+    def test_transport_secret_bind_guard_passed_to_compose(
+        self, install_main_py_text: str
+    ) -> None:
+        assert "ga_require_secret_on_external_bind=_g(" in install_main_py_text
+        assert '"GA_REQUIRE_SECRET_ON_EXTERNAL_BIND", "false"' in install_main_py_text
+
+
+class TestBindDocumentation:
+    def test_readme_says_portal_defaults_to_loopback(self) -> None:
+        readme = README.read_text(encoding="utf-8")
+        assert "Caddy is published on loopback (`127.0.0.1`) by default" in readme
+        assert "Caddy is published on all interfaces by default" not in readme
+
+    def test_configuration_distinguishes_transport_guard_from_api_key_check(self) -> None:
+        docs = CONFIGURATION_DOC.read_text(encoding="utf-8")
+        row = next(
+            line for line in docs.splitlines()
+            if "`GA_REQUIRE_SECRET_ON_EXTERNAL_BIND`" in line
+        )
+        assert "`GA_TRANSPORT_SECRET`" in row
+        assert "`GA_TRANSPORT_BIND`" in row
+        assert "`GA_API_KEY`" in row
+        assert "`HOST`" in row
 
 
 class TestDeprecatedModelKeyNames:

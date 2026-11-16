@@ -319,7 +319,7 @@ class TestResponseSchemas(unittest.TestCase):
 
     CREW_ID = SHARED_CREW_ID
     _CREW_FIELDS = {
-        "crew_id", "container", "status", "composition",
+        "crew_id", "container", "status", "comp", "composition",
         "created_at", "gateway_healthy", "crew_image_version",
         "agents", "policy_version",
         # TRN-252: multi-profile launch support

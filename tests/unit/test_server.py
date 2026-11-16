@@ -29,6 +29,8 @@ import base64
 import json
 import time
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 
 
 # ── Shared ASGI helpers ───────────────────────────────────────────────────────
@@ -105,6 +107,111 @@ def _make_jwt(payload: dict, parts: int = 2) -> str:
         return f"{header_b64}.{payload_b64}.fakesignature"
     # 2-part KiroCrew format: payload.signature
     return f"{payload_b64}.fakesignature"
+
+
+class _MissingSecretFile:
+    def is_file(self):
+        return False
+
+
+class _PresentSecretFile:
+    def is_file(self):
+        return True
+
+    def read_text(self, **_kwargs):
+        return "transport-secret"
+
+
+class TestLoadTransportSecret(unittest.TestCase):
+    """The internal-secret guard uses GA_TRANSPORT_BIND and supports both modes."""
+
+    @staticmethod
+    def _server_module():
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _patch_startup_config(
+        self, server, required: bool, bind="192.168.1.10", **overrides,
+    ):
+        return patch.object(
+            server,
+            "cfg",
+            replace(
+                server.cfg,
+                ga_transport_bind=bind,
+                ga_require_secret_on_external_bind=required,
+                **overrides,
+            ),
+        )
+
+    def test_enabled_guard_refuses_start_without_secret(self):
+        server = self._server_module()
+
+        with self._patch_startup_config(server, required=True), patch.object(
+            server, "Path", return_value=_MissingSecretFile()
+        ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+            with self.assertRaises(SystemExit) as exc_info:
+                server._load_transport_secret()
+
+        self.assertEqual(exc_info.exception.code, 1)
+        self.assertIn("GA_TRANSPORT_SECRET is not set", "\n".join(captured.output))
+        self.assertIn("192.168.1.10", "\n".join(captured.output))
+
+    def test_disabled_guard_warns_and_continues_without_secret(self):
+        server = self._server_module()
+
+        with self._patch_startup_config(server, required=False), patch.object(
+            server, "Path", return_value=_MissingSecretFile()
+        ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+            secret = server._load_transport_secret()
+
+        self.assertEqual(secret, "")
+        self.assertIn("pass-through mode", "\n".join(captured.output))
+        self.assertIn("192.168.1.10", "\n".join(captured.output))
+
+    def test_present_secret_allows_specific_external_bind(self):
+        server = self._server_module()
+
+        for required in (True, False):
+            with self.subTest(required=required):
+                with self._patch_startup_config(
+                    server, required=required
+                ), patch.object(
+                    server, "Path", return_value=_PresentSecretFile()
+                ), patch.object(server._security, "register_secret") as register:
+                    secret = server._load_transport_secret()
+
+                self.assertEqual(secret, "transport-secret")
+                register.assert_called_once_with("transport-secret")
+
+    def test_loopback_and_wildcard_binds_do_not_trigger_guard(self):
+        server = self._server_module()
+
+        for bind in ("127.0.0.1", "0.0.0.0"):
+            for required in (True, False):
+                with self.subTest(bind=bind, required=required):
+                    with self._patch_startup_config(
+                        server, required=required, bind=bind
+                    ), patch.object(server, "Path", return_value=_MissingSecretFile()):
+                        self.assertEqual(server._load_transport_secret(), "")
+
+    def test_portal_host_and_api_key_do_not_satisfy_transport_guard(self):
+        server = self._server_module()
+
+        with self._patch_startup_config(
+            server,
+            required=True,
+            ga_portal_host="127.0.0.1",
+        ), patch.object(
+            server, "GA_API_KEY", "portal-api-key"
+        ), patch.object(server, "Path", return_value=_MissingSecretFile()):
+            with self.assertRaises(SystemExit) as exc_info:
+                server._load_transport_secret()
+
+        self.assertEqual(exc_info.exception.code, 1)
 
 
 # ── TestExtractCrewProxyParts ─────────────────────────────────────────────────

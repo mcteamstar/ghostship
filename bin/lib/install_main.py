@@ -318,6 +318,12 @@ def main() -> None:
     print(f"✓ Agent backend: {ga_crew_agent} (runtime default: {ga_crew_agent.split(',')[0]})")
 
     # ── Podman provisioning ───────────────────────────────────────────────────
+    # The dedicated Linux service starts with CONTAINERS_CONF pointing at this
+    # file, so create it before starting Podman (setup_podman_linux waits for
+    # the service socket to become available).
+    if _OS == "Linux":
+        _write_containers_conf(ga_machine_name)
+
     # PODMAN_SOCK and DATA_DIR are set by the shim for non-client-only installs.
     # If not set (e.g. called directly without the shim), run setup here.
     podman_sock = os.environ.get("PODMAN_SOCK", "")
@@ -367,10 +373,6 @@ def main() -> None:
 
     # ── Network setup ─────────────────────────────────────────────────────────
     _ensure_networks(_podman_cmd, ga_dedicated_machine, ga_machine_name)
-
-    # ── WSL2 containers.conf (moved from podman_setup to here for non-dedicated) ─
-    if _OS == "Linux":
-        _write_containers_conf(ga_machine_name)
 
     # ── Pre-warm + build images ───────────────────────────────────────────────
     _build_images(ghostship_dir, _podman_cmd, agent_toolchains, _g("AGENTS_REF"),
@@ -446,6 +448,9 @@ def main() -> None:
         ga_portal_domain=_g("GA_PORTAL_DOMAIN"),
         ga_portal_session_ttl_secs=_g("GA_PORTAL_SESSION_TTL_SECS", "86400"),
         ga_api_key_disabled=ga_api_key_disabled,
+        ga_require_secret_on_external_bind=_g(
+            "GA_REQUIRE_SECRET_ON_EXTERNAL_BIND", "false"
+        ),
         kc_image=_g("KC_IMAGE", "localhost/spec-ops:latest"),
         ga_api_key=ga_api_key,
         ga_orders_dir=_g("GA_ORDERS_DIR"),
@@ -974,7 +979,7 @@ def _post_install(ghostship_dir: str, ga_host_url: str, interactive_mode: bool) 
         print(f"  kiro-cli mcp add --name ghostship --url {mcp_url} --scope global")
         print("")
         print("Then from Kiro CLI, create the first crew:")
-        print('  ghostship__launch(crew_id="general")')
+        print('  ghostship__launch(crew_id="general", comp="spec-ops")')
         print("")
 
     # ghostship CLI link

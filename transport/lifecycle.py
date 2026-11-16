@@ -113,13 +113,13 @@ except ModuleNotFoundError:
 try:
     from academy import (  # container: flat /app/
         AcademyLoader,
-        COMPOSITION_REGISTRY,
+        COMP_REGISTRY,
         _AGENTS_DIR,
         _CREW_REGISTRY_PATH,
-        _load_composition_registry,
+        _load_comp_registry,
         _load_crew_manifest,
         _manifest_selects,
-        _resolve_composition,
+        _resolve_comp,
         _resolve_image,
         _resolve_manifest_path,
         _substitute_env_vars,
@@ -133,13 +133,13 @@ except ImportError:
     # has no such directory, so the try branch wins there.
     from transport.academy import (  # local dev
         AcademyLoader,
-        COMPOSITION_REGISTRY,
+        COMP_REGISTRY,
         _AGENTS_DIR,
         _CREW_REGISTRY_PATH,
-        _load_composition_registry,
+        _load_comp_registry,
         _load_crew_manifest,
         _manifest_selects,
-        _resolve_composition,
+        _resolve_comp,
         _resolve_image,
         _resolve_manifest_path,
         _substitute_env_vars,
@@ -358,8 +358,8 @@ def _warm_marker_ttl_secs() -> float:
 _SCHEDULE_MONITOR_INTERVAL = 30  # seconds
 
 
-# ── Composition registry ──────────────────────────────────────────────────────
-# COMPOSITION_REGISTRY, _load_composition_registry, _resolve_composition,
+# ── Comp registry ────────────────────────────────────────────────────────────
+# COMP_REGISTRY, _load_comp_registry, _resolve_comp,
 # _resolve_manifest_path and _resolve_image live in transport/academy.py
 # and are imported at the top of this module.
 
@@ -1048,23 +1048,23 @@ def _wait_gateway(url: str, timeout: int = 30) -> bool:
 # _copy_agents/_copy_skills/_copy_steering below call them via the imported names.
 
 
-def _copy_agents(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
+def _copy_agents(podman: PodmanClient, container: str, comp_entry: dict | None = None) -> list[str]:
     """Wrapper delegating to AcademyLoader.copy('agents').
 
     Kept as a one-line wrapper so existing call sites and test patches on
     ``lifecycle._copy_agents`` continue to resolve (TRN-240 task 4.1).
     """
-    return AcademyLoader(podman, container, composition_entry).copy("agents")
+    return AcademyLoader(podman, container, comp_entry).copy("agents")
 
 
-def _copy_skills(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
+def _copy_skills(podman: PodmanClient, container: str, comp_entry: dict | None = None) -> list[str]:
     """Wrapper delegating to AcademyLoader.copy('skills')."""
-    return AcademyLoader(podman, container, composition_entry).copy("skills")
+    return AcademyLoader(podman, container, comp_entry).copy("skills")
 
 
-def _copy_steering(podman: PodmanClient, container: str, composition_entry: dict | None = None) -> list[str]:
+def _copy_steering(podman: PodmanClient, container: str, comp_entry: dict | None = None) -> list[str]:
     """Wrapper delegating to AcademyLoader.copy('steering')."""
-    return AcademyLoader(podman, container, composition_entry).copy("steering")
+    return AcademyLoader(podman, container, comp_entry).copy("steering")
 
 
 def _seed_openspec_store(podman: PodmanClient, container: str) -> None:
@@ -1301,6 +1301,50 @@ def _cleanup_crew(podman: PodmanClient, container: str, volume: str, home_volume
             podman.secret_remove(f"admiral-pubkey-{crew_id}")
     except Exception:
         pass
+
+
+def _cleanup_crew_for_nuke(
+    podman: PodmanClient, container: str, volume: str, home_volume: str
+) -> list[dict[str, str]]:
+    """Remove crew resources for confirmed nuke and return failed removals.
+
+    Stopping is best-effort: force-removal below can still succeed after a stop
+    error. PodmanClient treats 404 removal responses as already removed, but
+    also recognize them here so callers and test doubles preserve that contract.
+    """
+    try:
+        podman.container_stop(container)
+    except Exception:
+        pass
+
+    failures: list[dict[str, str]] = []
+    removals = (
+        (container, "container_remove", podman.container_remove),
+        (volume, "volume_remove", podman.volume_remove),
+        (home_volume, "volume_remove", podman.volume_remove),
+    )
+    for resource, operation, remove in removals:
+        try:
+            remove(resource)
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            if getattr(response, "status_code", None) == 404:
+                continue
+            failures.append({
+                "resource": resource,
+                "operation": operation,
+                "error": str(exc) or type(exc).__name__,
+            })
+
+    # Keep secret cleanup best-effort just as it is for launch rollback.
+    try:
+        if container.startswith(CREW_CONTAINER_PREFIX):
+            crew_id = container[len(CREW_CONTAINER_PREFIX):]
+            podman.secret_remove(f"admiral-pubkey-{crew_id}")
+    except Exception:
+        pass
+
+    return failures
 
 
 def _reseed_crew_schedules(crew: dict, crew_id: str, crew_info: dict) -> None:
@@ -1583,7 +1627,7 @@ def _reconcile_registry() -> None:
 def _patch_crew_config(
     podman: PodmanClient,
     container: str,
-    composition_entry: dict | None = None,
+    comp_entry: dict | None = None,
     *,
     backend: str,
 ) -> None:
@@ -1700,9 +1744,9 @@ def _patch_crew_config(
     #                                  healthy sessions)
     #   telemetry.beacon_enabled = false — suppress outbound beacon on server
     #   auto_update = false        — prevent version drift in a pinned container
-    # Resolve which agents this composition deploys so config.agents entries
+    # Resolve which agents this comp deploys so config.agents entries
     # are generated dynamically rather than hardcoded.
-    manifest_agents = _load_crew_manifest(composition_entry).get("agents", "*")
+    manifest_agents = _load_crew_manifest(comp_entry).get("agents", "*")
 
     full_overrides: dict[str, Any] = {
         "agent": agent_overrides,
@@ -1721,8 +1765,8 @@ def _patch_crew_config(
         # Register deployed agent files as named KiroCrew crew members so
         # their sessions are treated as member DM threads (token-stamped).
         # Derived from the Academy /agents directory (bind-mounted) filtered
-        # by the composition manifest — same source _copy_agents uses — so any
-        # composition's agents are enrolled, not just a hardcoded list.
+        # by the comp manifest — same source _copy_agents uses — so any
+        # comp's agents are enrolled, not just a hardcoded list.
         # Deep-merged over config.json — the "default" agent entry is preserved.
         "agents": {
             af.stem: {
@@ -1831,7 +1875,7 @@ def _enroll_crew_members(crew: dict, crew_id: str, agent_names: list[str]) -> No
 def _inject_policy(
     podman: PodmanClient,
     container: str,
-    composition: str,
+    comp: str,
     policy_signing_key: str,
 ) -> str:
     """Inject security_policy.json and admission_policy.json into the crew.
@@ -1846,8 +1890,8 @@ def _inject_policy(
     admission_policy.json no longer exposes the Admiral mail-signing secret.
     See docs/auth.md for the threat model.
     """
-    # 1. Load template — composition-specific or fallback to default
-    policy_template_path = Path(f"/policies/{composition}.json")
+    # 1. Load template — comp-specific or fallback to default
+    policy_template_path = Path(f"/policies/{comp}.json")
     if not policy_template_path.exists():
         policy_template_path = Path("/policies/default.json")
     policy = json.loads(policy_template_path.read_text())
@@ -1880,8 +1924,8 @@ def _finish_crew_setup(
     volume: str,
     home_volume: str,
     auth_b64: str,
-    composition: str = "spec-ops",
-    composition_entry: dict | None = None,
+    comp: str = "spec-ops",
+    comp_entry: dict | None = None,
     *,
     admiral_secret: str,
     dashboard: bool = False,
@@ -1906,8 +1950,8 @@ def _finish_crew_setup(
         volume,
         home_volume,
         auth_b64,
-        composition,
-        composition_entry,
+        comp,
+        comp_entry,
         admiral_secret=admiral_secret,
         dashboard=dashboard,
         backend=backend,

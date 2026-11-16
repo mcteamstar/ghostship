@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from tests.fakes import FakePodmanClient
@@ -146,6 +147,86 @@ class TestCleanupCrew(unittest.TestCase):
         self.assertFalse(self.podman.was_called("secret_remove"))
 
 
+class TestCleanupCrewForNuke(unittest.TestCase):
+    """Confirmed nuke reports failed removals while attempting every resource."""
+
+    def setUp(self):
+        from transport.lifecycle import _cleanup_crew_for_nuke
+
+        self._cleanup = _cleanup_crew_for_nuke
+        self.podman = FakePodmanClient()
+        self.podman.add_container("gs-abc", running=True)
+        self.podman.volume_create("gs-vol-abc")
+        self.podman.volume_create("gs-home-abc")
+
+    def test_absent_resources_are_already_removed(self):
+        podman = FakePodmanClient()
+        failures = self._cleanup(podman, "gs-missing", "gs-vol-missing", "gs-home-missing")
+        self.assertEqual(failures, [])
+
+    def test_removal_404s_are_already_removed(self):
+        def _not_found():
+            error = RuntimeError("not found")
+            error.response = SimpleNamespace(status_code=404)
+            return error
+
+        self.podman.container_remove = MagicMock(side_effect=_not_found())
+        self.podman.volume_remove = MagicMock(side_effect=[_not_found(), _not_found()])
+        failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+        self.assertEqual(failures, [])
+        self.podman.container_remove.assert_called_once_with("gs-abc")
+        self.assertEqual(self.podman.volume_remove.call_count, 2)
+
+    def test_container_remove_failure_does_not_skip_volumes(self):
+        def _fail(name):
+            self.podman.calls.append(("container_remove", name))
+            raise RuntimeError("container removal failed")
+
+        self.podman.container_remove = _fail
+        failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+        self.assertEqual(failures, [{
+            "resource": "gs-abc",
+            "operation": "container_remove",
+            "error": "container removal failed",
+        }])
+        self.assertEqual(len(self.podman.calls_for("volume_remove")), 2)
+
+    def test_each_volume_remove_failure_is_reported_and_other_volume_attempted(self):
+        for failed_volume in ("gs-vol-abc", "gs-home-abc"):
+            with self.subTest(failed_volume=failed_volume):
+                self.podman = FakePodmanClient()
+                self.podman.add_container("gs-abc", running=True)
+                self.podman.volume_create("gs-vol-abc")
+                self.podman.volume_create("gs-home-abc")
+                real_remove = self.podman.volume_remove
+                attempted = []
+
+                def _remove(name, *, failed=failed_volume):
+                    attempted.append(name)
+                    if name == failed:
+                        raise RuntimeError(f"{name} removal failed")
+                    real_remove(name)
+
+                self.podman.volume_remove = _remove
+                failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+                self.assertEqual([failure["resource"] for failure in failures], [failed_volume])
+                self.assertEqual(attempted, ["gs-vol-abc", "gs-home-abc"])
+
+    def test_stop_failure_followed_by_successful_force_removal_is_complete(self):
+        def _fail_stop(name):
+            self.podman.calls.append(("container_stop", name))
+            raise RuntimeError("stop failed")
+
+        self.podman.container_stop = _fail_stop
+        failures = self._cleanup(self.podman, "gs-abc", "gs-vol-abc", "gs-home-abc")
+
+        self.assertEqual(failures, [])
+        self.assertFalse(self.podman.container_exists("gs-abc"))
+
+
 # ── ensure_running patch harness ──────────────────────────────────────────────
 
 class _EnsureRunningBase(unittest.TestCase):
@@ -229,6 +310,15 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
             self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
         get_credential.assert_called_with("codex", "work")
         inject.assert_called_once_with(self.podman, CONTAINER, b"synthetic archive")
+
+    def test_restart_patches_config_with_crews_own_comp(self):
+        self.crews[CREW_ID].update({"comp": "worker", "composition": "worker"})
+        worker_entry = {"name": "worker", "dir": "worker", "description": ""}
+        with patch.object(self.life, "_resolve_comp", return_value=worker_entry) as resolve:
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+        resolve.assert_called_once_with("worker")
+        args, _kwargs = self.life._patch_crew_config.call_args
+        self.assertIs(args[2], worker_entry)
 
     def test_restart_missing_named_profile_stops_provisional_container(self):
         self.crews[CREW_ID].update({"acp_backend": "codex", "acp_profile": "work"})
@@ -347,6 +437,23 @@ class TestRestartKeepsBackend(_EnsureRunningBase):
 
 class TestEnsureRunning(_EnsureRunningBase):
     """CrewLauncher.ensure_running: happy path + nuked-during-restart sentinel."""
+
+    def test_memory_stat_failure_fails_closed_without_starting_crew(self):
+        from transport.podman import MemoryInfoUnavailable
+
+        with (
+            patch.object(self.life, "GA_MIN_FREE_MEM_GB", 2.0),
+            patch.object(
+                self.life,
+                "_wait_for_memory",
+                side_effect=MemoryInfoUnavailable("MemAvailable not found in /proc/meminfo"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "Unable to determine available memory"),
+        ):
+            self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+
+        self.assertFalse(self.podman.container_is_running(CONTAINER))
+        self.assertNotIn("container_start", [call[0] for call in self.podman.calls])
 
     def test_stopped_crew_starts_and_returns_running_dict(self):
         crew = dict(self.crews[CREW_ID])
@@ -480,6 +587,193 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         for exc in errors:
             self.assertIsInstance(exc, RuntimeError)
             self.assertIn("start failed", str(exc))
+
+    def _assert_early_failure_releases_waiter(self, expected_error, install_failure):
+        event_type = threading.Event
+        failure_entered = event_type()
+        release_failure = event_type()
+        waiter_waiting = event_type()
+        errors: list[Exception] = []
+
+        class _TrackedEvent(event_type):
+            def wait(self, timeout=None):
+                waiter_waiting.set()
+                # Keep a broken-finalizer regression bounded instead of
+                # waiting through the production 150-second timeout.
+                return super().wait(timeout=3)
+
+        def _block_and_raise():
+            failure_entered.set()
+            if not release_failure.wait(timeout=5):
+                raise RuntimeError("test did not release the leader")
+            raise RuntimeError(expected_error)
+
+        install_failure(_block_and_raise)
+
+        def _caller():
+            try:
+                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        import transport.launcher as launcher_module
+
+        with patch.object(
+            launcher_module, "threading", SimpleNamespace(Event=_TrackedEvent),
+        ):
+            leader = threading.Thread(target=_caller, name="leader")
+            leader.start()
+            self.assertTrue(failure_entered.wait(timeout=5), "leader did not enter failure point")
+
+            waiter = threading.Thread(target=_caller, name="waiter")
+            waiter.start()
+            self.assertTrue(waiter_waiting.wait(timeout=5), "waiter did not block on leader event")
+            release_failure.set()
+
+            leader.join(timeout=5)
+            waiter.join(timeout=5)
+
+        self.assertFalse(leader.is_alive(), "leader did not finish")
+        self.assertFalse(waiter.is_alive(), "waiter was not released promptly")
+        self.assertEqual(len(errors), 2, f"expected both callers to fail, got {errors}")
+        self.assertEqual([str(exc) for exc in errors], [expected_error, expected_error])
+
+    def test_container_probe_failure_releases_waiter(self):
+        def _install(fail):
+            self.podman.container_is_running = lambda _name: fail()
+
+        self._assert_early_failure_releases_waiter("container probe failed", _install)
+
+    def test_gateway_probe_failure_releases_waiter(self):
+        self.podman.add_container(CONTAINER, running=True)
+
+        def _install(fail):
+            self.life._probe_gateway.side_effect = lambda _url: fail()
+
+        self._assert_early_failure_releases_waiter("gateway probe failed", _install)
+
+    def test_pre_restart_stop_failure_releases_waiter(self):
+        self.podman.add_container(CONTAINER, running=True)
+        self.life._probe_gateway.return_value = False
+
+        def _install(fail):
+            self.podman.container_stop = lambda _name: fail()
+
+        self._assert_early_failure_releases_waiter("pre-restart stop failed", _install)
+
+    def test_idle_stop_and_wake_are_serialized_per_crew(self):
+        import transport.launcher as launcher_module
+        import transport.monitors as monitors
+
+        self.podman.add_container(CONTAINER, running=True)
+        self.podman.calls.clear()
+        self.crews[CREW_ID].update({"status": "running", "last_used": 1600.0})
+
+        stop_entered = threading.Event()
+        release_stop = threading.Event()
+        wake_gate_attempted = threading.Event()
+        errors: list[Exception] = []
+        wake_results: list = []
+
+        real_stop = self.podman.container_stop
+        real_start = self.podman.container_start
+
+        def _blocking_stop(name):
+            stop_entered.set()
+            if not release_stop.wait(timeout=5):
+                raise RuntimeError("test did not release the idle stop")
+            return real_stop(name)
+
+        def _record_start(name):
+            if not release_stop.is_set():
+                raise AssertionError("wake started before the idle stop completed")
+            return real_start(name)
+
+        self.podman.container_stop = _blocking_stop
+        self.podman.container_start = _record_start
+
+        spawn_response = MagicMock(status_code=200)
+        spawn_response.json.return_value = {"agents": [{"done": True}]}
+        cron_response = MagicMock(status_code=200)
+        cron_response.json.return_value = {"jobs": []}
+        http = MagicMock()
+        http.get.side_effect = [spawn_response, cron_response]
+        monitors.bind_lifecycle(
+            ga_idle_timeout_secs=300.0,
+            schedule_monitor_interval=30,
+            ensure_crew_running=MagicMock(),
+            crew_api=MagicMock(),
+            crew_api_with_recovery=MagicMock(),
+            mint_cookie=MagicMock(return_value=None),
+        )
+
+        actual_lock = self.reg_mod._get_crew_lifecycle_lock(CREW_ID)
+
+        class _ObservedLock:
+            def acquire(self, *args, **kwargs):
+                if threading.current_thread().name == "wake":
+                    wake_gate_attempted.set()
+                return actual_lock.acquire(*args, **kwargs)
+
+            def release(self):
+                return actual_lock.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, _type, _value, _traceback):
+                self.release()
+
+        observed_lock = _ObservedLock()
+
+        def _run_monitor():
+            try:
+                monitors._idle_monitor()
+            except StopIteration:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def _wake():
+            try:
+                wake_results.append(
+                    self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        with patch.object(monitors, "_get_podman", return_value=self.podman), \
+             patch.object(monitors, "_http", http), \
+             patch.object(monitors.time, "time", return_value=2000.0), \
+             patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
+             patch.object(monitors, "_get_crew_lifecycle_lock", return_value=observed_lock), \
+             patch.object(launcher_module, "_get_crew_lifecycle_lock", return_value=observed_lock):
+            monitor_thread = threading.Thread(target=_run_monitor, name="idle-monitor")
+            monitor_thread.start()
+            self.assertTrue(stop_entered.wait(timeout=5), "idle monitor did not enter container_stop")
+
+            wake_thread = threading.Thread(target=_wake, name="wake")
+            wake_thread.start()
+            self.assertTrue(
+                wake_gate_attempted.wait(timeout=5),
+                "wake did not attempt the shared lifecycle lock",
+            )
+            self.assertFalse(
+                self.podman.was_called("container_start"),
+                "wake started while the idle stop still held the lifecycle lock",
+            )
+
+            release_stop.set()
+            monitor_thread.join(timeout=5)
+            wake_thread.join(timeout=5)
+
+        self.assertFalse(monitor_thread.is_alive(), "idle monitor did not finish")
+        self.assertFalse(wake_thread.is_alive(), "wake did not finish")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(wake_results), 1)
+        self.assertTrue(self.podman.container_is_running(CONTAINER))
+        self.assertEqual(self.crews[CREW_ID]["status"], "running")
 
     def test_generation_change_raises_in_waiter(self):
         # Simulate a waiter that wakes to find a newer restart cycle running:

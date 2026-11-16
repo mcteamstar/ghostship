@@ -91,6 +91,7 @@ class ComposeConfig:
     ga_portal_domain: str = ""
     ga_portal_session_ttl_secs: str = "86400"
     ga_api_key_disabled: str = ""
+    ga_require_secret_on_external_bind: str = "false"
     kc_image: str = "localhost/spec-ops:latest"
 
     # Optional conditional features
@@ -152,6 +153,7 @@ def generate_compose(config: ComposeConfig) -> str:
         "GA_TRANSPORT_BIND": "0.0.0.0",
         "GA_PORTAL_HOST": config.host,
         "GA_API_KEY_DISABLED": config.ga_api_key_disabled,
+        "GA_REQUIRE_SECRET_ON_EXTERNAL_BIND": config.ga_require_secret_on_external_bind,
         "PORT": "64057",
         "GA_HOST_URL": config.ga_host_url,
         "GA_MAX_CREWS": config.ga_max_crews,
@@ -370,6 +372,9 @@ def _config_from_env() -> ComposeConfig:
         ga_portal_domain=env.get("GA_PORTAL_DOMAIN", ""),
         ga_portal_session_ttl_secs=env.get("GA_PORTAL_SESSION_TTL_SECS", "86400"),
         ga_api_key_disabled=env.get("GA_API_KEY_DISABLED", ""),
+        ga_require_secret_on_external_bind=env.get(
+            "GA_REQUIRE_SECRET_ON_EXTERNAL_BIND", "false"
+        ),
         kc_image=env.get("KC_IMAGE", "localhost/spec-ops:latest"),
         ga_api_key=env.get("GA_API_KEY", ""),
         ga_orders_dir=env.get("GA_ORDERS_DIR", ""),

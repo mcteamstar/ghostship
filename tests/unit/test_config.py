@@ -694,8 +694,8 @@ class TestConfigYamlExampleSync(unittest.TestCase):
         self.assertIn("memory", parsed["crew"])
         self.assertIn("author", parsed["crew"]["git"])
         self.assertIn("backends", parsed)
-        # backends.default is now a YAML list; model.override removed globally.
-        self.assertIsInstance(parsed["backends"]["default"], list)
+        # backends.default is a scalar selector; model.override removed globally.
+        self.assertIsInstance(parsed["backends"]["default"], str)
         self.assertIn("model", parsed["backends"]["kiro"])
         self.assertIn("identity_center", parsed["backends"]["kiro"])
         self.assertNotIn("override", parsed["model"])

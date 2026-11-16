@@ -13,6 +13,7 @@ import json
 import logging
 import secrets
 import socket
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -955,13 +956,44 @@ def _get_podman() -> PodmanClient:
 
 # ── Memory helpers ────────────────────────────────────────────────────────────
 
-def _get_host_memory_gb(podman: PodmanClient) -> float:
-    """Extract available memory (GB) from Podman system info.
+class MemoryInfoUnavailable(RuntimeError):
+    """Raised when available host memory cannot be determined."""
 
-    Prefers memAvailable (accounts for reclaimable page cache / buffers) over
-    memFree (raw uncommitted pages only).  Falls back to memFree when the
-    kernel or Podman build does not expose memAvailable.
+
+def _parse_linux_mem_available_gb(meminfo: str) -> float:
+    """Parse Linux MemAvailable from /proc/meminfo and return GiB."""
+    for line in meminfo.splitlines():
+        key, separator, value = line.partition(":")
+        if key != "MemAvailable":
+            continue
+        fields = value.split()
+        if separator and len(fields) == 2 and fields[1] == "kB":
+            try:
+                available_kib = int(fields[0])
+            except ValueError as exc:
+                raise MemoryInfoUnavailable(
+                    "Invalid MemAvailable value in /proc/meminfo"
+                ) from exc
+            if available_kib >= 0:
+                return round(available_kib / (1024 ** 2), 1)
+        raise MemoryInfoUnavailable("Invalid MemAvailable value in /proc/meminfo")
+    raise MemoryInfoUnavailable("MemAvailable not found in /proc/meminfo")
+
+
+def _get_host_memory_gb(podman: PodmanClient) -> float:
+    """Extract available memory (GiB) from the host.
+
+    On Linux, read the kernel's MemAvailable estimate directly because
+    Podman's remote info API may expose only raw memFree. On non-Linux hosts,
+    use Podman system info, preferring memAvailable when available.
     """
+    if sys.platform.startswith("linux"):
+        try:
+            meminfo = Path("/proc/meminfo").read_text(encoding="ascii")
+        except OSError as exc:
+            raise MemoryInfoUnavailable(f"Could not read /proc/meminfo: {exc}") from exc
+        return _parse_linux_mem_available_gb(meminfo)
+
     info = podman.system_info()
     host = info.get("host", {})
     mem_bytes = host.get("memAvailable", host.get("memFree", 0))
@@ -975,7 +1007,8 @@ _host_memory_cache_lock = threading.Lock()
 def _get_host_memory_gb_cached(podman: PodmanClient) -> float | None:
     """Return available memory with 5-second TTL cache.
 
-    Returns None if Podman info fails. Thread-safe via _host_memory_cache_lock.
+    Returns None if the platform's memory source is unavailable. Thread-safe
+    via _host_memory_cache_lock.
     """
     global _host_memory_cache
     now = time.monotonic()

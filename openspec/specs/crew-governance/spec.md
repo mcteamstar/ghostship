@@ -9,38 +9,34 @@ container before the gateway starts enforcing them. Policies are HMAC-signed
 with the crew's `admiral_secret` so that a tampered policy is detected at boot.
 The default policy targets platform integrity: blocking control-plane escape
 paths and messaging integrations, while leaving filesystem, sandbox, and network
-access open. Operators who need tighter controls can supply composition-specific
+access open. Operators who need tighter controls can supply comp-specific
 policy templates.
 
 ## Requirements
 
 ### Requirement: Transport injects per-crew security policy at setup
 
-The transport SHALL inject a `security_policy.json` into
-`~/.kiro/crew/security_policy.json` inside each crew container during
-`_finish_crew_setup`, after the gateway is ready and the `admiral_secret` has
-been written. The policy SHALL be rendered from a template keyed by the
-crew's composition name, falling back to the `default` template when no
-composition-specific template exists.
+The transport SHALL inject a `security_policy.json` into `~/.kiro/crew/security_policy.json` inside each crew container after the gateway is ready and the `admiral_secret` has been written. The policy SHALL be selected by the resolved crew `comp`, falling back to the `default` template when no comp-specific template exists. The legacy `composition` launch argument remains an alias: when both are supplied, `comp` is authoritative and selects the policy template. Policy templates live in `academy/policies/` and are available to the transport from `/policies/`.
 
-Policy templates live in `academy/policies/` and are bind-mounted into the
-transport container at `/policies/`.
+#### Scenario: Policy injected for new crew with known comp
+- **WHEN** `launch(crew_id, composition="kirocrew")` completes setup using the legacy alias
+- **THEN** `~/.kiro/crew/security_policy.json` exists in the container with the `kirocrew` comp's policy content (or default if no specific template), and the `launch()` response includes `policy_version`
 
-#### Scenario: Policy injected for new crew with known composition
-- **WHEN** `launch(crew_id, composition="kirocrew")` completes setup
-- **THEN** `~/.kiro/crew/security_policy.json` exists in the container with
-  the `kirocrew` composition's policy content (or default if no specific
-  template), and the `launch()` response includes `policy_version`
-
-#### Scenario: Policy injection falls back to default for unknown composition
-- **WHEN** `launch(crew_id, composition="custom-unknown")` completes setup
-- **THEN** the default policy template is used and injected successfully;
-  no error is raised for a missing composition template
+#### Scenario: Policy injection falls back to default for unknown comp
+- **WHEN** `launch(crew_id, composition="custom-unknown")` completes setup using the legacy alias
+- **THEN** the default policy template is used and injected successfully; no error is raised for a missing comp template
 
 #### Scenario: Policy injection failure is logged but does not abort launch
 - **WHEN** the policy file write inside the container fails (e.g. permissions)
-- **THEN** the failure is logged as a warning and `launch()` continues;
-  `policy_version` is omitted from the response
+- **THEN** the failure is logged as a warning and `launch()` continues; `policy_version` is omitted from the response
+
+#### Scenario: Matching comp and composition select the same template
+- **WHEN** `launch(crew_id, comp="kirocrew", composition="kirocrew")` completes setup
+- **THEN** the `kirocrew` policy template is selected and injected
+
+#### Scenario: Conflicting comp and composition select policy by comp
+- **WHEN** `launch(crew_id, comp="kirocrew", composition="spec-ops")` is called
+- **THEN** the `kirocrew` policy template is selected and a warning naming both values is logged
 
 ### Requirement: Security policy is signed by the Admiral using the 0.3.x governance API
 
@@ -108,7 +104,7 @@ The default policy SHALL deny:
   Teams, Webex, WeCom, WeChat) — agents should not connect to external
   messaging platforms independently
 
-Operators who need tighter controls SHALL supply a custom composition policy
+Operators who need tighter controls SHALL supply a custom comp policy
 (e.g. `kirocrew-strict`) adding `sandbox.min_level`, `filesystem.write`
 bounds, or additional `commands.deny` patterns.
 
@@ -124,21 +120,21 @@ bounds, or additional `commands.deny` patterns.
 - **THEN** the default policy does not interfere — these are container-level
   concerns, not policy-level ones
 
-#### Scenario: Operator adds tighter controls via custom composition
-- **WHEN** `launch(crew_id, composition="kirocrew-strict")` is called and a
+#### Scenario: Operator adds tighter controls via custom comp
+- **WHEN** `launch(crew_id, comp="kirocrew-strict")` is called and a
   `strict.json` policy template exists in `academy/policies/`
 - **THEN** the strict policy (with sandbox floor, filesystem bounds, etc) is
   injected instead of the default
 
-### Requirement: Composition-specific policy variants
+### Requirement: Comp-specific policy variants
 
-The composition registry MAY declare a `security_policy` key naming a policy
-template variant (e.g. `"research"`). Research-composition crews SHALL receive
+The comp registry MAY declare a `security_policy` key naming a policy
+template variant (e.g. `"research"`). Research comps SHALL receive
 a policy with broader `filesystem.write` prefixes and relaxed command denials,
 reflecting the different risk profile of read-heavy investigative work.
 
-#### Scenario: Research composition uses its own policy variant
-- **WHEN** `launch(crew_id, composition="kirocrew-research")` completes
+#### Scenario: Research comp uses its own policy variant
+- **WHEN** `launch(crew_id, comp="kirocrew-research")` completes
 - **THEN** the research policy template is injected, not the default
 
 ### Requirement: crews and launch report policy version

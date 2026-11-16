@@ -104,6 +104,28 @@ def _setup_linux_dedicated(
 
     Path(unit_dir).mkdir(parents=True, exist_ok=True)
 
+    # Podman reads CONTAINERS_CONF as soon as the service starts. The install
+    # shim provisions the socket before install_main.py runs, so this file must
+    # exist here rather than being created later by install_main.
+    conf_path = Path(ga_containers_conf)
+    conf_path.parent.mkdir(parents=True, exist_ok=True)
+    if not conf_path.exists():
+        try:
+            is_wsl2 = "microsoft" in Path("/proc/version").read_text(
+                encoding="utf-8", errors="replace"
+            ).lower()
+        except OSError:
+            is_wsl2 = False
+        contents = (
+            '# ghostship-scoped containers.conf\n'
+            '# WSL2: use iptables instead of nftables.\n'
+            '[network]\n'
+            'firewall_driver = "iptables"\n'
+            if is_wsl2
+            else f"# Scoped to the dedicated '{machine}' Podman instance only.\n"
+        )
+        conf_path.write_text(contents, encoding="utf-8")
+
     # Remove stale socket-activation unit from previous installs.
     socket_unit = Path(unit_dir) / f"podman-{machine}.socket"
     socket_unit.unlink(missing_ok=True)

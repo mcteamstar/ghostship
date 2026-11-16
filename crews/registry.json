@@ -1,6 +1,6 @@
 {
     "_schema_note": "Each entry requires: name (lowercase alphanum/hyphens), description (string), dir (subdirectory under crews/). Optional: image (container image override).",
-    "compositions": [
+    "comps": [
         {
             "name": "spec-ops",
             "description": "Default spec-ops crew \u2014 full agent/skill/steering set",

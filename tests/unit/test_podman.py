@@ -478,5 +478,65 @@ class TestFakePodmanClientParity(unittest.TestCase):
                 )
 
 
+class TestHostMemoryHelpers(unittest.TestCase):
+    def setUp(self):
+        import transport.podman as podman_module
+
+        self.podman_module = podman_module
+        self.get_memory = podman_module._get_host_memory_gb
+        self.get_memory_cached = podman_module._get_host_memory_gb_cached
+        self.parse_meminfo = podman_module._parse_linux_mem_available_gb
+
+    def test_parse_memavailable_converts_kib_to_gib(self):
+        meminfo = "MemTotal: 8388608 kB\nMemFree: 1048576 kB\nMemAvailable: 6553600 kB\n"
+        self.assertEqual(self.parse_meminfo(meminfo), 6.2)
+
+    def test_linux_reads_memavailable_without_calling_podman_info(self):
+        import transport.podman as podman_module
+
+        podman = MagicMock()
+        with (
+            patch.object(podman_module.sys, "platform", "linux"),
+            patch.object(
+                podman_module.Path,
+                "read_text",
+                return_value="MemFree: 1048576 kB\nMemAvailable: 6553600 kB\n",
+            ),
+        ):
+            self.assertEqual(self.get_memory(podman), 6.2)
+        podman.system_info.assert_not_called()
+
+    def test_non_linux_uses_podman_info_and_prefers_memavailable(self):
+        podman = MagicMock()
+        podman.system_info.return_value = {
+            "host": {"memAvailable": 4 * (1024 ** 3), "memFree": 1 * (1024 ** 3)}
+        }
+        with patch.object(self.podman_module.sys, "platform", "darwin"):
+            self.assertEqual(self.get_memory(podman), 4.0)
+        podman.system_info.assert_called_once_with()
+
+    def test_linux_missing_or_malformed_memavailable_raises(self):
+        for meminfo in (
+            "MemTotal: 8388608 kB\nMemFree: 1048576 kB\n",
+            "MemAvailable: not-a-number kB\n",
+            "MemAvailable: 1000 MB\n",
+            "MemAvailable: -1 kB\n",
+        ):
+            with self.subTest(meminfo=meminfo), self.assertRaisesRegex(
+                RuntimeError, "MemAvailable"
+            ):
+                self.parse_meminfo(meminfo)
+
+    def test_linux_proc_read_failure_is_unavailable_in_cached_reporting_helper(self):
+        podman = MagicMock()
+        with (
+            patch.object(self.podman_module, "_host_memory_cache", None),
+            patch.object(self.podman_module.sys, "platform", "linux"),
+            patch.object(self.podman_module.Path, "read_text", side_effect=OSError("denied")),
+        ):
+            self.assertIsNone(self.get_memory_cached(podman))
+        podman.system_info.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

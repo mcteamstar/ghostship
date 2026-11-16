@@ -2,7 +2,7 @@
 
 Covers:
 - nuke(): confirm=False returns preview, no container op; confirm=True calls
-  container_stop and container_remove
+  the nuke-specific cleanup helper and returns an accurate teardown status
 - schedule(): missing name error; invalid interval error; action='cancel' non-
   existent job returns structured error
 - dispatch(): crew not found returns {"error": ...}; gateway unreachable returns
@@ -47,6 +47,82 @@ def _patch_registry(test, crews: dict):
     return backing["crews"]
 
 
+# ── Launch comp compatibility ────────────────────────────────────────────────
+
+class TestLaunchCompArguments(unittest.TestCase):
+    """Canonical and legacy launch arguments resolve deterministically."""
+
+    def test_conflicting_comp_and_composition_warns_and_uses_comp(self):
+        from transport.tools import launch
+
+        with (
+            patch("transport.tools.login._backend_enabled", return_value=True),
+            patch("transport.tools._resolve_comp", return_value={"name": "worker"}) as resolve,
+            patch("transport.tools._get_podman", side_effect=RuntimeError("stop after resolution")),
+            self.assertLogs("transport.tools", level="WARNING") as logs,
+        ):
+            result = launch(
+                "launch-alias-check",
+                comp="worker",
+                composition="spec-ops",
+            )
+
+        resolve.assert_called_once_with("worker")
+        self.assertEqual(result, {"error": "stop after resolution"})
+        self.assertIn("conflicting comp='worker'", "\n".join(logs.output))
+
+    def test_canonical_legacy_matching_and_default_values_resolve(self):
+        from transport.tools import launch
+
+        cases = (
+            ({"comp": "worker"}, "worker"),
+            ({"composition": "worker"}, "worker"),
+            ({"comp": "worker", "composition": "worker"}, "worker"),
+            ({}, "spec-ops"),
+        )
+        for kwargs, expected in cases:
+            with self.subTest(kwargs=kwargs):
+                with (
+                    patch("transport.tools.login._backend_enabled", return_value=True),
+                    patch("transport.tools._resolve_comp", return_value={"name": expected}) as resolve,
+                    patch("transport.tools._get_podman", side_effect=RuntimeError("stop after resolution")),
+                ):
+                    result = launch("launch-alias-check", **kwargs)
+
+                resolve.assert_called_once_with(expected)
+                self.assertEqual(result, {"error": "stop after resolution"})
+
+
+class TestCompResourceAliases(unittest.TestCase):
+    def test_canonical_and_legacy_uris_register_the_same_resource_handler(self):
+        from transport.tools import register_tools
+
+        class RecordingMCP:
+            def __init__(self):
+                self.resources = {}
+
+            def tool(self):
+                return lambda fn: fn
+
+            def resource(self, uri, **metadata):
+                def decorator(fn):
+                    self.resources[uri] = (metadata, fn)
+                    return fn
+                return decorator
+
+        mcp = RecordingMCP()
+        with (
+            patch("transport.tools._caddy_portal", None),
+            patch("transport.tools._dashboard_gate", None),
+        ):
+            register_tools(mcp, None, None)
+
+        canonical = mcp.resources["transport://comps"]
+        legacy = mcp.resources["transport://compositions"]
+        self.assertEqual(canonical[1](), legacy[1]())
+        self.assertEqual(canonical[0]["name"], "comps")
+        self.assertIn("comps", canonical[0]["title"].lower())
+
 # ── TestNuke ──────────────────────────────────────────────────────────────────
 
 class TestNuke(unittest.TestCase):
@@ -86,7 +162,7 @@ class TestNuke(unittest.TestCase):
         self.assertFalse(fake_podman.was_called("container_stop"))
 
     def test_confirm_true_calls_cleanup(self):
-        """confirm=True: calls cleanup via _cleanup_crew."""
+        """confirm=True: uses nuke cleanup and preserves the success response."""
         from tests.fakes import FakePodmanClient
         fake_podman = FakePodmanClient()
         fake_podman.add_container(f"gs-{self.crew_id}", running=True)
@@ -99,7 +175,7 @@ class TestNuke(unittest.TestCase):
                 volume=f"gs-vol-{self.crew_id}",
                 home_volume=f"gs-home-{self.crew_id}",
             )),
-            patch("transport.tools._cleanup_crew") as mock_cleanup,
+            patch("transport.tools._cleanup_crew_for_nuke", return_value=[]) as mock_cleanup,
             patch("transport.tools._crew_api", return_value={"agents": []}),
             patch("transport.tools._caddy_portal", MagicMock()),
             patch("transport.tools._dashboard_gate", MagicMock()),
@@ -109,8 +185,17 @@ class TestNuke(unittest.TestCase):
             patch("transport.tools._captain_order_locks_lock", MagicMock()),
         ):
             result = self._call(confirm=True)
-        mock_cleanup.assert_called_once()
-        self.assertEqual(result.get("status"), "nuked")
+        mock_cleanup.assert_called_once_with(
+            fake_podman,
+            f"gs-{self.crew_id}",
+            f"gs-vol-{self.crew_id}",
+            f"gs-home-{self.crew_id}",
+        )
+        self.assertEqual(result, {
+            "crew_id": self.crew_id,
+            "status": "nuked",
+            "container": f"gs-{self.crew_id}",
+        })
 
 
 # ── TestNukeLockOrder ─────────────────────────────────────────────────────────
@@ -168,7 +253,7 @@ class TestNukeLockOrder(unittest.TestCase):
                 volume=f"gs-vol-{self.crew_id}",
                 home_volume=f"gs-home-{self.crew_id}",
             )),
-            patch("transport.tools._cleanup_crew"),
+            patch("transport.tools._cleanup_crew_for_nuke", return_value=[]),
             patch("transport.tools._caddy_portal", fake_caddy),
             patch("transport.tools._dashboard_gate", MagicMock()),
             patch("transport.tools._read_crew_secret", return_value=None),
@@ -188,6 +273,54 @@ class TestNukeLockOrder(unittest.TestCase):
             "deregister_crew was called while crew was still in registry "
             "(Caddy call should execute after the registry lock is released)",
         )
+
+    def test_partial_cleanup_reports_failures_after_registry_and_caddy_teardown(self):
+        failures = [{
+            "resource": "gs-lock-order-crew",
+            "operation": "container_remove",
+            "error": "container is still present",
+        }, {
+            "resource": "gs-vol-lock-order-crew",
+            "operation": "volume_remove",
+            "error": "volume is still in use",
+        }]
+        call_order = []
+        fake_caddy = MagicMock()
+        fake_caddy.deregister_crew.side_effect = lambda _cid: call_order.append("deregister")
+        fake_caddy.release_port.side_effect = lambda _port: call_order.append("caddy_release")
+        fake_gate = MagicMock()
+        fake_gate.release_port.side_effect = lambda _port: call_order.append("gate_release")
+
+        with (
+            patch("transport.tools._get_crew", return_value=self.crew_dict),
+            patch("transport.tools._get_podman", return_value=MagicMock()),
+            patch("transport.tools._to_crew", return_value=MagicMock(
+                container=f"gs-{self.crew_id}",
+                volume=f"gs-vol-{self.crew_id}",
+                home_volume=f"gs-home-{self.crew_id}",
+            )),
+            patch("transport.tools._cleanup_crew_for_nuke", return_value=failures),
+            patch("transport.tools._caddy_portal", fake_caddy),
+            patch("transport.tools._dashboard_gate", fake_gate),
+            patch("transport.tools._read_crew_secret", return_value=None),
+            patch("transport.tools._delete_crew_secret"),
+            patch("transport.tools._captain_order_locks", {}),
+            patch("transport.tools._captain_order_locks_lock", MagicMock()),
+            self.assertLogs("transport.tools", level="ERROR") as logs,
+        ):
+            result = self._call()
+
+        self.assertEqual(result, {
+            "crew_id": self.crew_id,
+            "status": "cleanup_failed",
+            "container": f"gs-{self.crew_id}",
+            "cleanup_failures": failures,
+        })
+        self.assertNotIn(self.crew_id, self.crews)
+        self.assertEqual(call_order, ["deregister", "gate_release", "caddy_release"])
+        self.assertIn("failed to remove gs-lock-order-crew via container_remove", "\n".join(logs.output))
+        self.assertIn("failed to remove gs-vol-lock-order-crew via volume_remove", "\n".join(logs.output))
+        self.assertNotEqual(result.get("status"), "nuked")
 
 
 # ── TestSchedule ─────────────────────────────────────────────────────────────

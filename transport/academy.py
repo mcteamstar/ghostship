@@ -1,7 +1,7 @@
-"""Academy composition registry, crew-manifest helpers, and validation.
+"""Academy comp registry, crew-manifest helpers, and validation.
 
 Answers a single question for the transport package: "what academy
-compositions exist, what do their manifests contain, and how do we validate
+comps exist, what do their manifests contain, and how do we validate
 what the academy directory holds?" This is a different concern from crew
 lifecycle management (launch, recovery, auth injection, monitoring), which
 lives in ``lifecycle.py``.
@@ -49,7 +49,7 @@ cfg = Config.from_env()
 # ── Config-driven constants ───────────────────────────────────────────────────
 KC_IMAGE = cfg.kc_image
 
-# Crew registry file (compositions)
+# Crew registry file (comps)
 _CREW_REGISTRY_PATH = Path("/crews/registry.json")
 
 # Academy agents pool (bind-mounted from the host at /agents).
@@ -62,26 +62,26 @@ _KIRO_AGENTS_DIR = "/home/kirocrew/.kiro/agents"
 _MCP_CATALOGUE_DIR = Path("/mcp")
 
 
-# ── Composition registry ──────────────────────────────────────────────────────
+# ── Comp registry ────────────────────────────────────────────────────────────
 
-def _load_composition_registry() -> dict[str, dict]:
+def _load_comp_registry() -> dict[str, dict]:
     """Read crews/registry.json and return a name → entry mapping.
 
     Validates each entry: name must be lowercase alphanum/hyphens and the
     corresponding dir must exist under /crews/. Invalid entries are logged
-    and excluded. Falls back to a single "kirocrew" entry if the file is
+    and excluded. Falls back to a single "spec-ops" entry if the file is
     missing or unparseable.
     """
     fallback: dict[str, dict] = {
         "spec-ops": {
             "name": "spec-ops",
             "dir": "spec-ops",
-            "description": "Default KiroCrew crew type",
+            "description": "Default KiroCrew comp",
             "image": KC_IMAGE,
         }
     }
     if not _CREW_REGISTRY_PATH.exists():
-        logger.info("No crew registry at %s — using default spec-ops type", _CREW_REGISTRY_PATH)
+        logger.info("No crew registry at %s — using default spec-ops comp", _CREW_REGISTRY_PATH)
         return fallback
     try:
         data = json.loads(_CREW_REGISTRY_PATH.read_text())
@@ -89,23 +89,41 @@ def _load_composition_registry() -> dict[str, dict]:
         logger.warning("Failed to parse crew registry %s: %s — using fallback", _CREW_REGISTRY_PATH, e)
         return fallback
 
-    types_list = data.get("compositions")
-    if not isinstance(types_list, list):
-        logger.warning("Crew registry 'compositions' is not a list — using fallback")
+    # Canonical 'comps' wins over legacy 'compositions'. The legacy key is
+    # only read when 'comps' is absent or not a list.
+    comps_list = data.get("comps") if isinstance(data, dict) else None
+    legacy_list = data.get("compositions") if isinstance(data, dict) else None
+    if isinstance(comps_list, list):
+        if legacy_list is not None and legacy_list != comps_list:
+            logger.warning(
+                "Crew registry %s defines conflicting 'comps' and legacy "
+                "'compositions' keys — using 'comps'",
+                _CREW_REGISTRY_PATH,
+            )
+    elif isinstance(legacy_list, list):
+        if comps_list is not None:
+            logger.warning(
+                "Crew registry 'comps' is not a list — using legacy 'compositions'"
+            )
+        comps_list = legacy_list
+    else:
+        logger.warning(
+            "Crew registry has no 'comps' or legacy 'compositions' list — using fallback"
+        )
         return fallback
 
     registry: dict[str, dict] = {}
     name_pattern = re.compile(r'^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$')
-    for entry in types_list:
+    for entry in comps_list:
         if not isinstance(entry, dict):
             continue
         name = entry.get("name", "")
         dir_name = entry.get("dir", "")
         if not name or not name_pattern.match(name):
-            logger.warning("Crew type registry: skipping entry with invalid name %r", name)
+            logger.warning("Comp registry: skipping entry with invalid name %r", name)
             continue
         if not dir_name or not Path(f"/crews/{dir_name}").is_dir():
-            logger.warning("Crew type registry: skipping %r — dir /crews/%s not found", name, dir_name)
+            logger.warning("Comp registry: skipping %r — dir /crews/%s not found", name, dir_name)
             continue
         registry[name] = {
             "name": name,
@@ -115,45 +133,45 @@ def _load_composition_registry() -> dict[str, dict]:
         }
 
     if not registry:
-        logger.warning("Crew type registry is empty after validation — using fallback")
+        logger.warning("Comp registry is empty after validation — using fallback")
         return fallback
 
     return registry
 
 
-def _resolve_composition(composition: str) -> dict | None:
-    """Look up a crew type name in the registry. Returns the entry or None."""
-    return COMPOSITION_REGISTRY.get(composition)
+def _resolve_comp(comp: str) -> dict | None:
+    """Look up a comp name in the registry. Returns the entry or None."""
+    return COMP_REGISTRY.get(comp)
 
 
 def _resolve_manifest_path(entry: dict) -> Path:
-    """Return the manifest.json path for a crew type entry."""
+    """Return the manifest.json path for a comp entry."""
     return Path(f"/crews/{entry['dir']}/manifest.json")
 
 
 def _resolve_image(entry: dict) -> str:
-    """Return the container image for a crew type entry.
+    """Return the container image for a comp entry.
 
     Resolution order: entry-level image > KC_IMAGE env var.
     """
     return entry.get("image") or KC_IMAGE
 
 
-COMPOSITION_REGISTRY: dict[str, dict] = _load_composition_registry()
+COMP_REGISTRY: dict[str, dict] = _load_comp_registry()
 
 
 # ── Crew manifest helpers ─────────────────────────────────────────────────────
 
-def _load_crew_manifest(composition_entry: dict | None = None) -> dict[str, Any]:
-    """Read the crew type's manifest (see crew-manifest spec),
+def _load_crew_manifest(comp_entry: dict | None = None) -> dict[str, Any]:
+    """Read the comp's manifest (see crew-manifest spec),
     deciding which agents, skills, and steering docs get copied into a
     crew. A missing manifest file, a missing key, or invalid JSON all
     degrade to "*" for the affected section(s) rather than failing
     crew setup."""
     default: dict[str, Any] = {"agents": "*", "skills": "*", "steering": "*"}
-    if composition_entry is None:
-        composition_entry = _resolve_composition("kirocrew") or {"dir": "kirocrew"}
-    manifest_path = _resolve_manifest_path(composition_entry)
+    if comp_entry is None:
+        comp_entry = _resolve_comp("spec-ops") or {"dir": "spec-ops"}
+    manifest_path = _resolve_manifest_path(comp_entry)
     if not manifest_path.exists():
         logger.warning(
             "No manifest at %s — defaulting to \"all\" for agents/skills/steering",
@@ -218,7 +236,7 @@ def _validate_academy() -> list[str]:
 
       1. Agent JSON schema — every ``*.json`` in the agents pool parses as JSON
          and carries ``name``, ``description`` and ``tools`` fields.
-      2. Manifest cross-reference — every explicit name in a crew type's
+      2. Manifest cross-reference — every explicit name in a comp's
          ``agents``/``skills``/``steering`` arrays exists in the corresponding
          Academy pool. A section set to ``"*"`` is skipped.
       3. Order template front-matter — every ``*.md`` in the orders pool has
@@ -279,7 +297,7 @@ def _validate_academy() -> list[str]:
 
     pools = {"agents": agent_pool, "skills": skills_pool, "steering": steering_pool}
 
-    for crew_type, entry in COMPOSITION_REGISTRY.items():
+    for comp_name, entry in COMP_REGISTRY.items():
         manifest = _load_crew_manifest(entry)
         for section, pool in pools.items():
             selection = manifest.get(section, "*")
@@ -288,7 +306,7 @@ def _validate_academy() -> list[str]:
             for name in selection:
                 if name not in pool:
                     warnings.append(
-                        f"Crew type {crew_type!r}: manifest {section} references "
+                        f"Crew comp {comp_name!r}: manifest {section} references "
                         f"unknown name {name!r} not present in the Academy "
                         f"{section} pool"
                     )
@@ -340,7 +358,7 @@ _AGENTS_SETUP = f"{_AGENTS_HOME_DIR}/setup"
 class AcademyLoader:
     """Parameterised copier for Academy assets into a running crew container.
 
-    ``AcademyLoader(podman, container, composition_entry=None, acp_backend="kiro")``
+    ``AcademyLoader(podman, container, comp_entry=None, acp_backend="kiro")``
     stages Academy content into the in-container ``.agents/`` directories, then
     execs ``.agents/setup`` to wire it to the native paths of every harness it
     detects in the image (TRN-264).
@@ -350,7 +368,7 @@ class AcademyLoader:
 
     Usage::
 
-        loader = AcademyLoader(podman, container, composition_entry, acp_backend)
+        loader = AcademyLoader(podman, container, comp_entry, acp_backend)
         result = loader.copy_all()
         # result == {"agents": [...], "skills": [...], "steering": [...]}
 
@@ -365,12 +383,12 @@ class AcademyLoader:
         self,
         podman: "PodmanClient",
         container: str,
-        composition_entry: dict | None = None,
+        comp_entry: dict | None = None,
         acp_backend: str = "kiro",
     ) -> None:
         self._podman = podman
         self._container = container
-        self._composition_entry = composition_entry
+        self._comp_entry = comp_entry
         self._acp_backend = acp_backend or "kiro"
 
     # ── Public interface ──────────────────────────────────────────────────────
@@ -445,7 +463,7 @@ class AcademyLoader:
                 "No /skills dir in transport container — skipping skill staging"
             )
             return []
-        selection = _load_crew_manifest(self._composition_entry)["skills"]
+        selection = _load_crew_manifest(self._comp_entry)["skills"]
         staged: list[str] = []
         for skill_dir in sorted(skills_src.iterdir(), key=lambda path: path.name):
             if skill_dir.is_symlink() or not skill_dir.is_dir():
@@ -504,7 +522,7 @@ class AcademyLoader:
                 "No /steering dir in transport container — skipping steering staging"
             )
             return []
-        selection = _load_crew_manifest(self._composition_entry)["steering"]
+        selection = _load_crew_manifest(self._comp_entry)["steering"]
         staged: list[str] = []
         # Ensure destination directory exists in the container
         self._podman.container_exec(
@@ -540,7 +558,7 @@ class AcademyLoader:
         ``.agents/setup`` reads this file and writes each detected harness's
         native MCP config (e.g. kiro mcp.json, claude .claude.json).
         """
-        manifest = _load_crew_manifest(self._composition_entry)
+        manifest = _load_crew_manifest(self._comp_entry)
         mcp_servers_list = manifest.get("mcpServers")
         if not mcp_servers_list:
             return
@@ -642,7 +660,7 @@ class AcademyLoader:
                 "No /agents dir in transport container — skipping agent copy"
             )
             return []
-        manifest = _load_crew_manifest(self._composition_entry)
+        manifest = _load_crew_manifest(self._comp_entry)
         selection = manifest["agents"]
         copied: list[str] = []
         for af in agents_src.glob("*.json"):

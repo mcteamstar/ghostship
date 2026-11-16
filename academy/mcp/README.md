@@ -2,7 +2,7 @@
 
 This directory is the **MCP server catalogue** for Ghost Academy. Each file is
 a named server definition. The filename without the `.json` extension is the
-server name used to reference the server from a composition manifest.
+server name used to reference the server from a comp manifest.
 
 ## File naming
 
@@ -74,10 +74,10 @@ automatically added when written into a crew's `mcp.json`. This prevents
 KiroCrew 0.5.0 from pooling auth-bearing HTTP servers. You do not need to
 declare `poolable: false` in the catalogue file itself.
 
-## Wiring a server into a composition
+## Wiring a server into a comp
 
 Add the server name to the `mcpServers` array in
-`crews/<composition>/manifest.json`:
+`crews/<comp>/manifest.json`:
 
 ```json
 {
@@ -102,6 +102,6 @@ crew containers, and agents have access only to their built-in tools and any
 
 Individual agent JSON files in `academy/agents/` may also declare a
 `mcpServers` map for servers specific to that agent regardless of the
-composition. An agent may set `includeMcpJson: false` to opt out of the
-composition-level `mcp.json` entirely. See `docs/configuration.md` for
+comp. An agent may set `includeMcpJson: false` to opt out of the
+comp-level `mcp.json` entirely. See `docs/configuration.md` for
 the full two-layer resolution model.

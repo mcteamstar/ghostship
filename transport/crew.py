@@ -2,8 +2,8 @@
 
 A ``Crew`` instance is the typed, self-describing counterpart to the raw dict
 stored under ``crews[crew_id]`` in ``crews.json``. ``to_dict`` / ``from_dict``
-preserve that JSON shape exactly (TRN-240 invariant: no serialisation change),
-so the registry file is byte-compatible across the migration.
+use canonical ``comp`` while reading legacy ``composition`` and writing both
+fields with the same value during the compatibility window.
 
 Design notes (see openspec/changes/trn-240-transport-refactor/design.md):
 - ``crew_id`` is carried explicitly on the object even though it is the dict
@@ -14,11 +14,42 @@ Design notes (see openspec/changes/trn-240-transport-refactor/design.md):
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 
 # The crew gateway port is effectively constant (CREW_GATEWAY_PORT = 5476).
 CREW_GATEWAY_PORT = 5476
+logger = logging.getLogger(__name__)
+
+
+# (crew_id, comp, composition) conflicts already logged, so callers that read
+# records on every poll (crews payload, radar) do not repeat the warning.
+_warned_comp_conflicts: set[tuple[str, str, str]] = set()
+
+
+def comp_from_record(crew_id: str, data: dict) -> str:
+    """Resolve the canonical comp from a persisted crew record.
+
+    ``comp`` is authoritative. An absent or empty ``comp`` falls back to the
+    legacy ``composition`` value, then to ``"spec-ops"``.
+    """
+    comp = data.get("comp")
+    legacy_comp = data.get("composition")
+    if not comp:
+        comp = legacy_comp or "spec-ops"
+    elif legacy_comp and legacy_comp != comp and (
+        (crew_id, comp, legacy_comp) not in _warned_comp_conflicts
+    ):
+        _warned_comp_conflicts.add((crew_id, comp, legacy_comp))
+        logger.warning(
+            "Crew %s has conflicting persisted comp and composition values "
+            "(%r != %r); using comp",
+            crew_id,
+            comp,
+            legacy_comp,
+        )
+    return comp
 
 
 @dataclass
@@ -37,7 +68,7 @@ class Crew:
     cookie: str = ""
     internal_cookie: str = ""
     status: str = "stopped"
-    composition: str = "spec-ops"
+    comp: str = "spec-ops"
     acp_backend: str = "kiro"
     acp_profile: str = "default"
     created_at: str = ""
@@ -90,7 +121,8 @@ class Crew:
             "port": self.port,
             "cookie": self.cookie,
             "status": self.status,
-            "composition": self.composition,
+            "comp": self.comp,
+            "composition": self.comp,
             "created_at": self.created_at,
             "last_used": self.last_used,
             "admiral_secret_id": self.admiral_secret_id,
@@ -119,6 +151,8 @@ class Crew:
         raw-dict call sites. ``warm_until`` is always initialised to ``0.0`` — it
         is never read from JSON (D2).
         """
+        comp = comp_from_record(crew_id, d)
+
         return cls(
             crew_id=crew_id,
             container=d.get("container", ""),
@@ -128,7 +162,7 @@ class Crew:
             cookie=d.get("cookie", ""),
             internal_cookie=d.get("internal_cookie", ""),
             status=d.get("status", "stopped"),
-            composition=d.get("composition", "spec-ops"),
+            comp=comp,
             acp_backend=d.get("acp_backend", "kiro"),
             acp_profile=d.get("acp_profile", "default"),
             created_at=d.get("created_at", ""),

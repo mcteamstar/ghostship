@@ -51,6 +51,7 @@ try:
         _get_crew_schedules,
         _advance_next_fire_at,
         _touch_crew,
+        _get_crew_lifecycle_lock,
         registry,
     )
 except ModuleNotFoundError:
@@ -62,6 +63,7 @@ except ModuleNotFoundError:
         _get_crew_schedules,
         _advance_next_fire_at,
         _touch_crew,
+        _get_crew_lifecycle_lock,
         registry,
     )
 
@@ -542,54 +544,66 @@ def _idle_monitor() -> None:
                     _note_idle_skip(crew_id, f"cron check error: {type(e).__name__}")
                     continue
 
-                logger.info(
-                    "Crew %s idle for %.0fs — stopping container",
-                    crew_id, idle_secs,
-                )
-                # TRN-238 QA-1: do NOT hold _registry_lock across
-                # container_stop. The TOCTOU re-check (that no _touch_crew
-                # landed during the HTTP checks) and the double-stop guard are
-                # performed under the lock, but the lock is RELEASED before the
-                # potentially slow podman.container_stop call so a concurrent
-                # registry reader (e.g. crews(), a dispatch, or another monitor)
-                # is never blocked for the duration of a Podman stop timeout.
-                stop_failed = False
-                with registry:
-                    live_entry = registry._reg.get("crews", {}).get(crew_id, {})
-                    live_last_used = live_entry.get("last_used", 0)
-                    if now - live_last_used < GA_IDLE_TIMEOUT_SECS:
-                        _note_idle_skip(crew_id, "last_used advanced during checks — skipping stop")
+                # Serialize the final stop with this crew's wake/restart path.
+                # This is separate from _registry_lock, which still is not held
+                # across the potentially slow Podman operations.
+                with _get_crew_lifecycle_lock(crew_id):
+                    try:
+                        if not podman.container_is_running(info["container"]):
+                            continue
+                    except Exception as e:
+                        logger.warning(
+                            "Idle monitor: transient Podman recheck error for "
+                            "crew %s — skipping: %s", crew_id, e,
+                        )
                         continue
-                    # Double-stop guard: another idle tick already claimed this
-                    # crew and is mid-stop. Skip rather than issue a second
-                    # container_stop.
-                    if live_entry.get("_stopping"):
-                        _note_idle_skip(crew_id, "stop already in progress — skipping")
+
+                    stop_now = time.time()
+                    stop_failed = False
+                    with registry:
+                        live_entry = registry._reg.get("crews", {}).get(crew_id, {})
+                        live_last_used = live_entry.get("last_used", 0)
+                        if stop_now - live_last_used < GA_IDLE_TIMEOUT_SECS:
+                            _note_idle_skip(
+                                crew_id,
+                                "last_used advanced during checks — skipping stop",
+                            )
+                            continue
+                        # Double-stop guard: another idle tick may have left a
+                        # claim behind; only one monitor may stop this crew.
+                        if live_entry.get("_stopping"):
+                            _note_idle_skip(
+                                crew_id, "stop already in progress — skipping",
+                            )
+                            continue
+                        # Claim the stop under the registry lock, then release
+                        # it before container_stop. The lifecycle lock stays
+                        # held until state write-back is complete.
+                        if crew_id in registry._reg["crews"]:
+                            registry._reg["crews"][crew_id]["_stopping"] = True
+
+                    logger.info(
+                        "Crew %s idle for %.0fs — stopping container",
+                        crew_id, stop_now - live_last_used,
+                    )
+                    try:
+                        podman.container_stop(info["container"])
+                    except Exception as e:
+                        # One crew's stop failure must not end idle reaping for every crew.
+                        logger.warning("Could not stop idle crew %s: %s", crew_id, e)
+                        stop_failed = True
+
+                    # Re-acquire the registry lock to write back the result and
+                    # clear the in-flight marker before releasing the lifecycle lock.
+                    with registry:
+                        if crew_id in registry._reg["crews"]:
+                            registry._reg["crews"][crew_id].pop("_stopping", None)
+                            if not stop_failed:
+                                registry._reg["crews"][crew_id]["status"] = "stopped"
+                    if not stop_failed:
+                        _idle_skip_reasons.pop(crew_id, None)
+                    if stop_failed:
                         continue
-                    # Claim the stop by marking the entry in-flight, then release
-                    # the lock. Persist so a concurrent reader observes the flag.
-                    if crew_id in registry._reg["crews"]:
-                        registry._reg["crews"][crew_id]["_stopping"] = True
-
-                # Lock released — perform the (potentially slow) stop WITHOUT it.
-                try:
-                    podman.container_stop(info["container"])
-                except Exception as e:
-                    # One crew's stop failure must not end idle reaping for every crew.
-                    logger.warning("Could not stop idle crew %s: %s", crew_id, e)
-                    stop_failed = True
-
-                # Re-acquire the lock to write back the result and clear the
-                # in-flight flag.
-                with registry:
-                    if crew_id in registry._reg["crews"]:
-                        registry._reg["crews"][crew_id].pop("_stopping", None)
-                        if not stop_failed:
-                            registry._reg["crews"][crew_id]["status"] = "stopped"
-                if not stop_failed:
-                    _idle_skip_reasons.pop(crew_id, None)
-                if stop_failed:
-                    continue
         except Exception:
             # Never let one bad iteration end idle reaping for the process.
             logger.exception("Idle monitor iteration failed; retrying next interval")

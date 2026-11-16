@@ -90,14 +90,19 @@ except ImportError:
     from transport.config import Config  # local dev
 
 try:
-    from registry import CrewRegistry, registry  # container: flat /app/
+    from registry import CrewRegistry, registry, _get_crew_lifecycle_lock  # container: flat /app/
 except ModuleNotFoundError:
-    from transport.registry import CrewRegistry, registry  # local dev
+    from transport.registry import CrewRegistry, registry, _get_crew_lifecycle_lock  # local dev
 
 try:
     from podman import PodmanClient, _get_podman  # container: flat /app/
 except ModuleNotFoundError:
     from transport.podman import PodmanClient, _get_podman  # local dev
+
+try:
+    from podman import MemoryInfoUnavailable  # container: flat /app/
+except ModuleNotFoundError:
+    from transport.podman import MemoryInfoUnavailable  # local dev
 
 # _NUKED_DURING_RESTART is defined in lifecycle.py and is the sentinel returned
 # by _ensure_crew_running when a concurrent nuke() removes the crew between
@@ -347,7 +352,12 @@ class CrewLauncher:
         if GA_MIN_FREE_MEM_GB <= 0:
             return
 
-        live_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 0)
+        try:
+            live_gb = _wait_for_memory(podman, GA_MIN_FREE_MEM_GB, 0)
+        except MemoryInfoUnavailable as exc:
+            raise RuntimeError(
+                f"Unable to determine available memory to start crew {crew_id}: {exc}"
+            ) from exc
         in_flight = len(self._start_reservations)
         free_gb = live_gb - GA_START_MEM_ESTIMATE_GB * in_flight
         if free_gb < GA_MIN_FREE_MEM_GB:
@@ -401,6 +411,7 @@ class CrewLauncher:
             from lifecycle import (  # container
                 _get_podman,
                 _to_crew,
+                _resolve_comp,
                 _probe_gateway,
                 _get_crew,
                 _wait_gateway,
@@ -421,6 +432,7 @@ class CrewLauncher:
             from transport.lifecycle import (  # local dev
                 _get_podman,
                 _to_crew,
+                _resolve_comp,
                 _probe_gateway,
                 _get_crew,
                 _wait_gateway,
@@ -482,45 +494,7 @@ class CrewLauncher:
                 )
                 _waiter_gen = self._startup_generation[crew_id]
 
-        if is_leader:
-            # As leader, probe the container now (outside the lock — network
-            # I/O cannot be held under the startup events lock). If the
-            # container is running and the gateway is alive, no restart is
-            # needed: de-register ourselves and return early.
-            if podman.container_is_running(c.container):
-                if _probe_gateway(c.gateway_url()):
-                    # Container is healthy — no restart needed.
-                    # Record a success outcome and fire event.set() before
-                    # de-registering so any waiter that arrived between our
-                    # election (where we registered the event) and this
-                    # early-exit is unblocked rather than stranded for 150s.
-                    with self._startup_events_lock:
-                        with registry:
-                            live_entry = registry._reg["crews"].get(crew_id)
-                            if (
-                                live_entry is not None
-                                and live_entry.get("container") == c.container
-                            ):
-                                live_entry["status"] = "running"
-                        self._crew_restart_outcomes[crew_id] = (True, None)
-                        self._startup_events.pop(crew_id, None)
-                    if isinstance(crew, dict):
-                        crew["status"] = "running"
-                    else:
-                        c.status = "running"
-                    event.set()
-                    if touch:
-                        _touch_crew(crew_id)
-                    return crew
-                # Gateway is dead inside a running container — fall through to
-                # the restart body below.
-                logger.info(
-                    "Crew %s container running but gateway probe failed — "
-                    "restarting", crew_id,
-                )
-                podman.container_stop(c.container)
-
-        else:
+        if not is_leader:
             # Another caller is already restarting — wait for it then return
             # the refreshed crew dict
             logger.info("Crew %s restart already in progress — waiting", crew_id)
@@ -574,7 +548,44 @@ class CrewLauncher:
         reservation_active = False
         capacity_lock_held = False
         post_start = False
+        lifecycle_lock = None
+        lifecycle_lock_held = False
         try:
+            lifecycle_lock = _get_crew_lifecycle_lock(crew_id)
+            # Hold the shared lifecycle gate across the probe and any restart so
+            # an idle stop cannot land after this wake succeeds.
+            lifecycle_lock.acquire()
+            lifecycle_lock_held = True
+
+            # A running container with a live gateway needs no restart. This
+            # probe is inside the same finalizer as restart work so any probe
+            # failure is recorded and its waiters are released.
+            if podman.container_is_running(c.container):
+                if _probe_gateway(c.gateway_url()):
+                    with registry:
+                        live_entry = registry._reg["crews"].get(crew_id)
+                        if (
+                            live_entry is not None
+                            and live_entry.get("container") == c.container
+                        ):
+                            live_entry["status"] = "running"
+                    if isinstance(crew, dict):
+                        crew["status"] = "running"
+                    else:
+                        c.status = "running"
+                    if touch:
+                        _touch_crew(crew_id)
+                    _outcome = (True, None)
+                    return crew
+
+                # Gateway is dead inside a running container — stop it before
+                # entering the regular restart sequence.
+                logger.info(
+                    "Crew %s container running but gateway probe failed — "
+                    "restarting", crew_id,
+                )
+                podman.container_stop(c.container)
+
             logger.info("Crew %s is stopped — restarting", crew_id)
 
             if credential is None:
@@ -630,8 +641,14 @@ class CrewLauncher:
                 raise
 
             # TRN-259: re-patch from the crew's recorded backend, not the
-            # current transport default.
-            _patch_crew_config(podman, c.container, backend=c.acp_backend or "kiro")
+            # current transport default. Pass the crew's own comp so its
+            # manifest (not the spec-ops default) drives config.agents.
+            _patch_crew_config(
+                podman,
+                c.container,
+                _resolve_comp(c.comp),
+                backend=c.acp_backend or "kiro",
+            )
             podman.container_stop(c.container)
             podman.container_start(c.container)
             if not _wait_gateway(crew_url, timeout=60):
@@ -724,17 +741,32 @@ class CrewLauncher:
                 self._cleanup_failed_wake(podman, crew_id, c.container)
             raise
         finally:
-            if capacity_lock_held:
-                self._capacity_lock.release()
-            if reservation_active:
-                self._release_start_reservation(crew_id)
-            # Always unblock waiters and clean up, even on error. Publish the
-            # outcome BEFORE firing the Event so a waiter that wakes immediately
-            # sees it.
-            with self._startup_events_lock:
-                self._crew_restart_outcomes[crew_id] = _outcome
-                self._startup_events.pop(crew_id, None)
-            event.set()
+            cleanup_error = None
+            try:
+                if capacity_lock_held:
+                    self._capacity_lock.release()
+                if reservation_active:
+                    self._release_start_reservation(crew_id)
+            except Exception as exc:
+                cleanup_error = exc
+
+            try:
+                # Always publish an outcome and signal waiters, even if
+                # capacity cleanup itself fails. Publish before setting Event
+                # so a waiter that wakes immediately sees the final outcome.
+                if cleanup_error is not None:
+                    _outcome = (False, cleanup_error)
+                try:
+                    with self._startup_events_lock:
+                        self._crew_restart_outcomes[crew_id] = _outcome
+                        self._startup_events.pop(crew_id, None)
+                finally:
+                    event.set()
+                if cleanup_error is not None:
+                    raise cleanup_error
+            finally:
+                if lifecycle_lock_held and lifecycle_lock is not None:
+                    lifecycle_lock.release()
 
     # ── finish_setup ──────────────────────────────────────────────────────────
 
@@ -746,8 +778,8 @@ class CrewLauncher:
         volume: str,
         home_volume: str,
         auth_b64: str,
-        composition: str = "spec-ops",
-        composition_entry: dict | None = None,
+        comp: str = "spec-ops",
+        comp_entry: dict | None = None,
         *,
         admiral_secret: str,
         dashboard: bool = False,
@@ -869,7 +901,7 @@ class CrewLauncher:
 
         policy_signing_key = __import__("secrets").token_hex(32)
 
-        _patch_crew_config(podman, container, composition_entry, backend=backend)
+        _patch_crew_config(podman, container, comp_entry, backend=backend)
 
         podman.container_stop(container)
         podman.container_start(container)
@@ -880,7 +912,7 @@ class CrewLauncher:
             }
 
         # Copy agents/skills/steering via AcademyLoader
-        _loader = AcademyLoader(podman, container, composition_entry, acp_backend=backend)
+        _loader = AcademyLoader(podman, container, comp_entry, acp_backend=backend)
         _loader_result = _loader.copy_all()
         copied_agents = _loader_result["agents"]
 
@@ -890,7 +922,7 @@ class CrewLauncher:
         policy_warning: str | None = None
         try:
             policy_version = _inject_policy(
-                podman, container, composition, policy_signing_key
+                podman, container, comp, policy_signing_key
             )
         except Exception as e:
             policy_warning = str(e)
@@ -941,7 +973,7 @@ class CrewLauncher:
             cookie=cookie,
             internal_cookie=internal_cookie or "",
             status="running",
-            composition=composition,
+            comp=comp,
             acp_backend=backend,
             acp_profile=acp_profile,
             created_at=datetime.now(timezone.utc).isoformat(),

@@ -466,12 +466,11 @@ def test_acp_backend_defaults_to_kiro() -> None:
 
 
 # ---------------------------------------------------------------------------
-# TRN-284 task 5.3: _load_composition_registry with missing file and malformed JSON
+# TRN-284 task 5.3: _load_comp_registry with missing file and malformed JSON
 # ---------------------------------------------------------------------------
 
-def test_load_composition_registry_missing_file_returns_default() -> None:
-    """_load_composition_registry: when the registry file is missing, returns
-    the default fallback composition (spec-ops or similar)."""
+def test_load_comp_registry_missing_file_returns_default() -> None:
+    """_load_comp_registry returns the default fallback when the file is missing."""
     import transport.academy as academy
     from pathlib import Path
     from unittest.mock import patch
@@ -479,21 +478,34 @@ def test_load_composition_registry_missing_file_returns_default() -> None:
     # Patch the path to point at a non-existent file
     missing_path = Path("/nonexistent/path/registry.json")
     with patch.object(academy, "_CREW_REGISTRY_PATH", missing_path):
-        result = academy._load_composition_registry()
+        result = academy._load_comp_registry()
 
     # Must return a non-empty dict (the fallback)
     assert isinstance(result, dict), "Expected dict, got: " + repr(result)
     assert len(result) > 0, "Expected non-empty fallback dict"
-    # At least one entry must be the fallback spec-ops or default type
-    assert any(
-        "spec-ops" in k or "kirocrew" in k or True  # any key is fine for fallback
-        for k in result
-    ), "Fallback dict must have at least one entry"
+    assert list(result) == ["spec-ops"]
+    assert result["spec-ops"]["dir"] == "spec-ops"
 
 
-def test_load_composition_registry_malformed_json_returns_default(tmp_path) -> None:
-    """_load_composition_registry: when the registry file contains malformed JSON,
-    logs the error and returns the default fallback composition."""
+def test_load_crew_manifest_without_entry_defaults_to_spec_ops(tmp_path) -> None:
+    import json
+    import transport.academy as academy
+    from unittest.mock import patch
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"agents": ["agent-a"]}))
+    with (
+        patch.object(academy, "_resolve_comp", return_value={"dir": "spec-ops"}) as resolve,
+        patch.object(academy, "_resolve_manifest_path", return_value=manifest),
+    ):
+        result = academy._load_crew_manifest()
+
+    resolve.assert_called_once_with("spec-ops")
+    assert result["agents"] == ["agent-a"]
+
+
+def test_load_comp_registry_malformed_json_returns_default(tmp_path) -> None:
+    """_load_comp_registry logs malformed JSON and returns its fallback."""
     import transport.academy as academy
     from pathlib import Path
     from unittest.mock import patch
@@ -502,16 +514,15 @@ def test_load_composition_registry_malformed_json_returns_default(tmp_path) -> N
     bad_json_file.write_text("{this is not valid json")
 
     with patch.object(academy, "_CREW_REGISTRY_PATH", bad_json_file):
-        result = academy._load_composition_registry()
+        result = academy._load_comp_registry()
 
     # Must return the default fallback (not raise, not return empty)
     assert isinstance(result, dict), "Expected dict on parse error, got: " + repr(result)
     assert len(result) > 0, "Expected non-empty fallback dict on parse error"
 
 
-def test_load_composition_registry_valid_file_returns_compositions(tmp_path) -> None:
-    """_load_composition_registry: a valid JSON file with a 'compositions' list
-    returns the parsed entries."""
+def test_load_comp_registry_accepts_legacy_compositions_key(tmp_path) -> None:
+    """_load_comp_registry accepts the legacy 'compositions' key."""
     import json
     import transport.academy as academy
     from pathlib import Path
@@ -522,7 +533,7 @@ def test_load_composition_registry_valid_file_returns_compositions(tmp_path) -> 
             {
                 "name": "test-crew",
                 "dir": "test-crew",
-                "description": "A test composition",
+                "description": "A test comp",
             }
         ]
     }
@@ -542,7 +553,72 @@ def test_load_composition_registry_valid_file_returns_compositions(tmp_path) -> 
         patch.object(academy, "_CREW_REGISTRY_PATH", valid_json_file),
         patch.object(Path, "is_dir", mock_is_dir),
     ):
-        result = academy._load_composition_registry()
+        result = academy._load_comp_registry()
 
     assert isinstance(result, dict)
     assert "test-crew" in result
+
+
+def _load_registry_data_for_comp_alias_test(tmp_path, registry_data):
+    import json
+    import transport.academy as academy
+    from pathlib import Path
+    from unittest.mock import patch
+
+    registry_file = tmp_path / "registry.json"
+    registry_file.write_text(json.dumps(registry_data))
+    original_is_dir = Path.is_dir
+
+    def mock_is_dir(path):
+        if "test-crew" in str(path):
+            return True
+        return original_is_dir(path)
+
+    with (
+        patch.object(academy, "_CREW_REGISTRY_PATH", registry_file),
+        patch.object(Path, "is_dir", mock_is_dir),
+    ):
+        return academy._load_comp_registry()
+
+
+def test_load_comp_registry_reads_canonical_comps_key(tmp_path) -> None:
+    entries = [{"name": "test-crew", "dir": "test-crew", "description": "A test comp"}]
+
+    result = _load_registry_data_for_comp_alias_test(tmp_path, {"comps": entries})
+
+    assert list(result) == ["test-crew"]
+
+
+def test_load_comp_registry_accepts_equal_keys(tmp_path) -> None:
+    entries = [{"name": "test-crew", "dir": "test-crew", "description": "A test comp"}]
+
+    result = _load_registry_data_for_comp_alias_test(
+        tmp_path,
+        {"comps": entries, "compositions": entries},
+    )
+
+    assert list(result) == ["test-crew"]
+
+
+def test_load_comp_registry_prefers_comps_on_conflict(tmp_path) -> None:
+    result = _load_registry_data_for_comp_alias_test(
+        tmp_path,
+        {
+            "comps": [{"name": "test-crew", "dir": "test-crew"}],
+            "compositions": [{"name": "other-crew", "dir": "other-crew"}],
+        },
+    )
+
+    assert list(result) == ["test-crew"]
+
+
+def test_load_comp_registry_uses_legacy_when_comps_not_a_list(tmp_path) -> None:
+    result = _load_registry_data_for_comp_alias_test(
+        tmp_path,
+        {
+            "comps": None,
+            "compositions": [{"name": "test-crew", "dir": "test-crew"}],
+        },
+    )
+
+    assert list(result) == ["test-crew"]

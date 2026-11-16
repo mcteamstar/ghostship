@@ -56,7 +56,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts the transport and Caddy proxy on port 64057 (published on all interfaces — set `GA_API_KEY` if the host is reachable from other machines). Then connect your harness:
+Builds crew images, starts the transport and Caddy proxy on port 64057. Caddy is published on loopback (`127.0.0.1`) by default; see [configuration](docs/configuration.md) to choose another published address and configure the separate API-key policy. Then connect your harness:
 
 > **First install?** When no config file is present, `install.sh` runs an **interactive guided setup** automatically: it walks you through choosing a default agent backend (`kiro`/`claude`/`codex`) plus any additional backends, collects non-secret config, writes `config/ghostship.yaml`, then builds, authenticates, and wires skill symlinks and MCP registration automatically. Force it any time with `./install.sh --wizard`. When a `config/ghostship.yaml` already exists, the install runs non-interactively as before. (Config is YAML; an existing `config/ghostship.conf` is auto-migrated on the next install.)
 
@@ -101,7 +101,7 @@ Skills follow the [Agent Skills](https://agentskills.io) standard and work in Cl
 |:------|:-------------|
 | `ghostship-command` | Drive the fleet — launch, seed, dispatch, steer, poll, autopilot, tear down. |
 | `ghostship-admin` | Install, configure, and connect a ghostship transport. |
-| `ghostship-capability` | Configure agent personas, skills, crew compositions, MCP catalogue. |
+| `ghostship-capability` | Configure agent personas, skills, crew comps, MCP catalogue. |
 
 The Claude Code plugin and Kiro Power installs handle skill wiring automatically. To install globally from a clone:
 
@@ -139,7 +139,7 @@ Registered as `ghostship`:
 | Tool | Name | Description |
 |:-:|:------|:-----|
 | <img src="docs/images/tool-crews.png" width="256"> | `crews` | List all registered crews and their status. |
-| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `composition` selects the crew type (default: `"spec-ops"`). `dashboard=True` allocates a port and returns a `dashboard_url`; default follows `GA_DASHBOARD_DEFAULT` (headless if unset). |
+| <img src="docs/images/tool-launch.png" width="256"> | `launch` | Summon a new crew container + workspace. `comp` selects the crew comp (default: `"spec-ops"`); legacy `composition` remains an alias. If both are provided, `comp` wins. `dashboard=True` allocates a port and returns a `dashboard_url`; default follows `GA_DASHBOARD_DEFAULT` (headless if unset). |
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace. |
 | <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, git bundle, or directory tar (`pack=True`) from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |

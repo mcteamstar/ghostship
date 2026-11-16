@@ -31,8 +31,14 @@ mkdir -p "$(dirname "$_DEDICATED_SOCK")"
 
 # Create a minimal mock socket that responds to HTTP (simulates Podman API)
 if command -v socat >/dev/null 2>&1; then
+  _MOCK_RESPONDER="${TMPDIR}/mock-http-responder.sh"
+  cat > "${_MOCK_RESPONDER}" <<'RESPONDER'
+#!/bin/sh
+printf 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}'
+RESPONDER
+  chmod +x "${_MOCK_RESPONDER}"
   socat UNIX-LISTEN:"${_DEDICATED_SOCK}",fork \
-    EXEC:"/bin/echo -e 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}'" &
+    EXEC:"${_MOCK_RESPONDER}" &
   SOCAT_PID=$!
   sleep 0.5
 

@@ -324,10 +324,10 @@ class TestAuthGate(unittest.TestCase):
     "fresh login, and needs a human to approve the device prompt during the run)",
 )
 class TestKiroAuthCycle(unittest.TestCase):
-    """Exercises the real /login, /logout device-auth flow.
+    """Exercises the real Kiro device-auth flow.
 
     Requires a human to open the printed login_url and approve the device
-    prompt while this test polls GET /login — it cannot complete unattended,
+    prompt while this test polls GET /login/kiro — it cannot complete unattended,
     which is why it's gated behind an explicit opt-in flag rather than
     GHOSTSHIP_E2E_URL alone.
     """
@@ -342,14 +342,33 @@ class TestKiroAuthCycle(unittest.TestCase):
         headers = self._headers()
 
         logout_resp = httpx.post(
-            f"{GHOSTSHIP_E2E_URL}/logout", headers=headers, timeout=10.0
+            f"{GHOSTSHIP_E2E_URL}/logout/kiro", headers=headers, timeout=10.0
         )
-        self.assertIn(logout_resp.status_code, (200, 404))
+        self.assertEqual(logout_resp.status_code, 200, logout_resp.text[:200])
+
+        status_resp = httpx.get(
+            f"{GHOSTSHIP_E2E_URL}/login/kiro", headers=headers, timeout=10.0
+        )
+        self.assertEqual(status_resp.status_code, 200, status_resp.text[:200])
+        identity_center = status_resp.json().get("identity_center") or {}
+        start_url = identity_center.get("start_url")
+        region = identity_center.get("region")
+        if start_url and region:
+            login_path = "/login/kiro/identity-center"
+            login_body = {"start_url": start_url, "region": region}
+        else:
+            login_path = "/login/kiro/builder-id"
+            login_body = None
 
         login_resp = httpx.post(
-            f"{GHOSTSHIP_E2E_URL}/login", headers=headers, timeout=10.0
+            f"{GHOSTSHIP_E2E_URL}{login_path}",
+            headers=headers,
+            # Starting the ephemeral Kiro auth container can exceed the normal
+            # request timeout on a cold Podman machine.
+            timeout=60.0,
+            json=login_body,
         )
-        self.assertEqual(login_resp.status_code, 200)
+        self.assertEqual(login_resp.status_code, 200, login_resp.text[:200])
         login_body = login_resp.json()
         self.assertEqual(login_body["status"], "pending")
         self.assertTrue(login_body.get("login_url"))
@@ -364,9 +383,9 @@ class TestKiroAuthCycle(unittest.TestCase):
         status = "pending"
         while time.monotonic() < deadline:
             poll_resp = httpx.get(
-                f"{GHOSTSHIP_E2E_URL}/login", headers=headers, timeout=10.0
+                f"{GHOSTSHIP_E2E_URL}/login/kiro", headers=headers, timeout=10.0
             )
-            self.assertEqual(poll_resp.status_code, 200)
+            self.assertEqual(poll_resp.status_code, 200, poll_resp.text[:200])
             status = poll_resp.json()["status"]
             if status == "complete":
                 break

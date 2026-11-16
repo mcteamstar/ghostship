@@ -22,8 +22,8 @@ These variables are written into the transport container's environment by `insta
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`), from `network.api_key` or `install.sh --api-key <key>`. Resolution order: `--api-key` > `network.api_key` > the key saved by an earlier `--api-key` (`--api-key ""` clears the saved key). `network.api_key` has three states: a string enables auth; unset is fine on a loopback `HOST`, but on any other `HOST` the install warns and aborts and the transport refuses to start; `false` is the explicit opt-out that allows unauthenticated non-loopback access (for deployments behind their own auth layer — Tailscale, VPN, reverse proxy) with a warning. **Never log, print, or embed this value.** See [auth.md](auth.md). |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. Checked against `MemAvailable` from `/proc/meminfo` (falls back to `MemFree`), polled every 5 s for up to 60 s. Set to `0` to disable. |
-| `GA_START_MEM_ESTIMATE_GB` | `1.0` | Memory (GB) assumed for each crew start still in flight. Subtracted from the live reading when admitting another start, so concurrent wakes cannot pass the `GA_MIN_FREE_MEM_GB` gate on the same free memory. Raise it for heavy crew compositions. |
+| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. On Linux, checked against `MemAvailable` from `/proc/meminfo`; if unavailable or malformed, the start fails closed. On non-Linux hosts, uses Podman info (`memAvailable`, falling back to `memFree`). Polled every 5 s for up to 60 s. Set to `0` to disable. |
+| `GA_START_MEM_ESTIMATE_GB` | `1.0` | Memory (GB) assumed for each crew start still in flight. Subtracted from the live reading when admitting another start, so concurrent wakes cannot pass the `GA_MIN_FREE_MEM_GB` gate on the same free memory. Raise it for heavy crew comps. |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) for Ghost Academy. Set to `false` to use the default socket. |
 | `GA_MACHINE_CPUS` | `8` | vCPUs for the dedicated Podman machine VM (macOS only; a cap, not a reservation). Ignored on Linux. |
 | `GA_MACHINE_MEMORY` | `8192` | Memory in MB for the dedicated Podman machine VM (macOS only). A ceiling backed on demand by Apple's Virtualization.framework; idle usage stays well below this. 8 GB is sufficient for 3 concurrent crew containers. Ignored on Linux. |
@@ -35,7 +35,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_SUBAGENT_TIMEOUT_SECS` | `3600` | Patched into each crew's `subagent_timeout_secs` — maximum wall-clock seconds per subagent task. |
 | `GA_BATCH_MAX_TASKS` | `20` | Maximum tasks in a single batch dispatch call (`tasks=[...]`). Requests exceeding this are rejected before any task is spawned. |
 | `GA_TASK_TIMESTAMP_TTL_SECS` | `3600` | TTL (seconds) for completed-task timestamp entries kept in process memory. Entries older than this are evicted; no floor — reduce on high-throughput transports to limit memory growth. |
-| `GA_CREW_AGENT` | `kiro` | Which agent backend to build and run. Comma-separated list for multi-toolchain builds; first entry is the runtime default for crews launched without a `backend` argument. Any enabled backend can be chosen per crew with `launch(crew_id, backend="claude")`; the crew keeps it for its whole life, including restarts. Values: `kiro` (default, KiroCrew-native kiro-cli), `claude` (Claude Code ACP backend), `codex` (Codex ACP backend). Kiro is always in the enabled set (appended if not listed). `install.sh` builds one toolchain per listed backend and passes the full list as the container environment. Login routes (`POST /login/{backend}/{method}`) only accept enabled backends. Re-run `ghostship install` after changing it. |
+| `GA_CREW_AGENT` | `kiro` | Derived internal backend set. YAML uses scalar `backends.default` for the implicit runtime backend; Kiro is always enabled, while Claude and Codex are enabled by the presence of `backends.claude` / `backends.codex`. Any enabled backend can be chosen per crew with `launch(crew_id, backend="claude")`; the crew keeps it for its whole life, including restarts. Re-run `ghostship install` after changing backend sections. |
 | Backend credentials | _(not config)_ | Backend credentials are managed via `ghostship auth login|logout|status` and stored in `DATA_DIR/credentials/<backend>/<profile>.json` (default profile: `default`). Multiple named profiles per backend are supported — see [auth.md](auth.md). `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, and `KIRO_API_KEY` are not config file variables — the installer ignores them. See [auth.md](auth.md). |
 | `ANTHROPIC_BASE_URL` | _(unset)_ | Claude backend. Optional Anthropic-compatible endpoint URL injected as `ANTHROPIC_BASE_URL` into crew containers when `GA_CREW_AGENT=claude`. When set, allows operators to redirect Claude-backend crew traffic to a local LLM proxy (litellm, OpenRouter, LM Studio, etc.) without image changes. Has no effect when `GA_CREW_AGENT` does not include `claude`. |
 | `OPENAI_BASE_URL` | _(unset)_ | Codex backend. Optional OpenAI-compatible endpoint URL injected as `OPENAI_BASE_URL` into crew containers when `GA_CREW_AGENT=codex`. When set, redirects Codex-backend crew traffic to an OpenAI-compatible endpoint without image changes, and the `launch()` network WARNING names this endpoint instead of `api.openai.com`. Has no effect when `GA_CREW_AGENT` does not include `codex`. |
@@ -53,7 +53,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of host ports in the dashboard proxy port range. Config-file-only. |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
-| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:d7eeab57ff9d4b265fcf05a2fa1352f1b238f730cfd6c65ebda4b36dcdef5d0f` — the pinned `0.12.0` multi-arch index digest)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
+| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e` — the pinned KiroCrew v0.12.2 multi-arch index digest; bundled Kiro CLI 2.27.1)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path on the **host** to an operator-managed directory of additional standing-order template `.md` files. Must be an absolute path (error otherwise). When set and the path exists, it is bind-mounted read-only at `/mnt/orders` inside the container; the container receives `GA_ORDERS_DIR=/mnt/orders`. A warning is logged if the path is set but missing. Config-file-only. |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. See [portal.md](portal.md) for mode descriptions. Unrecognised values fall back to `off` with a WARNING. |
@@ -62,7 +62,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard/login`. Sessions are in-memory and reset on transport restart. |
 | `GA_TRANSPORT_SECRET` | _(auto-generated by `install.sh`)_ | **Not user-settable directly.** Shared secret between `ga-portal` (Caddy) and `ga-transport`. Generated with `openssl rand -hex 32`, stored as Podman secret `ga-transport-secret`. Caddy injects it as `X-Transport-Token` on every upstream request; the transport rejects requests with a missing or wrong token with HTTP 401. Preserved across reinstalls. To rotate: delete the `ga-transport-secret` Podman secret and re-run `install.sh`. |
 | `GA_TRUSTED_PROXY_CIDR` | _(unset)_ | Comma-separated list of trusted proxy CIDR ranges (e.g. `10.0.0.0/8,172.16.0.0/12`). When set, the transport trusts `X-Forwarded-For` headers from clients within these ranges for rate-limit key derivation and audit-log source IPs. Leave unset when the transport is not behind a reverse proxy, or set to only the proxy's own CIDR. Incorrect configuration allows IP spoofing in rate-limit and audit contexts. |
-| `GA_REQUIRE_SECRET_ON_EXTERNAL_BIND` | _(unset / false)_ | Set to `true` to make the transport refuse to start if `GA_API_KEY` is unset and `HOST` is non-loopback. By default the transport logs a `CRITICAL` warning but continues; this flag promotes that to a hard failure. Recommended for any deployment reachable from outside the host. |
+| `GA_REQUIRE_SECRET_ON_EXTERNAL_BIND` | `false` | Set to `true` to make the transport refuse to start if `GA_TRANSPORT_SECRET` is missing and `GA_TRANSPORT_BIND` is a concrete non-loopback address. With the default `false`, that condition logs a `CRITICAL` warning and continues. This guard checks the transport's internal secret and bind; the separate API-key check uses `GA_API_KEY` against Caddy's published address (`HOST`). |
 
 **Git identity and Claude attribution are separate.** `GA_GIT_AUTHOR_NAME` and `GA_GIT_AUTHOR_EMAIL` (or `crew.git.author.name` and `crew.git.author.email` in `config/ghostship.yaml`) set the author and committer identity of crew commits. They do not control attribution text. Claude crews add no `Co-Authored-By` trailer to commits and no "Generated with Claude Code" text to PR descriptions. The claude toolchain bakes that setting into the crew image as a Claude Code managed setting, so no config is needed. Existing claude crews keep the image they launched with, so relaunch them after `ghostship upgrade`.
 
@@ -126,10 +126,11 @@ so clearing a previous fallback restores inheritance. Reapplying configuration
 also removes the obsolete generated `agent.default_model` field. Levels 1 and 3
 are applied by the gateway at dispatch time.
 
-All shipped model defaults are `""` (unset), and the six shipped personas omit
-their `model` field so they inherit the configured backend/global fallback or
-harness-selected default. Operator backend overrides also apply to unpinned
-personas. `backends.default` chooses the
+The shipped backend defaults are `claude-haiku-5.5` for Kiro, `claude-haiku-5-5`
+for Claude, and `gpt-6-luna` for Codex. The six shipped personas omit their
+`model` field so they inherit the selected backend's configured fallback rather
+than falling through to expensive automatic routing. Operator backend overrides
+also apply to unpinned personas. `backends.default` chooses the
 **agent harness**, whereas `backends.<b>.model.default` chooses that harness’s
 configured **model fallback**. A model default does not override a persona pin;
 use `backends.<b>.model.override` for an operator-level model lock.
@@ -166,8 +167,12 @@ selection until a new session or process starts after configuration is reapplied
   model:
     default: "gemma"            # every other backend falls back to this
   ```
-- **One fallback everywhere**: set only `model.default`.
-- **KiroCrew default everywhere**: leave all of them unset.
+- **Opt into an additional backend with built-in defaults**:
+  ```yaml
+  backends:
+    claude: {}
+    codex: {}
+  ```
 
 
 ## Interactive setup
@@ -185,14 +190,15 @@ The wizard:
 3. Writes `config/ghostship.yaml` (mode `600`) from an internal template, with the operator's choices uncommented and other keys commented at their defaults. If a `config/ghostship.yaml` already exists it prompts before overwriting. Then builds and starts the transport.
 4. After the transport is ready, offers `ghostship auth login <backend>` for each enabled backend that `ghostship auth status` reports as unconfigured (using the installed URL and key), then offers to run `ghostship setup` for harness registration.
 
-Multiple backends can be enabled at once — the transport holds config for all of them simultaneously, and the first entry is the runtime default:
+Multiple backends can be enabled at once. `backends.default` selects the
+implicit runtime backend. Kiro is always enabled; the presence of `claude` or
+`codex` sections enables those optional backends:
 
 ```yaml
 backends:
-  default:
-    - kiro
-    - claude
-    - codex
+  default: kiro
+  claude: {}
+  codex: {}
 ```
 
 ## Config file
@@ -249,7 +255,7 @@ default, is documented in **`config/ghostship.yaml.example`** — copy it to
 | `crew` | `max_crews`, `max_active`, `idle_timeout_secs`, `subagent_timeout_secs`, `orders_dir`, `git.author.name`/`git.author.email` | `GA_MAX_CREWS`, `GA_MAX_ACTIVE_CREWS`, … |
 | `crew.memory` | `min_free_mem_gb`, `start_mem_estimate_gb`, `spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb` | `GA_MIN_FREE_MEM_GB`, … |
 | `model` | `default` | `KC_MODEL_DEFAULT` |
-| `backends` | `default` (list); `<b>.model.override`/`<b>.model.default`; `kiro.identity_center.url`/`.region`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KC_MODEL_<B>_OVERRIDE`/`_DEFAULT`, `KIRO_IDENTITY_PROVIDER`, … |
+| `backends` | `default` (scalar); optional `claude`/`codex` sections enable those backends; `<b>.model.override`/`<b>.model.default`; `kiro.identity_center.url`/`.region`; `claude.base_url`; `codex.base_url` | `GA_CREW_AGENT`, `KC_MODEL_<B>_OVERRIDE`/`_DEFAULT`, `KIRO_IDENTITY_PROVIDER`, … |
 | `portal` | `tls_mode`, `domain`, `session_ttl_secs`, `dashboard.default`, `dashboard.port_range.start`/`.size`, `rate_limit.*` | `GA_PORTAL_TLS_MODE`, `GA_PORTAL_DOMAIN`, … |
 | `machine` | `dedicated`, `name`, `resources.cpus`/`resources.memory_mb`/`resources.disk_gb` | `GA_DEDICATED_MACHINE`, `GA_MACHINE_NAME`, … |
 | `machine.images` | `podman_socket`, `kc_image`, `kc_base_image`, `agents_ref` | `PODMAN_SOCKET`, `KC_IMAGE`, `KC_BASE_IMAGE`, _(pin; forces image rebuild on change)_ |
@@ -372,7 +378,7 @@ The new image is built at install time. Existing crews use the old image until n
 
 ## MCP server catalogue
 
-Crew agents can be given MCP servers (external tools) that vary by composition. Server definitions live in a catalogue at `academy/mcp/`; compositions opt in via their `manifest.json`.
+Crew agents can be given MCP servers (external tools) that vary by comp. Server definitions live in a catalogue at `academy/mcp/`; comps opt in via their `manifest.json`.
 
 ### Catalogue format (`academy/mcp/`)
 
@@ -413,9 +419,9 @@ Each JSON object conforms to the kiro-cli `mcpServers` entry format: at minimum 
 
 An empty catalogue is valid — no `mcp.json` is written into crew containers and agents run with only their built-in tools.
 
-### Declaring servers in a composition (`manifest.json → mcpServers`)
+### Declaring servers in a comp (`manifest.json → mcpServers`)
 
-A composition's `crews/<name>/manifest.json` gains an optional `mcpServers` array of catalogue server names:
+A comp's `crews/<name>/manifest.json` gains an optional `mcpServers` array of catalogue server names:
 
 ```json
 {
@@ -445,7 +451,7 @@ Pass secrets into the transport environment via the same `install.sh` configurat
 
 ### Per-agent servers
 
-Individual agent JSON files in `academy/agents/` may declare their own `mcpServers` map for servers specific to that agent. kiro-cli resolves agent-level entries before the composition-level `mcp.json`, so a name declared in both is served from the agent's entry. An agent may set `includeMcpJson: false` to opt out of the composition-level `mcp.json` entirely.
+Individual agent JSON files in `academy/agents/` may declare their own `mcpServers` map for servers specific to that agent. kiro-cli resolves agent-level entries before the comp-level `mcp.json`, so a name declared in both is served from the agent's entry. An agent may set `includeMcpJson: false` to opt out of the comp-level `mcp.json` entirely.
 
 ## Fixed headless overrides
 
