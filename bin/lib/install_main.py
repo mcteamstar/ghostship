@@ -448,6 +448,9 @@ def main() -> None:
         ga_portal_domain=_g("GA_PORTAL_DOMAIN"),
         ga_portal_session_ttl_secs=_g("GA_PORTAL_SESSION_TTL_SECS", "86400"),
         ga_api_key_disabled=ga_api_key_disabled,
+        ga_require_secret_on_external_bind=_g(
+            "GA_REQUIRE_SECRET_ON_EXTERNAL_BIND", "false"
+        ),
         kc_image=_g("KC_IMAGE", "localhost/spec-ops:latest"),
         ga_api_key=ga_api_key,
         ga_orders_dir=_g("GA_ORDERS_DIR"),

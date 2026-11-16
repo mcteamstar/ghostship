@@ -56,7 +56,7 @@ Other distros: [docs/manual-install.md](docs/manual-install.md). Requires cgroup
 ./install.sh
 ```
 
-Builds crew images, starts the transport and Caddy proxy on port 64057 (published on all interfaces — set `GA_API_KEY` if the host is reachable from other machines). Then connect your harness:
+Builds crew images, starts the transport and Caddy proxy on port 64057. Caddy is published on loopback (`127.0.0.1`) by default; see [configuration](docs/configuration.md) to choose another published address and configure the separate API-key policy. Then connect your harness:
 
 > **First install?** When no config file is present, `install.sh` runs an **interactive guided setup** automatically: it walks you through choosing a default agent backend (`kiro`/`claude`/`codex`) plus any additional backends, collects non-secret config, writes `config/ghostship.yaml`, then builds, authenticates, and wires skill symlinks and MCP registration automatically. Force it any time with `./install.sh --wizard`. When a `config/ghostship.yaml` already exists, the install runs non-interactively as before. (Config is YAML; an existing `config/ghostship.conf` is auto-migrated on the next install.)
 

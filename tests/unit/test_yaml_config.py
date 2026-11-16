@@ -364,6 +364,26 @@ class TestComposeVarCoverage(unittest.TestCase):
         self.assertNotIn("GA_SUBAGENT_MAX_TURNS", yaml_config._ENV_TO_PATH)
 
 
+class TestExternalBindGuardConfig(unittest.TestCase):
+    """The transport secret guard survives YAML resolution and flattening."""
+
+    def test_external_bind_guard_defaults_to_false(self):
+        env = yaml_config.flatten_to_env(yaml_config._defaults_tree())
+        self.assertEqual(env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"], "false")
+
+    def test_external_bind_guard_true_from_yaml(self):
+        env = yaml_config.flatten_to_env(
+            {"network": {"require_secret_on_external_bind": True}}
+        )
+        self.assertEqual(env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"], "true")
+
+    def test_external_bind_guard_false_from_yaml(self):
+        env = yaml_config.flatten_to_env(
+            {"network": {"require_secret_on_external_bind": False}}
+        )
+        self.assertEqual(env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"], "false")
+
+
 class TestDeprecatedYamlPaths(unittest.TestCase):
     """TRN-257: old flat YAML paths rewrite to the new sub-section paths with a
     warning; the removed model.override is warned about and discarded."""

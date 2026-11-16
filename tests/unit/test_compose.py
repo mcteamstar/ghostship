@@ -21,7 +21,7 @@ VENDOR = REPO_ROOT / "bin" / "lib" / "vendor"
 if str(VENDOR) not in sys.path:
     sys.path.insert(0, str(VENDOR))
 
-from bin.lib.compose import ComposeConfig, generate_compose  # noqa: E402
+from bin.lib.compose import ComposeConfig, _config_from_env, generate_compose  # noqa: E402
 
 import yaml  # noqa: E402 (vendored)
 
@@ -95,6 +95,11 @@ class TestMinimalConfig:
     def test_ga_portal_data_volume_present(self) -> None:
         doc = _parsed(_minimal_config())
         assert "ga-portal-data" in doc["volumes"]
+
+    def test_transport_secret_bind_guard_defaults_to_false(self) -> None:
+        doc = _parsed(_minimal_config())
+        env = doc["services"]["ga-transport"]["environment"]
+        assert env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"] == "false"
 
     def test_service_order(self) -> None:
         """Service insertion order must be ga-transport, ga-radar, ga-portal."""
@@ -208,11 +213,36 @@ class TestConditionalSections:
         assert env["GA_ORDERS_DIR"] == ""
 
 
+class TestTransportSecretBindGuard:
+    def test_enabled_guard_is_serialized_for_transport(self) -> None:
+        doc = _parsed(_minimal_config(ga_require_secret_on_external_bind="true"))
+        env = doc["services"]["ga-transport"]["environment"]
+        assert env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"] == "true"
+
+    def test_standalone_generator_reads_guard_setting_from_environment(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("DATA_DIR", "/data/ghost-academy")
+        monkeypatch.setenv("PODMAN_SOCK", "/run/user/1000/podman/podman.sock")
+        monkeypatch.setenv("GA_REQUIRE_SECRET_ON_EXTERNAL_BIND", "true")
+
+        doc = _parsed(_config_from_env())
+
+        env = doc["services"]["ga-transport"]["environment"]
+        assert env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"] == "true"
+
+
 # ---------------------------------------------------------------------------
 # Portal port range
 # ---------------------------------------------------------------------------
 
 class TestPortalPorts:
+    def test_default_host_publishes_only_loopback(self) -> None:
+        doc = _parsed(_minimal_config())
+        ports = doc["services"]["ga-portal"]["ports"]
+        assert "127.0.0.1:64057:64057" in ports
+        assert "127.0.0.1:64058-64121:64058-64121" in ports
+
     def test_main_port_binding(self) -> None:
         doc = _parsed(_minimal_config(
             host="127.0.0.1",
@@ -232,3 +262,14 @@ class TestPortalPorts:
         ))
         ports = doc["services"]["ga-portal"]["ports"]
         assert "127.0.0.1:64058-64121:64058-64121" in ports
+
+    @pytest.mark.parametrize("host", ["192.168.1.10", "0.0.0.0"])
+    def test_custom_host_changes_only_published_port_bindings(self, host: str) -> None:
+        doc = _parsed(_minimal_config(host=host, portal_bind=host))
+        portal = doc["services"]["ga-portal"]
+        transport = doc["services"]["ga-transport"]
+
+        assert f"{host}:64057:64057" in portal["ports"]
+        assert f"{host}:64058-64121:64058-64121" in portal["ports"]
+        assert transport["environment"]["GA_TRANSPORT_BIND"] == "0.0.0.0"
+        assert transport["environment"]["GA_PORTAL_HOST"] == host
