@@ -18,8 +18,11 @@
   `docs/dependency-review-2026-11-14.md`.
 - Verified on arm64 (macOS): the local image build seeds the database, and a
   fresh kiro crew completed a task and continued its session with no schema
-  errors. Not yet verified: amd64 at runtime, and kiro-cli writes to
-  `conversations_v2` (the table stayed empty in headless dispatch).
+  errors. Headless ACP dispatch persists sessions under `~/.kiro/sessions`
+  and leaves `conversations_v2` empty; the table is seeded for the interactive
+  chat path. A stopped crew restarted by the transport kept an identical
+  `config.local.json` and completed a task afterwards. Not yet verified: amd64
+  at runtime.
 
 ### Comp terminology (TRN-325)
 
