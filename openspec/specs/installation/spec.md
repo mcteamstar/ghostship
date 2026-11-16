@@ -862,12 +862,13 @@ When `ghostship.conf` sets `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPEN
 
 ### Requirement: HOST controls only the Caddy host bind address
 
-`HOST` (`network.host`) SHALL set only the host address `ga-portal` publishes on, for both `PORT` and the dashboard port range. It SHALL default to `127.0.0.1`. The transport container SHALL always listen on `0.0.0.0` internally, whatever `HOST` is, and Caddy's upstream dial strings SHALL remain `ga-transport:64057`. `docs/configuration.md` SHALL describe this split in the `HOST` entry.
+`HOST` (`network.host`) SHALL set only the host address `ga-portal` publishes on, for both `PORT` and the dashboard port range. It SHALL default to `127.0.0.1`. The transport container SHALL always listen on `0.0.0.0` internally, whatever `HOST` is, and Caddy's upstream dial strings SHALL remain `ga-transport:64057`. `docs/configuration.md` and `README.md` SHALL describe the loopback-only default and distinguish the portal host bind from the transport's in-container listen address.
 
 #### Scenario: Default install is reachable only from the local machine
 - **WHEN** `install.sh` regenerates `compose.yml` with `HOST` unset
 - **THEN** `ga-portal` publishes `PORT` and the dashboard port range on `127.0.0.1` only
 - **AND** the transport container listens on `0.0.0.0` inside its container
+- **AND** the README and configuration docs state that the default portal bind is loopback-only
 
 #### Scenario: Loopback HOST still reaches the transport through the portal
 - **WHEN** `HOST=127.0.0.1` and a client on the host requests `http://localhost:{PORT}/mcp`

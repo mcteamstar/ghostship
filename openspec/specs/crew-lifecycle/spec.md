@@ -521,22 +521,30 @@ The `crews` tool response SHALL include `created_at` (ISO 8601 UTC, from the exi
 
 ### Requirement: Pre-launch memory gate
 
-Before starting a stopped crew container, the transport SHALL query available
-host memory via the Podman info API and gate the launch on sufficient free
-memory.
+Before starting a stopped crew container, the transport SHALL check available
+memory and gate the launch on sufficient headroom. On Linux, the transport SHALL
+use the kernel's `MemAvailable` value from `/proc/meminfo`; on non-Linux hosts,
+it SHALL use the Podman info API's available-memory value.
 
 The gate is controlled by three environment variables:
 
 | Variable | Type | Default | Description |
 |:---------|:-----|:--------|:------------|
-| `GA_MIN_FREE_MEM_GB` | float | 2.0 | Minimum free memory (GB) required to proceed with launch |
+| `GA_MIN_FREE_MEM_GB` | float | 2.0 | Minimum available memory (GB) required to proceed with launch |
 | `GA_MEMORY_WAIT_SECS` | int | 60 | Maximum seconds to wait for memory to become available |
 | `GA_SPAWN_MIN_MEMORY_GB` | float | 1.5 | Value patched into KiroCrew's `spawn_min_memory_gb` config |
 
 The system SHALL poll in 5-second increments until either sufficient memory is
 available or the timeout expires. If timeout expires, the system SHALL return a
-human-readable error message including the crew ID, current free memory, and
+human-readable error message including the crew ID, current available memory, and
 required threshold — without crashing or triggering an OOM.
+If the Linux `MemAvailable` value cannot be read or parsed, the system SHALL fail
+closed and report that available memory could not be determined; it SHALL NOT
+substitute raw `MemFree` for admission.
+
+#### Scenario: Linux admission uses MemAvailable
+- **WHEN** a stopped crew container is being restarted on Linux and `/proc/meminfo` reports `MemAvailable` above `GA_MIN_FREE_MEM_GB`
+- **THEN** the container starts immediately even if `MemFree` is below the threshold
 
 #### Scenario: Memory available immediately
 - **WHEN** a stopped crew container is being restarted AND available memory exceeds `GA_MIN_FREE_MEM_GB`
@@ -548,7 +556,15 @@ required threshold — without crashing or triggering an OOM.
 
 #### Scenario: Memory does not free within timeout
 - **WHEN** a stopped crew container is being restarted AND available memory remains below `GA_MIN_FREE_MEM_GB` for the full `GA_MEMORY_WAIT_SECS` duration
-- **THEN** the system returns an error: `"Insufficient available memory to start crew <id>: <N>GB free, <T>GB required. Retry in a moment."`
+- **THEN** the system returns an error: `"Insufficient available memory to start crew <id>: <N>GB available, <T>GB required. Retry in a moment."`
+
+#### Scenario: Linux available memory cannot be determined
+- **WHEN** the transport cannot read or parse `MemAvailable` from `/proc/meminfo`
+- **THEN** it does not start the crew and returns a clear error that available memory could not be determined
+
+#### Scenario: Non-Linux memory source
+- **WHEN** a stopped crew container is being restarted on a non-Linux host
+- **THEN** the transport uses the available-memory value reported by Podman info
 
 #### Scenario: Memory gate disabled
 - **WHEN** `GA_MIN_FREE_MEM_GB` is set to `0`
@@ -1014,3 +1030,16 @@ to the caller.
 - **WHEN** `dispatch()` is called with `slot=True`
 - **THEN** the transport logs a WARNING indicating `slot=True` is not a valid value
 - **THEN** the dispatch proceeds as if `slot=None` was passed
+
+### Requirement: Idle stop and crew wake are serialized
+The transport SHALL coordinate an idle monitor's container stop with any concurrent operation that wakes or restarts the same crew. A wake SHALL NOT report success while an idle stop can still stop that crew afterward. If an idle stop has already begun, the wake SHALL wait for that stop to finish and then ensure the crew is running before returning.
+
+#### Scenario: Wake starts after idle stop is claimed
+- **WHEN** the idle monitor has claimed an idle crew for stopping and a dispatch concurrently requires that crew
+- **THEN** the dispatch does not report the crew running before the stop completes
+- **THEN** the dispatch ensures the container is running after the stop and the final registry status is `running`
+
+#### Scenario: Crew activity advances before idle stop is claimed
+- **WHEN** a crew is touched by a wake or dispatch before the idle monitor claims its stop
+- **THEN** the idle monitor observes the activity and skips stopping the crew
+- **THEN** the crew remains running
