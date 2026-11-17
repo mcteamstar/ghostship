@@ -715,7 +715,7 @@ class TestDashboardGateAuth(unittest.TestCase):
             self.assertEqual(_status_of(auth_msgs_after), 401)
 
 
-class TestDashboardGateWebSocketOrigin(unittest.TestCase):
+class _GateScopeMixin:
     def _gate(self, external_url="https://dashboard.example:64057", api_key="testkey", portal_tls_mode="off"):
         try:
             import dashboard as _d
@@ -744,6 +744,8 @@ class TestDashboardGateWebSocketOrigin(unittest.TestCase):
         headers.extend(extra_headers)
         return {"type": "websocket", "headers": headers}
 
+
+class TestDashboardGateWebSocketOrigin(_GateScopeMixin, unittest.TestCase):
     def test_matching_https_origin_is_allowed(self):
         gate = self._gate()
         self.assertTrue(gate.allows_websocket(self._scope(gate)))
@@ -831,15 +833,82 @@ class TestDashboardGateWebSocketOrigin(unittest.TestCase):
         gate = self._gate()
         self.assertTrue(gate.allows_websocket(self._scope(gate, origin=None)))
 
-    def test_open_installation_keeps_origin_unrestricted(self):
+    def test_open_installation_rejects_cross_site_origin(self):
+        """No API key: a browser Origin must still be the dashboard itself
+        (cross-site WebSocket hijacking guard)."""
+        gate = self._gate(api_key="")
+        for origin, hostport in (
+            ("null", None),
+            ("https://attacker.example:64058", "dashboard.example:64058"),
+        ):
+            with self.subTest(origin=origin):
+                self.assertFalse(gate.allows_websocket(self._scope(
+                    gate, origin=origin, hostport=hostport, proto=None,
+                )))
+
+    def test_open_installation_allows_dashboard_origin(self):
+        gate = self._gate(api_key="")
+        self.assertTrue(gate.allows_websocket(self._scope(gate)))
+
+    def test_open_installation_allows_non_browser_client(self):
         gate = self._gate(api_key="")
         self.assertTrue(gate.allows_websocket(self._scope(
-            gate,
-            origin="null",
-            hostport=None,
-            proto=None,
+            gate, origin=None, hostport=None, proto=None,
         )))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDashboardGateIsDashboardOrigin(_GateScopeMixin, unittest.TestCase):
+    """is_dashboard_origin: same-origin check independent of session/API key.
+
+    Used by the HTTP UI proxy to decide whether a browser Origin may be
+    rewritten to the crew gateway's loopback origin (KiroCrew CSRF check).
+    """
+
+    def test_matching_origin_true_with_and_without_api_key(self):
+        for key in ("testkey", ""):
+            with self.subTest(api_key=key):
+                gate = self._gate(api_key=key)
+                self.assertTrue(gate.is_dashboard_origin(self._scope(gate)))
+
+    def test_local_http_install_matches_localhost(self):
+        gate = self._gate(external_url="http://localhost:64057", api_key="")
+        scope = self._scope(gate, origin="http://localhost:64058", hostport="localhost:64058")
+        self.assertTrue(gate.is_dashboard_origin(scope))
+
+    def test_cross_site_origin_false_even_without_api_key(self):
+        gate = self._gate(api_key="")
+        for origin in ("https://attacker.example:64058", "https://dashboard.example:64059",
+                       "http://dashboard.example:64058", "null"):
+            with self.subTest(origin=origin):
+                self.assertFalse(gate.is_dashboard_origin(self._scope(gate, origin=origin)))
+
+    def test_missing_origin_or_portal_host_false(self):
+        gate = self._gate()
+        self.assertFalse(gate.is_dashboard_origin(self._scope(gate, origin=None)))
+        self.assertFalse(gate.is_dashboard_origin(self._scope(gate, hostport=None)))
+
+    def test_port_outside_range_false(self):
+        gate = self._gate()
+        scope = self._scope(gate, origin="https://dashboard.example:64070",
+                            hostport="dashboard.example:64070")
+        self.assertFalse(gate.is_dashboard_origin(scope))
+
+    def test_loopback_install_accepts_127_0_0_1(self):
+        gate = self._gate(external_url="http://localhost:64057", api_key="")
+        scope = self._scope(gate, origin="http://127.0.0.1:64058", hostport="127.0.0.1:64058")
+        self.assertTrue(gate.is_dashboard_origin(scope))
+
+    def test_loopback_alias_requires_matching_portal_host(self):
+        """Origin 127.0.0.1 against a localhost portal host is still cross-origin."""
+        gate = self._gate(external_url="http://localhost:64057", api_key="")
+        scope = self._scope(gate, origin="http://127.0.0.1:64058", hostport="localhost:64058")
+        self.assertFalse(gate.is_dashboard_origin(scope))
+
+    def test_non_loopback_install_does_not_allow_loopback(self):
+        gate = self._gate(external_url="https://dashboard.example:64057")
+        scope = self._scope(gate, origin="https://127.0.0.1:64058", hostport="127.0.0.1:64058")
+        self.assertFalse(gate.is_dashboard_origin(scope))

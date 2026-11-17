@@ -635,3 +635,156 @@ class TestDashboardWebSocketSessionGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRewriteDashboardOrigin(unittest.TestCase):
+    """_rewrite_dashboard_origin maps a same-origin dashboard Origin to the
+    crew gateway's loopback origin so KiroCrew's CSRF check accepts
+    state-changing dashboard requests, and leaves cross-site Origins alone."""
+
+    def _server(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _run(self, headers, matches):
+        from unittest.mock import patch
+        _s = self._server()
+        with patch.object(_s._dashboard_gate, "is_dashboard_origin", return_value=matches):
+            _s._rewrite_dashboard_origin(headers, {"type": "http", "headers": []})
+        return _s
+
+    def test_same_origin_rewritten_to_crew_origin(self):
+        headers = {"origin": "http://localhost:64058", "accept": "*/*"}
+        _s = self._server()
+        from unittest.mock import patch
+        with patch.object(_s._dashboard_gate, "is_dashboard_origin", return_value=True):
+            foreign = _s._rewrite_dashboard_origin(headers, {"type": "http", "headers": []})
+        self.assertFalse(foreign)
+        self.assertNotIn("origin", headers)
+        self.assertEqual(headers["Origin"], f"http://localhost:{_s.CREW_GATEWAY_PORT}")
+        self.assertEqual(headers["accept"], "*/*")
+
+    def test_cross_site_origin_forwarded_unchanged(self):
+        headers = {"origin": "https://attacker.example"}
+        from unittest.mock import patch
+        _s = self._server()
+        with patch.object(_s._dashboard_gate, "is_dashboard_origin", return_value=False):
+            foreign = _s._rewrite_dashboard_origin(headers, {"type": "http", "headers": []})
+        self.assertTrue(foreign)
+        self.assertEqual(headers, {"origin": "https://attacker.example"})
+
+    def test_no_origin_left_untouched(self):
+        headers = {"accept": "*/*"}
+        self._run(headers, matches=True)
+        self.assertEqual(headers, {"accept": "*/*"})
+
+
+
+class _FakeStreamResp:
+    def __init__(self, status):
+        self.status_code = status
+        self.headers = {"content-type": "text/plain"}
+
+    async def aread(self):
+        return b"CSRF check failed: request origin not allowed."
+
+
+class _FakeStreamCtx:
+    def __init__(self, status):
+        self._resp = _FakeStreamResp(status)
+
+    async def __aenter__(self):
+        return self._resp
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class TestCrewUiProxyForeignOriginNoCookieRefresh(unittest.TestCase):
+    """A 403 on a foreign-Origin request is KiroCrew's CSRF check, so the UI
+    proxy must pass it through without re-minting the crew cookie."""
+
+    def _server(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _invoke(self, origin_matches):
+        from unittest.mock import patch, MagicMock
+        _s = self._server()
+        scope = _make_scope("POST", "/crews/c1/ui/api/ui-prefs",
+                            headers={"origin": "https://attacker.example"})
+        messages, send = _collect_send()
+        refresh = MagicMock(return_value=False)
+
+        async def _resolved(*a, **k):
+            return ("c1", "api/ui-prefs", {"cookie": "x"})
+
+        async def _go():
+            from starlette.requests import Request
+            resp = await _s._handle_crew_ui_proxy(Request(scope, _receive))
+            await resp(scope, _receive, send)
+
+        with patch.object(_s, "_resolve_crew_for_proxy", side_effect=_resolved), \
+             patch.object(_s, "_cookie_near_expiry", return_value=False, create=True), \
+             patch.object(_s, "_crew_cookie", return_value="mc_token_5476=x"), \
+             patch.object(_s, "_refresh_cookie", refresh), \
+             patch.object(_s._dashboard_gate, "is_dashboard_origin", return_value=origin_matches), \
+             patch.object(_s._async_http, "stream", side_effect=lambda *a, **k: _FakeStreamCtx(403), create=True):
+            _run(_go())
+        return _status_of(messages), refresh
+
+    def test_foreign_origin_403_does_not_refresh_cookie(self):
+        status, refresh = self._invoke(origin_matches=False)
+        self.assertEqual(status, 403)
+        refresh.assert_not_called()
+
+    def test_dashboard_origin_403_still_refreshes_cookie(self):
+        status, refresh = self._invoke(origin_matches=True)
+        self.assertEqual(status, 403)
+        refresh.assert_called_once()
+
+
+class TestCrewDashboardEndpointRejectsBrowserOrigin(unittest.TestCase):
+    """POST/DELETE /crews/{id}/dashboard refuse any request carrying Origin
+    (cross-site "simple request" guard); non-browser clients are unaffected."""
+
+    def _server(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _call(self, handler, method, headers):
+        from unittest.mock import patch
+        _s = self._server()
+        scope = _make_scope(method, "/crews/unknown-xyz/dashboard", headers=headers)
+        messages, send = _collect_send()
+
+        async def _go():
+            from starlette.requests import Request
+            resp = await handler(Request(scope, _receive))
+            await resp(scope, _receive, send)
+
+        with patch.object(_s, "_require_crew", side_effect=KeyError("unknown-xyz")):
+            _run(_go())
+        return _status_of(messages)
+
+    def test_origin_rejected_on_post_and_delete(self):
+        _s = self._server()
+        for handler, method in ((_s._handle_crew_dashboard_post, "POST"),
+                                (_s._handle_crew_dashboard_delete, "DELETE")):
+            for origin in ("https://evil.example", "http://localhost:64058"):
+                with self.subTest(method=method, origin=origin):
+                    self.assertEqual(self._call(handler, method, {"origin": origin}), 403)
+
+    def test_no_origin_reaches_handler(self):
+        _s = self._server()
+        # Unknown crew → 404 proves the request got past the Origin guard.
+        self.assertEqual(self._call(_s._handle_crew_dashboard_post, "POST", {}), 404)
