@@ -1202,7 +1202,23 @@ def _mint_internal_cookie(podman: PodmanClient, container: str) -> str | None:
 _LOGIN_PRECURSOR_KEYS = {"kirocli:odic:device-registration"}
 
 
-def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
+def _auth_payload_has_profile(auth_b64: str | bytes) -> bool:
+    """True when a captured kiro auth payload carries ``api.codewhisperer.profile``."""
+    try:
+        payload = json.loads(base64.b64decode(auth_b64).decode())
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return any(
+        len(r) > 1 and r[0] == "api.codewhisperer.profile" and r[1]
+        for r in payload.get("state", [])
+    )
+
+
+def _read_auth_from_crew(
+    podman: PodmanClient, container: str, profile_wait_retries: int | None = None,
+) -> str | None:
     """Read auth rows from a crew container's kiro-cli DB, return as b64 JSON.
 
     Returns a v2 payload (base64-encoded JSON dict with ``auth_kv`` and
@@ -1219,8 +1235,10 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
     evidence the user has actually completed the grant.
 
     Retries up to _PROFILE_WAIT_RETRIES times (1s apart) waiting for
-    ``api.codewhisperer.profile`` to be set by the KiroCrew gateway after
-    the OIDC token lands — the gateway fetches the profile asynchronously.
+    ``api.codewhisperer.profile`` to be set after the OIDC token lands. For an
+    Identity Center login kiro-cli writes it once its profile step completes:
+    it picks the default itself or shows "Select an IAM Identity Center
+    profile", which the login flow's post-URL prompt answers with Enter.
     If it is still absent after the wait, the v2 payload is returned without
     the state row so the caller is not blocked indefinitely; inject_auth.py
     handles a missing state list gracefully.
@@ -1228,7 +1246,7 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
     # kiro-cli 2.37.0 requires api.codewhisperer.profile in the state table for
     # ACP token refresh.  Capture it alongside the auth_kv rows so inject_auth.py
     # can write both tables (v2 payload format).
-    _PROFILE_WAIT_RETRIES = 30  # up to 30s for the gateway to set the profile
+    _PROFILE_WAIT_RETRIES = 30 if profile_wait_retries is None else max(0, profile_wait_retries)
     extract = (
         "import sqlite3, json, base64; "
         f"conn = sqlite3.connect('{KIRO_CLI_DB}'); "
@@ -1252,7 +1270,7 @@ def _read_auth_from_crew(podman: PodmanClient, container: str) -> str | None:
             # Token is present. Wait for the profile to be set too.
             state_rows = payload.get("state", []) if isinstance(payload, dict) else []
             if state_rows or attempt == _PROFILE_WAIT_RETRIES:
-                if not state_rows:
+                if not state_rows and _PROFILE_WAIT_RETRIES:
                     logger.warning(
                         "Auth capture: api.codewhisperer.profile not set after %ds; "
                         "proceeding without it — re-login may be needed after kiro-cli 2.37+ upgrade",
@@ -2115,6 +2133,22 @@ _TERMINAL_SEQUENCE_RE = re.compile(
 _OPEN_SEQUENCE_RE = re.compile(r"\x1b$|\x1b\[[0-9;?]*[ -/]*$|\x1b\][^\x07\x1b]*$")
 
 
+_LOGIN_OUTPUT_REDACTIONS = (
+    (re.compile(r"https?://\S+"), "<url>"),
+    (re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,}\b"), "<code>"),
+    (re.compile(r"\b\d{12}\b"), "<acct>"),
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "<email>"),
+)
+
+
+def _redact_login_output(text: str) -> str:
+    """Strip URLs, device codes, account ids and emails from login CLI output
+    before it is logged for diagnosis."""
+    for pattern, repl in _LOGIN_OUTPUT_REDACTIONS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def _strip_terminal_sequences(text: str) -> str:
     """Remove terminal control sequences and BEL from PTY output text."""
     return _TERMINAL_SEQUENCE_RE.sub("", text)
@@ -2128,6 +2162,7 @@ def _run_pty_login_flow(
     deadline_secs: float = 45.0,
     initial_bytes: bytes = b"",
     require_code: bool = False,
+    post_url_prompts: "list[tuple[re.Pattern, bytes]] | None" = None,
 ) -> "tuple[str | None, str | None]":
     """Run a PTY select-loop and extract a login URL and optional code.
 
@@ -2163,6 +2198,12 @@ def _run_pty_login_flow(
         PTY bytes already received (leftover from the HTTP upgrade read in
         ``container_exec_pty_stdin``).  Pre-populated into the accumulator so
         no early output is lost before the select-loop starts.
+    post_url_prompts:
+        ``(compiled_pattern, answer_bytes)`` pairs for prompts the CLI shows
+        after the URL is handed back (e.g. kiro-cli's Identity Center profile
+        selector, shown once the person approves the grant).  The background
+        drain answers each at most once, matching against a bounded tail of
+        the output so far.
     """
     deadline = time.time() + deadline_secs
     # Pre-seed the accumulator with any bytes already received during the
@@ -2243,17 +2284,40 @@ def _run_pty_login_flow(
         # Hand remaining PTY output to a background daemon thread so the
         # socket drains to EOF without blocking the event loop.
         pty_sock.setblocking(True)
+        late_prompts = list(post_url_prompts or [])
 
         def _drain() -> None:
             # best-effort: PTY drain runs in background; socket errors on EOF are expected and non-fatal
+            late_answered: set[int] = set()
+            tail = bytearray()
             try:
                 while True:
                     chunk = pty_sock.recv(4096)
                     if not chunk:
                         break
+                    # Bounded tail: a prompt split across chunks still matches,
+                    # the end of the CLI's output can be logged for diagnosis,
+                    # and a long-running CLI never grows memory unbounded.
+                    tail.extend(chunk)
+                    del tail[:-8192]
+                    if len(late_answered) == len(late_prompts):
+                        continue
+                    text = _strip_terminal_sequences(tail.decode("utf-8", errors="replace"))
+                    for idx, (pattern, answer) in enumerate(late_prompts):
+                        if idx not in late_answered and pattern.search(text):
+                            pty_sock.sendall(answer)
+                            late_answered.add(idx)
+                            logger.info("Login CLI: answered post-URL prompt %r", pattern.pattern)
             except Exception:
                 pass
             finally:
+                if tail:
+                    logger.info(
+                        "Login CLI post-URL output (redacted tail): %r",
+                        _redact_login_output(
+                            _strip_terminal_sequences(tail.decode("utf-8", errors="replace"))
+                        )[-600:],
+                    )
                 try:
                     pty_sock.close()
                 # best-effort: socket close in finally; ignore errors if already closed

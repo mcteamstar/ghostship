@@ -560,7 +560,7 @@ def cmd_setup(args: list) -> int:
 # ---------------------------------------------------------------------------
 
 _AUTH_POLL_INTERVAL = 5      # seconds between GET /login polls
-_AUTH_TIMEOUT = 300          # total seconds before the flow times out
+_AUTH_TIMEOUT = 600          # total seconds before the flow times out (covers approval plus kiro profile fetch)
 
 _VALID_BACKENDS = ("kiro", "claude", "codex")
 
@@ -785,6 +785,11 @@ def _poll_flow(base_url: str, backend: str, api_key: str | None,
             print()
             print("Authenticated successfully.")
             return 0
+        if status in ("cancelled", "error"):
+            print()
+            detail = poll.get("error") or "the login flow was cancelled"
+            print(f"error: {detail}", file=sys.stderr)
+            return 1
     print()
     print("error: authentication timed out before completion.", file=sys.stderr)
     if login_url:

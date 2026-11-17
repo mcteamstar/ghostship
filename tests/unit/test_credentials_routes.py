@@ -734,7 +734,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         self.injected: list[str] = []
         self.crews: dict = {}
         self.lc = types.SimpleNamespace(
-            _read_auth_from_crew=lambda podman, container: None,
+            _read_auth_from_crew=lambda podman, container, *_a, **_k: None,
             _write_auth_file=lambda value: self.written.append(("kiro", value)),
             _inject_auth=lambda podman, container, auth_b64: self.injected.append(container),
             _write_claude_auth_file=lambda data: self.written.append(("claude", data)),
@@ -762,7 +762,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         login_mod.KIRO_FLOW._pending = self._pending("ga-login-k1")
         self.crews["k-1"] = {"status": "running", "container": "c-k1", "acp_backend": "kiro"}
 
-        def poll_then_logout(podman, container):
+        def poll_then_logout(podman, container, *_a, **_k):
             # Logout's abort lands between the poll and the commit.
             login_mod.KIRO_FLOW.abort(podman)
             return "kiro-auth-rows"
@@ -781,7 +781,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
     def test_kiro_completion_injects_only_into_kiro_crews(self):
         import transport.login as login_mod
         login_mod.KIRO_FLOW._pending = self._pending("ga-login-k2")
-        self.lc._read_auth_from_crew = lambda podman, container: "kiro-auth-rows"
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "kiro-auth-rows"
         self.crews.update({
             "kiro-run": {"status": "running", "container": "c-kiro", "acp_backend": "kiro"},
             "no-field": {"status": "running", "container": "c-nofield"},
@@ -950,7 +950,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
     def test_named_kiro_completion_does_not_replace_default_archive(self):
         import transport.login as login_mod
         login_mod.KIRO_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
-        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "synthetic rows"
         resp = _run(login_mod._handle_login_get(_make_request()))
         self.assertEqual(_json_data(resp), {"status": "complete"})
         self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
@@ -960,7 +960,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         import transport.login as login_mod
         flow = login_mod.KIRO_FLOW
         flow._pending = {**self._pending("login-container"), "profile": "work"}
-        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "synthetic rows"
         with patch.object(self._store, "put", side_effect=OSError("write failed")):
             resp = _run(login_mod._handle_login_get(_make_request()))
         self.assertEqual(resp.status_code, 500)
@@ -973,7 +973,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         import transport.login as login_mod
         flow = login_mod.KIRO_FLOW
         flow._pending = {**self._pending("login-container"), "profile": "work"}
-        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "synthetic rows"
         self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": "kiro", "acp_profile": "work"}
         injection = MagicMock(side_effect=OSError("synthetic error"))
         self.lc._inject_auth = injection
@@ -987,7 +987,7 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
     def test_named_kiro_completion_only_updates_matching_running_crews(self):
         import transport.login as login_mod
         login_mod.KIRO_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
-        self.lc._read_auth_from_crew = lambda podman, container: "synthetic rows"
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "synthetic rows"
         self.crews.update({
             "matching": {"status": "running", "container": "c-work", "acp_backend": "kiro", "acp_profile": "work"},
             "other": {"status": "running", "container": "c-other", "acp_backend": "kiro", "acp_profile": "personal"},
@@ -1206,3 +1206,95 @@ class TestFlowNotAbortedByDifferentProfileLogout(_LogoutHarness):
         resp = _run(handler(_make_request(query_params={"profile": "corp"})))
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(_json_data(resp)["status"], "logged_out")
+
+
+class TestKiroIdcCompletionWaitsForProfile(TestCompletionCommitsOnlyWhileCurrent):
+    """Identity Center completion stores a credential only once kiro-cli has
+    written api.codewhisperer.profile; until then it reports pending, and it
+    never stores a profile-less credential."""
+
+    @staticmethod
+    def _payload(with_profile: bool) -> str:
+        import base64
+        import json
+        state = [["api.codewhisperer.profile", json.dumps({"arn": "arn:x", "profile_name": "P"})]] if with_profile else []
+        return base64.b64encode(json.dumps(
+            {"v": 2, "auth_kv": [["kirocli:odic:token", "t"]], "state": state}
+        ).encode()).decode()
+
+    def setUp(self) -> None:
+        super().setUp()
+        from transport.lifecycle import _auth_payload_has_profile
+        self.lc._auth_payload_has_profile = _auth_payload_has_profile
+        # Drop the parent's tests from this subclass's run.
+
+    def _idc_pending(self, container: str) -> dict:
+        p = self._pending(container)
+        p["provider"] = {"start_url": "https://x.awsapps.com/start/", "region": "ap-southeast-2"}
+        return p
+
+    def test_token_without_profile_is_pending_and_keeps_container(self):
+        import transport.login as login_mod
+        login_mod.KIRO_FLOW._pending = self._idc_pending("ga-login-p1")
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: self._payload(False)
+        from transport.login import _handle_login_get
+        resp = _json_data(_run(_handle_login_get(_make_request())))
+        self.assertEqual(resp["status"], "pending")
+        self.assertIsNone(self._store.get("kiro"))
+        self.assertEqual(self.injected, [])
+        self.assertIsNotNone(login_mod.KIRO_FLOW.state)  # container kept for kiro-cli
+        self.assertIn("profile_wait_started", login_mod.KIRO_FLOW._pending)
+
+    def test_profile_arrives_on_later_poll_then_stored(self):
+        import transport.login as login_mod
+        login_mod.KIRO_FLOW._pending = self._idc_pending("ga-login-p2")
+        payloads = iter([self._payload(False), self._payload(True)])
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: next(payloads)
+        from transport.login import _handle_login_get
+        self.assertEqual(_json_data(_run(_handle_login_get(_make_request())))["status"], "pending")
+        self.assertEqual(_json_data(_run(_handle_login_get(_make_request()))), {"status": "complete"})
+        self.assertEqual(self._store.get("kiro")["method"], "identity-center")
+
+    def test_no_profile_after_deadline_fails_and_stores_nothing(self):
+        import transport.login as login_mod
+        pending = self._idc_pending("ga-login-p3")
+        pending["profile_wait_started"] = self._time.time() - login_mod._KIRO_PROFILE_WAIT_SECS - 1
+        login_mod.KIRO_FLOW._pending = pending
+        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: self._payload(False)
+        from transport.login import _handle_login_get
+        resp = _run(_handle_login_get(_make_request()))
+        body = _json_data(resp)
+        self.assertEqual(body["status"], "error")
+        self.assertIn("did not select a Kiro profile", body["error"])
+        self.assertIsNone(self._store.get("kiro"))
+        self.assertEqual(self.written, [])
+        self.assertIsNone(login_mod.KIRO_FLOW.state)
+
+    def test_capture_is_non_blocking(self):
+        import transport.login as login_mod
+        login_mod.KIRO_FLOW._pending = self._idc_pending("ga-login-p4")
+        seen = {}
+
+        def capture(podman, container, *args, **kwargs):
+            seen["retries"] = args[0] if args else kwargs.get("profile_wait_retries")
+            return None
+
+        self.lc._read_auth_from_crew = capture
+        from transport.login import _handle_login_get
+        _run(_handle_login_get(_make_request()))
+        self.assertEqual(seen["retries"], 0)
+
+
+# Parent tests already run in their own class; do not repeat them here.
+for _name in [n for n in vars(TestCompletionCommitsOnlyWhileCurrent) if n.startswith("test_")]:
+    setattr(TestKiroIdcCompletionWaitsForProfile, _name, None)
+del _name
+
+
+class TestAuthPayloadHasProfile(unittest.TestCase):
+    def test_detects_profile_row(self):
+        from transport.lifecycle import _auth_payload_has_profile
+        p = TestKiroIdcCompletionWaitsForProfile._payload
+        self.assertTrue(_auth_payload_has_profile(p(True)))
+        self.assertFalse(_auth_payload_has_profile(p(False)))
+        self.assertFalse(_auth_payload_has_profile("not-base64!"))

@@ -59,6 +59,9 @@ cfg = Config.from_env()
 # ── Shared constants ──────────────────────────────────────────────────────────
 
 _KIRO_LOGIN_TTL_SECS = 900.0
+# How long an Identity Center login may wait, after the token lands, for
+# kiro-cli to fetch the account's Kiro profiles and write the selected one.
+_KIRO_PROFILE_WAIT_SECS = 180.0
 _CLAUDE_LOGIN_APPROVAL_DEADLINE_SECS = 900.0
 _CLAUDE_LOGIN_CODE_DEADLINE_SECS = 120.0
 _CODEX_LOGIN_TTL_SECS = 900.0
@@ -219,6 +222,15 @@ class LoginFlow(ABC):
     @abstractmethod
     def _prompt_patterns(self) -> list[tuple]:
         """Return a list of (compiled_regex, answer_bytes) prompt patterns."""
+
+    def _post_url_prompt_patterns(self) -> list[tuple]:
+        """(compiled_regex, answer_bytes) prompts the CLI shows after the grant.
+
+        Answered by the background PTY drain once the login URL has been
+        handed back, i.e. while the person is approving the device code.
+        Each is answered at most once. Default: none.
+        """
+        return []
 
     @abstractmethod
     def _url_patterns(self) -> list:
@@ -413,6 +425,7 @@ class LoginFlow(ABC):
             deadline_secs=45.0,
             initial_bytes=leftover,
             require_code=self.backend == "codex",
+            post_url_prompts=self._post_url_prompt_patterns(),
         )
 
         if not login_url:
@@ -651,6 +664,17 @@ class KiroLoginFlow(LoginFlow):
                 (re.compile(r"Region"), b"\n"),
             ]
         return patterns
+
+    def _post_url_prompt_patterns(self) -> list:
+        # After an Identity Center grant kiro-cli asks which Kiro profile to
+        # use ("Select an IAM Identity Center profile") unless it can pick one
+        # itself. Enter accepts the highlighted (default) profile. Unanswered,
+        # kiro-cli never writes api.codewhisperer.profile and every crew the
+        # credential is injected into fails with "No profile selected".
+        import re
+        if not self._provider():
+            return []
+        return [(re.compile(r"Select an IAM Identity Center profile"), b"\n")]
 
     def _url_patterns(self) -> list:
         import re
@@ -1077,14 +1101,54 @@ async def _handle_login_get(request: Request) -> Response:
     except Exception as e:
         return PlainTextResponse(str(e), status_code=500)
 
-    auth_b64 = _lc()._read_auth_from_crew(podman, container)
+    # Non-blocking read: this is an async handler polled by the CLI, so it must
+    # not sleep waiting for the profile. The profile wait is tracked across
+    # polls below instead.
+    auth_b64 = await asyncio.to_thread(
+        _lc()._read_auth_from_crew, podman, container, 0,
+    )
     if not auth_b64:
         return JSONResponse({"status": "pending"})
+
+    _provider = pending.get("provider")
+
+    # Identity Center: after the grant kiro-cli still has to fetch the account's
+    # Kiro profiles and write api.codewhisperer.profile, which can take well
+    # over 30s. Keep the login container alive and report pending until it
+    # does; a credential without a profile fails every crew with "No profile
+    # selected", so never store one.
+    if _provider and not _lc()._auth_payload_has_profile(auth_b64):
+        with KIRO_FLOW._lock:
+            if KIRO_FLOW._pending is not pending:
+                return JSONResponse({"status": "cancelled"})
+            waited_since = pending.setdefault("profile_wait_started", time.time())
+        if time.time() - waited_since < _KIRO_PROFILE_WAIT_SECS:
+            return JSONResponse({"status": "pending", "detail": "waiting for kiro-cli to select a Kiro profile"})
+        logger.error(
+            "[kiro] No Kiro profile after %.0fs; not storing a profile-less credential",
+            _KIRO_PROFILE_WAIT_SECS,
+        )
+        with KIRO_FLOW._lock:
+            if KIRO_FLOW._pending is pending:
+                KIRO_FLOW._pending = None
+        _nuke_pending_container(KIRO_FLOW, podman, pending)
+        _security.audit_auth_event(
+            action="login", outcome="failure", account="academy",
+            source=_request_source(request), emit=logger.info,
+        )
+        return JSONResponse(
+            {"status": "error",
+             "error": (
+                 "Signed in, but kiro-cli did not select a Kiro profile within "
+                 f"{_KIRO_PROFILE_WAIT_SECS:.0f}s, so no credential was stored. "
+                 "Check the transport log for the login CLI output and retry."
+             )},
+            status_code=502,
+        )
 
     # ── Auth complete ─────────────────────────────────────────────────────────
     # The legacy file write and the credential-store put run inside the flow's
     # commit, so a logout that cancels this flow first stores nothing.
-    _provider = pending.get("provider")
     _method = "identity-center" if _provider else "builder-id"
     _profile = pending.get("profile", "default")
 
