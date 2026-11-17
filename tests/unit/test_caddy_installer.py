@@ -158,6 +158,25 @@ class TestWithApiKey:
         assert "handle_response" in handler
 
 
+    def test_crew_dashboard_route_bearer_gated(self) -> None:
+        doc = _doc(ga_api_key="mysecret")
+        route = _find_route(doc, "ga-transport-crew-dashboard")
+        assert route is not None
+        match = route["match"][0]
+        assert match["path"] == ["/crews/*/dashboard"]
+        assert sorted(match["method"]) == ["DELETE", "POST"]
+        assert "Authorization" in match["header"]
+        assert route["handle"][0]["upstreams"] == [{"dial": "ga-transport:64057"}]
+
+    def test_crew_dashboard_unauthed_hits_401(self) -> None:
+        """Requests without the bearer fall through to the 401 reject route."""
+        doc = _doc(ga_api_key="mysecret")
+        ids = _route_ids(doc)
+        reject = _find_route(doc, "ga-mcp-files-reject")
+        assert "/crews/*/dashboard" in reject["match"][0]["path"]
+        assert ids.index("ga-transport-crew-dashboard") < ids.index("ga-mcp-files-reject")
+
+
 # ---------------------------------------------------------------------------
 # (c) Without API key — no 401 handler present
 # ---------------------------------------------------------------------------
@@ -186,6 +205,15 @@ class TestWithoutApiKey:
     def test_no_files_presigned_route(self) -> None:
         doc = _doc(ga_api_key="")
         assert "ga-transport-files-presigned" not in _route_ids(doc)
+
+    def test_crew_dashboard_route_passthrough(self) -> None:
+        doc = _doc(ga_api_key="")
+        route = _find_route(doc, "ga-transport-crew-dashboard")
+        assert route is not None
+        match = route["match"][0]
+        assert match["path"] == ["/crews/*/dashboard"]
+        assert sorted(match["method"]) == ["DELETE", "POST"]
+        assert "header" not in match
 
     def test_radar_route_is_passthrough(self) -> None:
         doc = _doc(ga_api_key="")

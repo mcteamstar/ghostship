@@ -33,6 +33,11 @@ _PORTAL_TOKEN_HEADER = {
     }
 }
 
+# Post-launch dashboard allocation endpoint on ga-transport
+# (transport/server.py _handle_crew_dashboard_post/_delete).
+_CREW_DASHBOARD_PATH = "/crews/*/dashboard"
+_CREW_DASHBOARD_METHODS = ("POST", "DELETE")
+
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -222,8 +227,32 @@ def _gated_auth_routes() -> list[dict]:
             ],
         },
         {
+            # Post-launch dashboard allocation (POST/DELETE
+            # /crews/{id}/dashboard). Same Bearer gate as /mcp; the transport
+            # re-checks the key itself.
+            "@id": "ga-transport-crew-dashboard",
+            "match": [
+                {
+                    "path": [_CREW_DASHBOARD_PATH],
+                    "method": list(_CREW_DASHBOARD_METHODS),
+                    "header": {
+                        "Authorization": [
+                            "Bearer {file./run/secrets/ga-api-key}"
+                        ]
+                    },
+                }
+            ],
+            "handle": [
+                {
+                    "handler": "reverse_proxy",
+                    "upstreams": [{"dial": "ga-transport:64057"}],
+                    **_PORTAL_TOKEN_HEADER,
+                }
+            ],
+        },
+        {
             "@id": "ga-mcp-files-reject",
-            "match": [{"path": ["/mcp*", "/files/*"]}],
+            "match": [{"path": ["/mcp*", "/files/*", _CREW_DASHBOARD_PATH]}],
             "handle": [
                 {
                     "handler": "static_response",
@@ -253,6 +282,22 @@ def _passthrough_auth_routes() -> list[dict]:
         {
             "@id": "ga-transport-files",
             "match": [{"path": ["/files/*"]}],
+            "handle": [
+                {
+                    "handler": "reverse_proxy",
+                    "upstreams": [{"dial": "ga-transport:64057"}],
+                    **_PORTAL_TOKEN_HEADER,
+                }
+            ],
+        },
+        {
+            "@id": "ga-transport-crew-dashboard",
+            "match": [
+                {
+                    "path": [_CREW_DASHBOARD_PATH],
+                    "method": list(_CREW_DASHBOARD_METHODS),
+                }
+            ],
             "handle": [
                 {
                     "handler": "reverse_proxy",
