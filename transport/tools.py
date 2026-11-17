@@ -245,6 +245,11 @@ except ModuleNotFoundError:
     )
     from transport import lifecycle as _lifecycle  # local dev
 
+try:
+    import kiro_signin as _kiro_signin  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import kiro_signin as _kiro_signin  # local dev
+
 # dispatch() mutates the shared in-memory task-timestamp store that lives in
 # lifecycle (same objects server used). Reference lifecycle's live objects.
 _task_timestamps = _lifecycle._task_timestamps
@@ -465,6 +470,8 @@ def _build_crews_payload(podman) -> dict:
             "acp_profile": info.get("acp_profile", "default"),
             "agents": [],
         }
+        if entry["acp_backend"] == "kiro" and info.get("kiro_signin"):
+            entry["kiro_signin"] = info["kiro_signin"]
         # Derive dashboard_url from stored dashboard_port (None if no port assigned).
         # ga-portal is always present — always use the Caddy scheme.
         _ui_p = info.get("dashboard_port")
@@ -632,6 +639,8 @@ def _build_internal_fleet_payload(podman) -> dict:
             # agents: always [] — no gateway call made (registry-only contract)
             "agents": [],
         }
+        if entry["acp_backend"] == "kiro" and info.get("kiro_signin"):
+            entry["kiro_signin"] = info["kiro_signin"]
         _ui_p = info.get("dashboard_port")
         if _ui_p is not None:
             _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
@@ -1222,6 +1231,9 @@ def launch(
                     pass
             return result
         result["acp_profile"] = resolved_profile
+        if backend == "kiro":
+            # Off the launch path: the gateway check runs kiro-cli (~12s).
+            _kiro_signin.check_in_background(crew_id)
         # Persist dashboard_port in registry and register with Caddy.
         # Portal is the sole dashboard proxy.
         if dashboard_port is not None and "error" not in result:
@@ -2117,6 +2129,12 @@ def dispatch(
         Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
         the ``task_ids`` assigned so far, and an ``error`` field naming the
         failure. Tasks that never received a ``task_id`` are the lost members.
+        Kiro crew whose sign-in is known to be unusable: nothing is spawned;
+        ``{"error": "not_authenticated", "backend": "kiro", "crew_id",
+        "message", "login_command"}``. The transport records sign-in state
+        after launch and wake; ``pickup`` likewise reports a sign-in-shaped
+        task failure as ``error_code: "not_authenticated"`` (original text in
+        ``upstream_error``).
 
     Args:
         task: What to do (single dispatch). Be specific — the agent has no
@@ -2171,6 +2189,9 @@ def dispatch(
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
+
+    if (denied := _kiro_signin.dispatch_guard(crew_id, crew)) is not None:
+        return denied
 
     effective_slot, parent_session = _resolve_dispatch_slot(agent, slot, crew)
 

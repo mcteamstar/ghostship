@@ -536,6 +536,27 @@ def _nuke_pending_container(flow: LoginFlow, podman, pending: dict) -> None:
         flow._nuke_container(podman, container)
 
 
+def _forget_kiro_signin_state(profile: str) -> None:
+    """Drop recorded kiro sign-in state for crews on *profile* after a new
+    credential is stored, so dispatch stops refusing them; the next
+    sign-in-shaped failure re-checks. Best-effort."""
+    try:
+        try:
+            import kiro_signin as _kiro_signin  # container: flat /app/
+        except ModuleNotFoundError:
+            from transport import kiro_signin as _kiro_signin  # local dev
+        with registry:
+            ids = [
+                cid for cid, info in registry._reg["crews"].items()
+                if info.get("acp_backend", "kiro") == "kiro"
+                and info.get("acp_profile", "default") == profile
+            ]
+        for cid in ids:
+            _kiro_signin.clear(cid)
+    except Exception:
+        logger.debug("Could not clear kiro sign-in state", exc_info=True)
+
+
 def _propagate_credential(podman, backend: str, profile: str, inject) -> list[str]:
     """Inject a committed credential into running crews of *backend*/*profile*.
 
@@ -1187,6 +1208,7 @@ async def _handle_login_get(request: Request) -> Response:
         _propagate_credential, podman, "kiro", _profile,
         lambda pm, container: _lc()._inject_auth(pm, container, auth_b64),
     )
+    _forget_kiro_signin_state(_profile)
 
     _security.audit_auth_event(
         action="login", outcome="success", account="academy",

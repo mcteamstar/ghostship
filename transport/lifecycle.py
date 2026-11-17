@@ -1202,6 +1202,15 @@ def _mint_internal_cookie(podman: PodmanClient, container: str) -> str | None:
 _LOGIN_PRECURSOR_KEYS = {"kirocli:odic:device-registration"}
 
 
+def _kiro_signin():
+    """The kiro sign-in checks module (imported lazily; it imports lifecycle)."""
+    try:
+        import kiro_signin as m  # container: flat /app/
+    except ModuleNotFoundError:
+        from transport import kiro_signin as m  # local dev
+    return m
+
+
 def _auth_payload_has_profile(auth_b64: str | bytes) -> bool:
     """True when a captured kiro auth payload carries ``api.codewhisperer.profile``."""
     try:
@@ -2992,6 +3001,9 @@ def _dispatch_batch(
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
 
+    if (denied := _kiro_signin().dispatch_guard(crew_id, crew)) is not None:
+        return denied
+
     # Resolve effective slot and shared parent_session using the unified helper.
     # effective_slot is either the agent name (member slot) or None (headless);
     # all tasks in the batch share the one resolved parent_session.
@@ -3139,6 +3151,10 @@ def _pickup_single(
             "started_at": ts.get("started_at") if ts else None,
             "completed_at": ts.get("completed_at") if ts else None,
         }
+        if done and out["error"]:
+            explained = _kiro_signin().explain_failure(crew_id, crew, out["error"])
+            if explained:
+                out.update(explained)
 
         # Include subject lines for the agent persona, raven, captain, and admiral.
         # captain/admiral come from the single _read_all_mail_subjects exec above
@@ -3255,6 +3271,15 @@ def _pickup_list(
             }
             for a in agents
         ]
+        # List view: explain sign-in failures from the recorded state only,
+        # never probing the crew once per listed task.
+        for entry in task_list:
+            if entry["done"] and entry["error"]:
+                explained = _kiro_signin().explain_failure(
+                    crew_id, crew, entry["error"], probe=False,
+                )
+                if explained:
+                    entry.update(explained)
 
         # Build subject summaries for all persona mailboxes + captain + admiral.
         # captain/admiral come from the single _read_all_mail_subjects exec above.
