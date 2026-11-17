@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.13.0
+
+### Dashboard and sign-in fixes
+
+- Route crew dashboard pages through the portal and allow same-origin dashboard
+  writes while retaining cross-site protections.
+- Wait for the Kiro Identity Center profile before storing credentials, and
+  report crew sign-in state so dispatch can return `not_authenticated` clearly.
+- Propose the KiroCrew 0.13.0 integration upgrade; its image and backend-spawn
+  changes remain pending implementation and release validation.
+
 ## v0.12.2
 
 ### Truthful nuke cleanup (TRN-330)

@@ -29,7 +29,7 @@
 - [ ] 5.2 Run a fresh kiro Identity Center login (`ghostship auth login kiro --method identity-center --yes`). Verify the stored credential's `state` holds `api.codewhisperer.profile` and that the transport log shows the profile wait completed, not a timeout.
 - [ ] 5.3 Launch a fresh kiro crew. Verify gateway readiness, `kiro_signin.ok: true` in `crews`, and that one dispatch naming `backend: "kiro"` and one raw spawn without a backend run on the same harness (compare each run's recorded backend). Verify both complete, then run a Captain `willy` order for one check-in and verify Raven's spawn on `member-raven` succeeds.
 - [ ] 5.4 Launch a fresh claude crew. Verify a dispatch completes and its run records the `claude` backend.
-- [ ] 5.5 Run `scripts/run.sh --unit --integration` and the live `--e2e` suite against the rebuilt transport. Run `openspec validate upgrade-kirocrew-0-13-0 --type change --strict`. Verify all pass, and record the results in the dependency review.
+- [ ] 5.5 Run `scripts/run.sh --unit --integration` and the live `--e2e` suite against the rebuilt transport. Run `openspec validate trn-322-upgrade-kirocrew-0-13-0 --type change --strict`. Verify all pass, and record the results in the dependency review.
 
 ## 6. Release gate: final KiroCrew 0.13.0
 
