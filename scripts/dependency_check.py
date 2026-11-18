@@ -179,6 +179,60 @@ EXTRACTED_KINDS = {
     "compose_image", "apt_group", "node_setup", "git_ref", "github_action", "github_python_runtime",
 }
 
+OPENSPEC_SKILLS = (
+    "openspec-explore",
+    "openspec-propose",
+    "openspec-update-change",
+    "openspec-apply-change",
+    "openspec-sync-specs",
+    "openspec-archive-change",
+)
+EXACT_VERSION_RE = re.compile(r"\d+\.\d+\.\d+\Z")
+
+
+def validate_openspec_assets(root: Path) -> list[str]:
+    """Check that the bundled CLI and six Academy core skills use one exact version."""
+    errors: list[str] = []
+    containerfile = root / "crews" / "spec-ops" / "Containerfile"
+    if not containerfile.is_file():
+        return ["openspec-cli: missing spec-ops Containerfile"]
+
+    matches = re.findall(
+        r"\bnpm\s+install\s+-g\s+@fission-ai/openspec@([^\s;\\]+)",
+        containerfile.read_text(encoding="utf-8"),
+    )
+    if len(matches) != 1:
+        errors.append(f"openspec-cli: expected one exact npm pin, found {len(matches)}")
+        return errors
+    cli_version = matches[0]
+    if not EXACT_VERSION_RE.fullmatch(cli_version):
+        errors.append(f"openspec-cli: expected an exact semantic version, found {cli_version!r}")
+
+    skills_root = root / "academy" / "skills"
+    for skill_name in OPENSPEC_SKILLS:
+        skill_file = skills_root / skill_name / "SKILL.md"
+        if not skill_file.is_file():
+            errors.append(f"openspec-skills: missing Academy skill {skill_file.relative_to(root).as_posix()}")
+            continue
+        content = skill_file.read_text(encoding="utf-8")
+        name_match = re.search(r"^name:\s*([^\s]+)\s*$", content, re.M)
+        if not name_match or name_match.group(1) != skill_name:
+            found_name = name_match.group(1) if name_match else None
+            errors.append(f"openspec-skills: expected skill name {skill_name!r}, found {found_name!r}")
+        generated_match = re.search(
+            r"^\s+generatedBy:\s*[\"']?([^\"'\s]+)[\"']?\s*$", content, re.M,
+        )
+        if not generated_match:
+            errors.append(f"openspec-skills: {skill_name} is missing metadata.generatedBy")
+        elif generated_match.group(1) != cli_version:
+            errors.append(
+                f"openspec-skills: {skill_name} generatedBy {generated_match.group(1)!r} "
+                f"does not match CLI pin {cli_version!r}"
+            )
+        if re.search(r"/opsx:|\[\[opsx:", content, re.I):
+            errors.append(f"openspec-skills: {skill_name} still references v1 command files")
+    return errors
+
 
 def declaration_key(declaration: dict) -> str:
     return key_for(declaration["kind"], declaration["path"], declaration.get("package")
@@ -203,6 +257,8 @@ def validate_inventory(root: Path, inventory: dict) -> tuple[list[str], dict[str
     ids: set[str] = set()
     component_ids = {component["id"] for component in inventory.get("components", [])
                      if isinstance(component, dict) and isinstance(component.get("id"), str)}
+    if "openspec-cli" in component_ids:
+        errors.extend(validate_openspec_assets(root))
     declared: dict[str, str] = {}
     allowed_compat = {"unknown", "supported", "unsupported"}
     allowed_sources = {"manual", "derived", "pypi", "npm", "dockerhub_image", "ghcr_image",

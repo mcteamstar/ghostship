@@ -35,7 +35,13 @@ Six KiroCrew personas. The five workers split the [OpenSpec](https://github.com/
 
 Small, self-contained work can start and end with a single Ghost dispatch. Not every task needs the full cycle.
 
-Academy content is delivered to each backend's native harness paths (`~/.kiro/skills/`, `~/.claude/skills/`, etc.) via `mcteamstar/.agents`, baked into every crew image and configured by `AcademyLoader` at launch. Adding a new backend requires no ghostship changes — only an update to `.agents/setup`.
+Academy content is bind-mounted into the transport, then `AcademyLoader._stage_skills()` stages manifest-selected skills from `/skills/` into `/home/kirocrew/.agents/skills/<skill-name>/` inside each crew. The baked `.agents/setup` script wires that shared skill tree to each backend's native path. Adding a backend requires an update to `.agents/setup`.
+
+### OpenSpec workflow skills
+
+The spec-ops image pairs OpenSpec CLI 2.1.0 with the six core Academy skills: `openspec-explore`, `openspec-propose`, `openspec-update-change`, `openspec-apply-change`, `openspec-sync-specs`, and `openspec-archive-change`. Invoke them with the backend's skill syntax: Codex uses `$openspec-*`; Kiro and Claude Code use `/openspec-*` (for example, `$openspec-apply-change` in Codex and `/openspec-apply-change` in Kiro or Claude Code). These are skills delivered from Academy; do not assume legacy OpenSpec command files are installed.
+
+The `openspec-continue-change` skill is optional and is not in Academy's six-skill core set. When it is absent, use `openspec status --change "<name>" --json` to find the next ready artifact, then `openspec instructions "<artifact-id>" --change "<name>" --json` to get its requirements. Add `--store "<id>"` to those commands when the project is selected through a registered store.
 
 ### ghostship-spawn skill
 
@@ -78,7 +84,7 @@ Recovery starts the existing container from its existing image. It does not recr
 
 ### Shared OpenSpec store
 
-Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. `launch` seeds a shared OpenSpec store one level above at the workspace root (`openspec init --force`), so all agents resolve to the same store automatically.
+Every `dispatch` runs in its own `subagent_<task_id>/` subdirectory. `launch` seeds a shared OpenSpec store one level above at the workspace root (`openspec init --tools none --no-animation --force`), so all agents resolve to the same store automatically. The seeded store is a sibling of the delivered `repo/`; launch does not run `openspec update` against a user's project or apply the OpenSpec v1-to-v2 migration to its files.
 
 ### Repository transfer
 
