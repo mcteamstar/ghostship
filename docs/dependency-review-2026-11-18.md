@@ -127,6 +127,30 @@ Containerfile pin is exact, but that does not substitute for an image check.
 Fresh crew launches for the supported backends and in-crew use of the existing
 change remain unverified for the same reason.
 
+
+## Resumed agent environment recheck (2026-11-18)
+
+The exact `@fission-ai/openspec@2.1.0` pin remains present in the spec-ops
+Containerfile. The cached package was invoked offline and reported `2.1.0`.
+This CLI successfully read this change through the registered `repo` store;
+`status` and `instructions apply` reported 10/13 tasks complete. The repository
+was clean before and after those read-only calls. This verifies the CLI package
+and host-side artifact readability, not the CLI installed in a built image or
+inside a crew. The host-global `/usr/bin/openspec` and `npm ls -g` report
+`1.14.3`.
+
+No local builders/runtimes were available among `docker`, `podman`,
+`podman-remote`, `buildah`, `nerdctl`, `containerd`, `buildctl`, `buildkitd`,
+`kaniko`, `img`, `nix`, and `pack`; Docker, Podman, and containerd sockets were
+also absent. The installed `kirocrew pod ls` fallback could not run because its
+local security policy file was unreadable, and it does not build the spec-ops
+image. Therefore task 2.1 has a verified source pin but no built-image version
+result; task 5.1 has no fresh-crew/backend discovery result; task 5.2 has
+host-side OpenSpec 2.1.0 read evidence but no in-crew exercise or launch-time
+migration check. None of these tasks is complete. Dependency inventory
+validation passed. The focused pytest regression test could not run because
+pytest is not installed in this environment.
+
 ## Upstream references
 
 - [OpenSpec 2.1.0 release notes](https://github.com/Fission-AI/OpenSpec/releases/tag/v2.1.0)
