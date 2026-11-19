@@ -4,6 +4,8 @@
 
 The Caddy admin API is reachable on the shared portside network even though only Transport needs it to manage dashboard routes. Radar also holds the transport secret, which currently lets a direct HTTP request reach the crew UI proxy without passing Caddy's dashboard-session check. The intended boundary is that Transport manages Caddy and Radar reads fleet data; the fix should preserve the existing network topology where possible.
 
+The admin listener is currently bound inside the Caddy container network and is not published as a host port. The risk is internal reachability from other portside containers, including Radar, rather than direct internet exposure.
+
 ## What Changes
 
 - Restrict Caddy admin access to Transport without adding a network solely for this purpose; prefer a permissioned Unix-domain socket shared only with Transport. Use an authenticated proxy only if explicit request credentials are required.

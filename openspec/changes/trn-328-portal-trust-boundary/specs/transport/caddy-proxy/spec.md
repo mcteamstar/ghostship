@@ -41,3 +41,7 @@ The Caddy admin API SHALL listen on a Unix-domain socket in a directory shared b
 #### Scenario: Public Caddy listeners remain available
 - **WHEN** the admin API is moved to a Unix-domain socket
 - **THEN** the portal listener and per-crew dashboard listeners remain available on their configured host ports
+
+#### Scenario: Admin API is not published to the host
+- **WHEN** the generated Compose configuration is inspected
+- **THEN** no host port mapping exposes the Caddy admin API
