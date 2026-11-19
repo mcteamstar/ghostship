@@ -164,7 +164,7 @@ run_smoke_pass() (
   trap pass_exit EXIT
   cd "$REPO_DIR"
   ./install.sh --config "$SMOKE_CONFIG"
-  ./start.sh --config "$SMOKE_CONFIG"
+  ./bin/start.sh --config "$SMOKE_CONFIG"
   curl --fail --silent --show-error --max-time 15 "$HEALTH_URL" >/dev/null
   echo "Portal /health is ready at $HEALTH_URL"
   if [[ "$mode" == "forced-failure" ]]; then
