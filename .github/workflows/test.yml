@@ -32,25 +32,131 @@ jobs:
           name: openapi-schema
           path: openapi.json
 
-  # trn-212-test-coverage-gaps E.1: run the shell integration tests on every
-  # push/PR. The bash scripts under tests/integration use only POSIX tools and
-  # stub binaries (stub podman/systemctl/id on PATH, sandboxed HOME), so no
-  # Python or Podman setup is required here.
-  #
-  # E.2 — BRANCH PROTECTION (manual step, cannot be set from this file):
-  #   Add "integration-tests" to the repo's required-status-check list for the
-  #   `main` branch under Settings → Branches → Branch protection rules, so a PR
-  #   cannot merge while these tests fail. GitHub exposes required status checks
-  #   only through repo settings / the API, not through the workflow YAML, so
-  #   this must be done once by a repo admin after this job first runs.
+  # Lightweight shell and Python integration checks run on every push/PR.
+  # The Python suites use fake Podman clients; install the same transport
+  # requirements as the unit job so failures cannot be hidden by missing deps.
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
-      - name: Run shell integration tests
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python3 -m pip install -r transport/requirements.txt
+
+      - name: Run integration tests
         run: scripts/run.sh --integration
+
+  # These suites exercise the shipped crew image and require a working Podman
+  # connection. The step builds the image it selects and fails on every missing
+  # image, missing connection, container failure, or test failure.
+  podman-integration:
+    name: podman-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies and Podman
+        run: |
+          python3 -m pip install -r transport/requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Build the crew image and run Podman integration tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          podman_dir="$RUNNER_TEMP/ghostship-podman"
+          mkdir -p "$podman_dir/home" "$podman_dir/runtime"
+          chmod 700 "$podman_dir/runtime"
+          export HOME="$podman_dir/home"
+          export XDG_CONFIG_HOME="$HOME/.config"
+          export XDG_DATA_HOME="$HOME/.local/share"
+          export XDG_RUNTIME_DIR="$podman_dir/runtime"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+          socket="$XDG_RUNTIME_DIR/podman.sock"
+          podman system service --time=0 "unix://$socket" > "$podman_dir/service.log" 2>&1 &
+          service_pid=$!
+          cleanup() {
+            status=$?
+            trap - EXIT
+            kill "$service_pid" 2>/dev/null || true
+            wait "$service_pid" 2>/dev/null || true
+            rm -rf "$podman_dir"
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..30}; do
+            if [[ -S "$socket" ]]; then
+              break
+            fi
+            sleep 1
+          done
+          if [[ ! -S "$socket" ]]; then
+            cat "$podman_dir/service.log"
+            echo "Podman API socket did not become ready" >&2
+            exit 1
+          fi
+          podman system connection add ghost-academy "unix://$socket"
+          podman --connection ghost-academy info
+
+          context="$podman_dir/build-context"
+          mkdir -p "$context"
+          cp -a crews/_base/admission/. "$context/"
+          mkdir -p "$context/container_scripts"
+          cp transport/container_scripts/*.py "$context/container_scripts/"
+          podman --connection ghost-academy build -t localhost/base-admission:latest "$context"
+
+          version="$(cat VERSION)"
+          podman --connection ghost-academy build \
+            -t localhost/spec-ops-mid:latest \
+            --build-arg "VERSION=$version-spec-ops" \
+            --build-arg AGENT_TOOLCHAINS= \
+            crews/spec-ops
+          podman --connection ghost-academy build \
+            -t localhost/spec-ops:latest \
+            --build-arg MID_IMAGE=localhost/spec-ops-mid:latest \
+            crews/_base/graduation
+
+          python3 tests/integration/test_model_defaults.py \
+            --connection ghost-academy --image localhost/spec-ops:latest
+
+          podman --connection ghost-academy run --rm -i --network none \
+            --security-opt no-new-privileges --cap-drop SYS_ADMIN --cap-drop NET_RAW \
+            --entrypoint python3 localhost/spec-ops:latest - \
+            < tests/integration/test_codex_sandbox.py
+
+          python3 tests/integration/test_verify_admiral_sig.py \
+            --connection ghost-academy --image localhost/spec-ops:latest
+
+  # The smoke harness provisions a temporary rootless Podman API/store, installs
+  # and starts the real stack, probes /health through the portal, and removes
+  # only resources in that temporary store on both success and forced failure.
+  install-smoke:
+    name: install-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Podman and smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose curl
+
+      - name: Install, start, probe, and clean up
+        run: bash tests/integration/test_install_smoke.sh
 
   security-scan:
     name: security-scan
@@ -66,4 +172,3 @@ jobs:
       # a committed live secret or on string-built SQL.
       - name: Security scan (secrets + unsafe queries)
         run: python3 scripts/security_scan.py
-
