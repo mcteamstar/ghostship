@@ -17,7 +17,7 @@ The generated Compose configuration attaches Portal, Transport, and Radar to ga-
 ## Decisions
 
 - Treat bin/lib/compose.py as the source for generated steady-state membership and update relevant specs and docs to match.
-- Edit only inaccurate steady-state references. Migration instructions that describe old ga-net containers remain if they match current migration code.
+- Edit only inaccurate steady-state references. Keep the install/uninstall cleanup of the legacy ga-net when it matches current code; do not retain a Transport-startup crew migration requirement that the runtime does not implement.
 - Validate the generated topology against the spec table by inspecting Compose-generation code and its focused tests.
 
 ## Risks / Trade-offs

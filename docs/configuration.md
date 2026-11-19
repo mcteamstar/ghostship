@@ -76,11 +76,18 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 | `GA_MACHINE_NAME` | `ghost-academy` | Dedicated machine/service name. Only needed when running two ghostship instances side-by-side on the same host. |
 | `images.agents_ref` | _(unset, uses `main`)_ | Branch, tag or full commit SHA of `mcteamstar/.agents` baked into the crew image (`machine.images.agents_ref`). Academy content is staged via `.agents/setup <backend>` at crew launch. Set a tag or SHA for reproducible builds. The baked commit is recorded in `/home/kirocrew/.agents-commit`. A changed value forces a crew image rebuild. |
 
-> **Network topology:** Two static Podman networks:
-> - **`ga-portside`** — `ga-portal` ↔ `ga-transport` only. Crew containers are not on this network.
-> - **`ga-starboard`** — `ga-transport` ↔ all crew containers (`gs-*`) and login containers.
->
-> Crew containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` cannot reach crew containers by hostname. See `docs/architecture.md` for the full security model.
+> **Network topology:** Two static Podman networks; `ga-transport` joins both.
+
+| Container | Network(s) |
+|---|---|
+| `ga-portal` | `ga-portside` only |
+| `ga-radar` | `ga-portside` only |
+| `ga-transport` | `ga-portside` + `ga-starboard` |
+| `gs-{crew_id}` (crew) | `ga-starboard` only |
+| `ga-login-{token}` (ephemeral) | `ga-starboard` only |
+| `gs-worker-{token}` (disposable) | none (`netns: none`) |
+
+Crew and login containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` and `ga-radar` cannot reach crew containers by hostname. See `docs/architecture.md` for the full security model.
 
 > **Internal constant — not user-settable:**
 > `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each crew container's gateway over `ga-starboard`. It is defined in `transport/constants.py:21` and imported everywhere else.

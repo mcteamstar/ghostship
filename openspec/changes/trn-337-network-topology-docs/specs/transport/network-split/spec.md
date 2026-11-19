@@ -7,7 +7,7 @@
 The system SHALL provision two static Podman networks replacing `ga-net`:
 
 - `ga-portside` — used by `ga-portal`, `ga-transport`, and `ga-radar`. Crew, login, and worker containers SHALL NOT be attached to `ga-portside`.
-- `ga-starboard` — used by `ga-transport` and all `gs-*` crew containers. `ga-portal` and `ga-radar` SHALL NOT be attached to `ga-starboard`.
+- `ga-starboard` — used by `ga-transport`, all `gs-*` crew containers, and ephemeral `ga-login-*` containers. `ga-portal` and `ga-radar` SHALL NOT be attached to `ga-starboard`; disposable workers use `netns: none`.
 
 `ga-transport` SHALL be attached to both `ga-portside` and `ga-starboard` at all times, bridging the portal and crew tiers. Both networks are static install-time networks and are not created or destroyed at crew launch or nuke time.
 
@@ -21,7 +21,7 @@ Network assignments:
 | `ga-radar` | `ga-portside` only |
 | `ga-transport` | `ga-portside` + `ga-starboard` |
 | `gs-{crew_id}` (crew) | `ga-starboard` only |
-| `ga-login-{token}` (ephemeral) | `ga-starboard` |
+| `ga-login-{token}` (ephemeral) | `ga-starboard` only |
 | `gs-worker-{token}` (disposable) | none (`netns: none`) |
 
 #### Scenario: Portal cannot reach crew containers directly
@@ -63,3 +63,9 @@ Network assignments:
 #### Scenario: Network provisioning is idempotent
 - **WHEN** installation runs again while both networks already exist
 - **THEN** it completes without attempting to replace or recreate either network
+
+## REMOVED Requirements
+
+### Requirement: Migration of existing crews on startup
+
+**Reason**: The current transport startup reconciliation does not migrate crew containers from `ga-net`. The implemented legacy-network migration is limited to install-time cleanup of an empty `ga-net`, which remains covered by the install requirement.

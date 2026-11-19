@@ -137,21 +137,18 @@ Ghostship-tracked schedules and Captain check-ins can wake a stopped crew once t
 
 ## Networking
 
-Two static Podman networks:
+Two static Podman networks; `ga-transport` joins both:
 
-```
-  Internet / host
-       │
-  [ga-portal] ──────── ga-portside ─── [ga-transport]
-                                    └── [ga-radar]
-                                               │
-                                         ga-starboard
-                                               │
-                              [gs-alpha]  [gs-beta]  ...
-```
+| Container | Network(s) |
+|---|---|
+| `ga-portal` | `ga-portside` only |
+| `ga-radar` | `ga-portside` only |
+| `ga-transport` | `ga-portside` + `ga-starboard` |
+| `gs-{crew_id}` (crew) | `ga-starboard` only |
+| `ga-login-{token}` (ephemeral) | `ga-starboard` only |
+| `gs-worker-{token}` (disposable) | none (`netns: none`) |
 
-- **ga-portside** — Caddy ↔ transport and Caddy ↔ radar only. Crew containers cannot reach Caddy.
-- **ga-starboard** — transport ↔ crew containers only. Caddy and radar cannot reach crews.
+Crew and login containers on `ga-starboard` can dial `ga-transport` at the TCP layer, but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` and `ga-radar` cannot resolve crew container names.
 
 `GA_TRANSPORT_SECRET` is generated at install time, mounted into both Caddy and the transport. Caddy injects `X-Transport-Token` on every upstream request; the transport rejects any request missing it.
 

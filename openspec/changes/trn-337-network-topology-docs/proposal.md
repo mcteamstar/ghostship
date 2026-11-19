@@ -2,13 +2,14 @@
 
 ## Why
 
-The deployed Compose topology attaches Radar to `ga-portside`, but the network-split and configuration specs describe that network as Portal and Transport only. Other steady-state docs still describe the retired `ga-net` layout, making the source of truth contradictory.
+The generated Compose topology attaches Radar to `ga-portside`, but the network-split and configuration requirements omit Radar. Other steady-state requirements use the retired `ga-net` layout or omit current Ghost Academy containers from the dedicated-instance inventory.
 
 ## What Changes
 
-- Reconcile the network-split, Radar, crew-lifecycle, and installation requirements with the current steady-state Compose topology.
-- Correct operator documentation and retain `ga-net` only where it describes a real migration step.
-- Do not change network membership or add networks as part of this change.
+- Reconcile the network-split, crew-lifecycle, installation, dashboard-proxy, and dashboard-auth requirements with the current Compose and runtime network assignments.
+- Correct operator documentation and retain `ga-net` only for legacy cleanup implemented by install and uninstall code; remove the unsupported Transport-startup crew-migration requirement.
+- Add the same complete network membership table to configuration and architecture documentation.
+- Do not change Compose or runtime network assignments.
 
 ## Capabilities
 
@@ -16,10 +17,12 @@ The deployed Compose topology attaches Radar to `ga-portside`, but the network-s
 
 ### Modified Capabilities
 
-- `transport/network-split`: document the current membership of `ga-portside` and `ga-starboard` consistently.
+- `transport/network-split`: document current static and per-container membership and keep only code-backed legacy cleanup behavior.
+- `transport/dashboard-proxy`: identify `ga-starboard` as the Transport-to-crew network.
+- `transport/dashboard-auth`: describe direct Transport access over the current networks.
 - `crew-lifecycle`: name `ga-starboard` as the crew network in the resource-naming contract.
-- `installation`: update idempotent-install and dedicated-instance descriptions to use the current static networks.
+- `installation`: update idempotent-install and dedicated-instance descriptions to use the current static networks and service inventory.
 
 ## Impact
 
-OpenSpec network and lifecycle specs, `docs/configuration.md`, and related architecture documentation. Compose behavior is the reference point; no runtime change is proposed.
+OpenSpec network, dashboard, lifecycle, and installation specs, plus `docs/configuration.md` and `docs/architecture.md`. Compose behavior is the reference point; no runtime change is proposed.
