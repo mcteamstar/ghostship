@@ -35,5 +35,5 @@ _(none)_
 - `crews/_base/graduation/seed_kiro_db.py`, `crews/_base/graduation/Containerfile`: seed verification annotation, and seed logic only if the schema differs.
 - `transport/tools.py` (single dispatch body), `transport/lifecycle.py` (`_dispatch_batch` body), `transport/captain_engine.py` (Raven check-in body): a `backend` field on `/api/spawn`.
 - `openspec/specs/crew-image-build/spec.md`, `openspec/specs/crew-acp-backend/spec.md`: requirement deltas.
-- `config/dependencies.yaml`, a new `docs/dependency-review-<date>.md`, `docs/configuration.md`, `docs/architecture.md`, `CHANGELOG.md`.
+- `dependencies.yaml`, a new `docs/dependency-review-<date>.md`, `docs/configuration.md`, `docs/architecture.md`, `CHANGELOG.md`.
 - Rebuilt transport, login and crew images. Existing crews keep their current image until they are recreated.

@@ -35,6 +35,35 @@ class DependencyCheckTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_default_inventory_is_at_repository_root(self):
+        self.assertEqual(check.INVENTORY, check.ROOT / "dependencies.yaml")
+        self.assertTrue(check.INVENTORY.is_file())
+
+    def test_validate_uses_selected_root_inventory_by_default(self):
+        (self.root / "dependencies.yaml").write_text(
+            check.yaml.safe_dump(inventory([])), encoding="utf-8")
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            status = check.main(["validate", "--root", str(self.root)])
+
+        self.assertEqual(status, 0)
+        self.assertIn("Inventory declarations and derived links: PASS", output.getvalue())
+
+    def test_validate_preserves_explicit_inventory_override(self):
+        (self.root / "dependencies.yaml").write_text("{}\n", encoding="utf-8")
+        fixture_inventory = self.root / "tests" / "fixtures" / "config" / "dependencies.yaml"
+        fixture_inventory.parent.mkdir(parents=True)
+        fixture_inventory.write_text(check.yaml.safe_dump(inventory([])), encoding="utf-8")
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            status = check.main([
+                "validate", "--root", str(self.root), "--inventory", str(fixture_inventory)])
+
+        self.assertEqual(status, 0)
+        self.assertIn("Inventory declarations and derived links: PASS", output.getvalue())
+
     def test_reports_dependency_input_missing_from_inventory(self):
         (self.root / "requirements.txt").write_text("alpha==1.0\n", encoding="utf-8")
 

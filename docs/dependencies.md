@@ -1,6 +1,6 @@
 # Dependency maintenance
 
-The repository inventory is [config/dependencies.yaml](../config/dependencies.yaml). It records direct and inherited tools, images, Python packages, OS package groups, shared assets and CI actions. Each component names its authoritative declaration, upstream source, version policy, compatibility evidence and review state. Keep the declaration in its existing source file; the inventory points to it rather than replacing it.
+The repository inventory is [dependencies.yaml](../dependencies.yaml). It records direct and inherited tools, images, Python packages, OS package groups, shared assets and CI actions. Each component names its authoritative declaration, upstream source, version policy, compatibility evidence and review state. Keep the declaration in its existing source file; the inventory points to it rather than replacing it.
 
 Run these commands from the repository root:
 
@@ -47,7 +47,7 @@ Result: INCOMPLETE (one or more lookups failed or pagination was capped)
 
 Review the inventory monthly and before every release. A review older than 30 days, or a missing date, is overdue. Check security advisories and upstream compatibility warnings as soon as they are found; do not wait for the monthly review.
 
-For every component, record `last_reviewed`, `outcome`, `next_review` and `evidence` in `config/dependencies.yaml`. Use a dated evidence link or concise test/build reference. A deferral records why the current declaration remains, what evidence was considered and the next review date. A lookup failure, absent installed-version evidence or unsupported combination must remain explicitly unknown/unsupported rather than being marked current.
+For every component, record `last_reviewed`, `outcome`, `next_review` and `evidence` in `dependencies.yaml`. Use a dated evidence link or concise test/build reference. A deferral records why the current declaration remains, what evidence was considered and the next review date. A lookup failure, absent installed-version evidence or unsupported combination must remain explicitly unknown/unsupported rather than being marked current.
 
 ## Compatibility and upgrade checks
 

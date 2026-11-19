@@ -36,7 +36,7 @@ The spec-ops image pins OpenSpec 1.14.3. Its six core Academy OpenSpec skills we
 
    **Alternative considered:** Automatically run the migration for every project. This risks modifying user-owned files at crew startup and makes image upgrades destructive.
 
-5. **Record the CLI and skills as a coupled dependency review.** Update `config/dependencies.yaml` and dated evidence with the exact CLI version, source of generated skills, migration inspection, image build result, and fresh-crew checks. Record unknown runtime/backend coverage as unknown rather than treating image build success as proof of model generation compatibility.
+5. **Record the CLI and skills as a coupled dependency review.** Update `dependencies.yaml` and dated evidence with the exact CLI version, source of generated skills, migration inspection, image build result, and fresh-crew checks. Record unknown runtime/backend coverage as unknown rather than treating image build success as proof of model generation compatibility.
 
 ## Risks / Trade-offs
 
