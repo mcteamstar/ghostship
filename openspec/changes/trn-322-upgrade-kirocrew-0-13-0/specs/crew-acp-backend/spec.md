@@ -5,7 +5,8 @@
 ### Requirement: Transport spawns name the crew's recorded backend
 
 Every `POST /api/spawn` the transport sends to a crew gateway (single dispatch,
-batch dispatch and Captain check-in) SHALL include a `backend` field naming the
+batch dispatch, Captain check-in, scheduled immediate dispatch, and scheduled
+tick dispatch) SHALL include a `backend` field naming the
 crew's recorded `acp_backend` in KiroCrew's request spelling, so the task runs on
 that backend and not on one the gateway would inherit from the parent session.
 
@@ -29,10 +30,10 @@ that backend and not on one the gateway would inherit from the parent session.
 - **AND** that gateway session has a different harness pick recorded
 - **THEN** the task runs on the crew's recorded backend, because the body names it.
 
-#### Scenario: batch dispatch and Captain check-in name the backend
+#### Scenario: batch, Captain, and scheduled dispatches name the backend
 
-- **WHEN** a batch dispatch sends its tasks, or Captain dispatches a Raven
-  check-in, to a crew
+- **WHEN** batch dispatch, Captain, scheduled immediate dispatch, or a scheduled
+  tick sends a spawn to a crew
 - **THEN** every `/api/spawn` body names the crew's recorded backend.
 
 #### Scenario: gateway refuses the named backend

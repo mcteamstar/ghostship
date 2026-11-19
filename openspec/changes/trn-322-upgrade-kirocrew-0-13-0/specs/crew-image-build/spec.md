@@ -8,15 +8,11 @@ The crew-image build SHALL pin the base image to the KiroCrew gateway version th
 crew is intended to run, expressed as an immutable tag or digest, and the pin
 default SHALL be identical in the admission build definition and the shipped
 configuration default so that a build with no override matches an install build.
-For validation the pin SHALL be KiroCrew `0.13.0-rc.3` at immutable multi-arch
-index digest
-`sha256:189c57160526f6864120184893d21d4f4905107a3886b8c7f85d93ca27c509e9`,
-which provides Linux amd64 and arm64 images. A Ghostship release that targets
-KiroCrew 0.13.0 SHALL NOT ship on a release-candidate pin: before release the pin
-SHALL be advanced to the final `0.13.0` immutable index digest, and the image
-inspection, seed verification and fresh-crew smoke checks SHALL be repeated
-against it. The bundled Kiro CLI version SHALL be verified from the image rather
-than inferred from the gateway release number. The digest SHALL be recorded as the
+The pin SHALL be KiroCrew `0.13.0` at its verified immutable multi-architecture
+index digest. The image inspection, seed verification and fresh-crew smoke checks
+SHALL run against this stable image before Ghostship 0.13.0 is released. The
+bundled Kiro CLI version SHALL be verified from the image rather than inferred
+from the gateway release number. The digest SHALL be recorded as the
 `KC_BASE_IMAGE` default in `crews/_base/admission/Containerfile`. The comment
 block above the ARG SHALL record the KiroCrew version, actual Kiro CLI version,
 digest, and verification date.
@@ -51,13 +47,13 @@ digest, and verification date.
 - **THEN** that build uses the explicit override
 - **AND** a build without an override continues to use the pinned default.
 
-#### Scenario: release blocked on a release-candidate pin
+#### Scenario: release uses the verified stable pin
 
 - **WHEN** a Ghostship release targeting KiroCrew 0.13.0 is prepared
-- **AND** the `KC_BASE_IMAGE` default still names a `0.13.0-rc.*` image
-- **THEN** the release SHALL NOT proceed
-- **UNTIL** the pin names the final `0.13.0` index digest and the image, seed and
-  smoke checks have passed against it.
+- **THEN** the `KC_BASE_IMAGE` default names the verified stable `0.13.0` index
+  digest
+- **AND** image inspection, seed verification and fresh-crew smoke checks have
+  passed against that image.
 
 #### Scenario: login containers use the pinned image
 
@@ -81,9 +77,8 @@ auth-injection step writes and `state` with the column that holds
 `api.codewhisperer.profile`. The previously verified v0.12.2 baseline is Kiro CLI
 2.27.1 with 11 migration rows, versions 0 through 10. Verification MAY inspect and
 query the image directly or inspect its published layers when direct execution is
-unavailable. Every base-image pin change, including the move from a release
-candidate to the final release, SHALL re-verify both migration rows and the
-resulting table and auth schema before release.
+unavailable. Every base-image pin change SHALL re-verify both migration rows and
+the resulting table and auth schema before release.
 
 #### Scenario: seed verified and matching the base image
 

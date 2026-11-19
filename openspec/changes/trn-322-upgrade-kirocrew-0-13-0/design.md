@@ -4,8 +4,8 @@
 
 - One immutable pin, `KC_BASE_IMAGE`, drives three things. It is the admission `FROM` (`crews/_base/admission/Containerfile`), the transport default (`transport/config.py`, `kc_base_image`), and the image used for ephemeral `ga-login-*` containers. Moving it moves crews and the kiro-cli that captures kiro credentials together.
 - The kiro-cli DB is pre-seeded at build time (`crews/_base/graduation/seed_kiro_db.py`) so that auth injection is a plain insert. The seed is verified against v0.12.2: Kiro CLI 2.27.1, 11 migration rows, versions 0 to 10. The Containerfile warns that a pin bump without re-verification is a silent auth-injection regression.
-- Ghostship's spawn bodies today: `dispatch` sends `{task, agent, keep: true}` plus `parent_session` for enrolled agents (`transport/tools.py`, `transport/lifecycle.py` `_dispatch_batch`). Captain sends `parent_session: "dashboard:member-raven"` (`transport/captain_engine.py`). None names a backend.
-- In KiroCrew `0.13.0-rc.3`, `POST /api/spawn` uses the body's `backend`. When it is absent, the backend comes from `_inherited_backend_name`, which returns a harness only when the parent session was created with a pick (`session_create(backend=...)`). Otherwise the run starts on the gateway default (`src/kiro_crew/dashboard/messaging_api/spawn.py:224-240`, `:536-539`). Request spellings come from `POLICY_ID_BY_BACKEND` (`src/kiro_crew/agent_sdk/backends.py:742`). The default backend is spelled `kiro`, and `kas`, `claude` and `codex` are separate ids.
+- Ghostship's transport spawn bodies today are assembled by single and batch dispatch, Captain check-ins, scheduled immediate dispatch, and scheduled tick dispatch. None names a backend, so KiroCrew 0.13 may inherit one from session state.
+- The `0.13.0-rc.3` discovery found that `POST /api/spawn` uses the body's `backend`. When it is absent, the backend comes from `_inherited_backend_name`, which returns a harness only when the parent session was created with a pick (`session_create(backend=...)`). Otherwise the run starts on the gateway default (`src/kiro_crew/dashboard/messaging_api/spawn.py:224-240`, `:536-539`). Verify this behavior against stable `0.13.0`. Request spellings come from `POLICY_ID_BY_BACKEND` (`src/kiro_crew/agent_sdk/backends.py:742`). The default backend is spelled `kiro`, and `kas`, `claude` and `codex` are separate ids.
 - Ghostship kiro crews get no `agent.acp_backend` override, so they run on KiroCrew's default backend. Claude and Codex crews get `agent.acp_backend` set to `claude` or `codex` (`transport/lifecycle.py`, crew config patch).
 - Already on `release/0.13.0`: the Identity Center login waits for `api.codewhisperer.profile` before storing a credential (`54c7babb`), and the transport records `kiro_signin` (`efc5dfe5`). Both are exercised by this change's smoke checks.
 
@@ -25,16 +25,15 @@
 
 ## Decisions
 
-### D1. Validate on rc.3 now, gate release on the final digest
+### D1. Validate against the stable release
 
-Pin `0.13.0-rc.3` (`sha256:189c5716...c509e9`, amd64 and arm64 verified from the GHCR index) and do the full verification now. A tasks.md gate requires re-pinning to the final `0.13.0` digest and repeating the image, seed and smoke checks before release.
+KiroCrew `0.13.0` is now stable. Resolve and verify its multi-architecture index digest, platform manifests, bundled Kiro CLI version, and database schema before updating the immutable pin. Run the image, seed, and smoke checks against that stable image.
 
-- Alternative: wait for the final tag. Rejected because it delays finding schema or integration breaks until release week.
-- Alternative: ship on rc.3. Rejected because release candidates can change before final, and a pin that never moves is unreviewed drift.
+- Alternative: continue using the `0.13.0-rc.3` image as the target. Rejected because the stable release is available and may differ from the candidate.
 
 ### D2. Map the recorded backend in one helper, never to `kas`
 
-Add a single transport helper that turns a crew's registry `acp_backend` into the gateway spelling: `kiro` to `"kiro"`, `claude` to `"claude"`, `codex` to `"codex"`, and missing to `"kiro"`. All three spawn sites call it.
+Add a single transport helper that turns a crew's registry `acp_backend` into the gateway spelling: `kiro` to `"kiro"`, `claude` to `"claude"`, `codex` to `"codex"`, and missing to `"kiro"`. All five transport spawn sites call it.
 
 `kiro` maps to the policy id of KiroCrew's default backend, which is what Ghostship kiro crews run today, so naming it changes nothing on the normal path. It only removes the inheritance path.
 
@@ -56,7 +55,7 @@ The login container moves to the new image's kiro-cli. KiroCrew 0.13's Identity 
 
 ## Risks / Trade-offs
 
-- [The rc.3 schema or behaviour changes in the final release] → D1's gate repeats every check against the final digest. The seed requirement covers every pin change.
+- [The stable release differs from the rc.3 schema or behavior] → Verify the stable image directly and base the pin, seed, and smoke results on that image.
 - [`"kiro"` and an unnamed spawn behave differently on some gateway configuration] → The smoke check compares a named and an unnamed spawn on a fresh kiro crew before the helper ships.
 - [v0.13 Bot changes affect Captain's `member-raven` parent (the conductor-only Bot chat, ledger defaults, and `kirocrew-mate-conductor` refusing `spawn_run` from a Bot chat)] → The refusal applies to tool calls made inside the Bot chat, not to an external `POST /api/spawn` that names the slot as parent (inferred from the discovery). A Captain check-in on a fresh crew is part of the smoke checks.
 - [Rebuilding the transport and login images interrupts in-flight logins and Captain check-ins] → Rebuild between operations. Captain resumes on its next interval.
@@ -72,4 +71,4 @@ The login container moves to the new image's kiro-cli. KiroCrew 0.13's Identity 
 
 ## Open Questions
 
-- When the final `0.13.0` tag is published. This affects only when the D1 gate can be closed, not the approach.
+- What are the stable `0.13.0` image digest, bundled Kiro CLI version, and SQLite migration/schema? Resolve these from the published image during task 1.
