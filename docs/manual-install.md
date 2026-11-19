@@ -15,6 +15,10 @@ re-run `install.sh`.
 | `crun` or `runc` | —               | OCI runtime backend             |
 | `slirp4netns` or `pasta` | —      | Rootless network namespace      |
 
+Ghostship's documented Podman minimum is 4.4. The installer checks that
+`podman` is installed, but does not enforce a minimum version, so verify it
+manually before running `install.sh`.
+
 Optional but recommended:
 - `podman-plugins` or `netavark` — DNS-enabled container networking
 - `uidmap` / `shadow-utils` — for subuids if not already configured
@@ -54,21 +58,28 @@ nix-env -iA nixpkgs.podman
 sudo emerge app-containers/podman app-containers/crun net-misc/slirp4netns
 ```
 
-## Post-Install Verification
+## Verify Prerequisites
 
-After installing, verify:
+After installing the prerequisites, verify:
 
 ```bash
-# podman is on PATH and version >= 4.0
+# Check the installed version against Ghostship's documented minimum (4.4+).
+# install.sh checks that podman exists but does not enforce the version floor.
 podman --version
 
 # Rootless mode works
 podman info --format '{{.Host.Security.Rootless}}'
 # Expected: true
+```
 
-# Socket activation is available
+If `machine.dedicated` is `false` on Linux, verify the default Podman socket:
+
+```bash
+# Only when using the default Podman instance on Linux
+# (machine.dedicated: false); the default dedicated install provisions its own service.
+RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 systemctl --user enable --now podman.socket
-ls -l /run/user/$(id -u)/podman/podman.sock
+ls -l "${RUNTIME_DIR}/podman/podman.sock"
 ```
 
 Once Podman is verified, run:
