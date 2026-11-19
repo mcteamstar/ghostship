@@ -2,13 +2,15 @@
 
 ## Why
 
-Current dispatch behavior routes enrolled personas with `slot=None` to their member DM session, while unenrolled personas are headless and `slot=False` forces headless dispatch. The task-orchestration spec and some docs still describe older bridge/null-slot semantics, which can mislead operators and future changes.
+The dispatch contract is enrollment-based, but the active task-orchestration spec and some operator guidance still describe bridge, per-task, or arbitrary named slots. This change reconciles that documentation with the supported routing behavior while preserving runtime behavior.
 
 ## What Changes
 
-- Update the task-orchestration requirement and scenarios to state current slot resolution.
-- Reconcile README, architecture, and configuration guidance, including the member-session memory cost.
-- Make clear that `slot=False` is the explicit headless setting for enrolled agents.
+- Specify that `slot=None` routes enrolled personas to their pre-created member DM slot and leaves unenrolled personas headless.
+- Specify that `slot=False` explicitly forces headless dispatch.
+- Reject `slot=True` as a distinct per-task slot mode. Preserve the current compatibility behavior: the resolver warns and treats it as `slot=None`.
+- Treat string-valued slots as unsupported; the MCP tool contract exposes `slot` as boolean or null, so string values are invalid tool inputs.
+- Reconcile the task-orchestration spec, README, architecture, configuration, and dispatch tool description.
 
 ## Capabilities
 
@@ -16,8 +18,8 @@ Current dispatch behavior routes enrolled personas with `slot=None` to their mem
 
 ### Modified Capabilities
 
-- `task-orchestration`: define the current null, false, and enrolled-member slot behavior.
+- `task-orchestration`: define the enrollment-based default and supported explicit headless mode.
 
 ## Impact
 
-The task-orchestration spec and dispatch tool descriptions and docs. Dispatch runtime behavior is not changing.
+The task-orchestration spec, operator documentation, and dispatch tool description. Dispatch routing and runtime input handling are not changing.
