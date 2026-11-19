@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INVENTORY = ROOT / "config" / "dependencies.yaml"
+INVENTORY = ROOT / "dependencies.yaml"
 TIMEOUT_SECS = 5
 MAX_LOOKUPS = 64
 MAX_PAGES = 5
@@ -821,7 +821,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fixture-responses", type=Path, default=None,
                         help="replay a JSON response fixture instead of making upstream requests")
     args = parser.parse_args(argv)
-    inventory_path = args.inventory or (args.root / "config" / "dependencies.yaml")
+    inventory_path = args.inventory or (args.root / "dependencies.yaml")
     if args.command == "validate":
         return command_validate(args.root.resolve(), inventory_path.resolve())
     return command_check(args.root.resolve(), inventory_path.resolve(), args.include_prerelease,

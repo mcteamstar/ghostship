@@ -19,7 +19,7 @@
 
 ## 4. Refresh dependency and operator records
 
-- [ ] 4.1 Update `config/dependencies.yaml` with the rc.3 pin, the evidence from tasks 1.2 and 1.3, and the pending final-release gate. Verify it does not claim final-release compatibility.
+- [ ] 4.1 Update `dependencies.yaml` with the rc.3 pin, the evidence from tasks 1.2 and 1.3, and the pending final-release gate. Verify it does not claim final-release compatibility.
 - [ ] 4.2 Create `docs/dependency-review-<date>.md` recording the release review (1.1), digest and platforms (1.2), Kiro CLI version and migration comparison (1.3), the backend-pin decision, and the compatibility outcome once group 5 has run. Verify every claim cites its evidence.
 - [ ] 4.3 Update `docs/configuration.md` (`KC_BASE_IMAGE` default) and `docs/architecture.md` (crew image version). Add a KiroCrew 0.13 upgrade entry to `CHANGELOG.md` covering the new pin, the backend field and the need to recreate crews to adopt the image. Verify no active documentation still names v0.12.2 as the current pin.
 

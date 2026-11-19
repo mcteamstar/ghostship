@@ -39,7 +39,7 @@ Consumers:
 Before each release, run `python3 scripts/dependency_check.py validate` and
 `python3 scripts/dependency_check.py check`. Resolve declaration drift and
 record each component's outcome, evidence and next review date in
-`config/dependencies.yaml`. A lookup candidate is not approval to upgrade or
+`dependencies.yaml`. A lookup candidate is not approval to upgrade or
 evidence of compatibility. Review security advisories and upstream
 compatibility warnings as soon as they are found, even between releases.
 
