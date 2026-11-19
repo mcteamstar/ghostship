@@ -43,7 +43,7 @@
 
 - [x] **T5: Run transport unit tests**
   ```bash
-  cd /home/kirocrew/workplace/kirocrew-workspace/repo
+  cd /path/to/repo
   python -m pytest transport/tests/ -x -q 2>&1 | tail -20
   ```
   All tests must pass. If any test asserts the old image tag string, update
