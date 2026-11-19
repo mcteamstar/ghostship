@@ -18,6 +18,7 @@ See proposal.md. OAuth refresh may propagate updated credentials into running cr
 - Use transport/login.py propagation behavior and launcher credential injection behavior as the source for doc edits.
 - Distinguish OAuth from static credential methods rather than making one blanket statement for all backends.
 - Keep OpenSpec behavior requirements unchanged; this is documentation-only.
+- Explain that `evac` follows the wake path: preserve workspace before changing a static credential, or restore the launch-time credential before evacuating a stopped crew.
 
 ## Risks / Trade-offs
 
