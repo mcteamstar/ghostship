@@ -970,12 +970,12 @@ The transport SHALL re-check the API-key requirement at startup against the port
 - **WHEN** the transport starts listening on `0.0.0.0` in its container, the portal's published address is `127.0.0.1`, and no API key is present
 - **THEN** the transport starts normally without the API-key error
 
-### Requirement: API-key opt-out and GA_TRUSTED_PROXY documented in configuration docs
+### Requirement: API-key opt-out and trusted proxy CIDRs documented in configuration docs
 `docs/configuration.md` SHALL document `network.api_key` (string to enable,
 unset to require one on non-loopback installs, `false` to opt out explicitly)
 and the deprecation of `network.require_api_key`/`GA_REQUIRE_API_KEY`, together
-with `GA_TRUSTED_PROXY` (what it does, the default, and how to set it for
-Caddy-fronted installs).
+with `GA_TRUSTED_PROXY_CIDR` (trusted proxy CIDRs, its default, and how to set
+it for Caddy-fronted installs).
 
 `config/ghostship.yaml.example` SHALL show `network.api_key` with a comment
 describing all three states, and SHALL NOT include `network.require_api_key`.
@@ -984,8 +984,8 @@ describing all three states, and SHALL NOT include `network.require_api_key`.
 - **WHEN** an operator reads `docs/configuration.md`
 - **THEN** they find `network.api_key` documented with its three states and
   the abort behaviour, a deprecation note for `network.require_api_key`, and
-  `GA_TRUSTED_PROXY` documented with its effect on rate-limit source-IP
-  extraction
+  `GA_TRUSTED_PROXY_CIDR` documented with its effect on rate-limit source-IP
+  extraction for peers within configured CIDRs
 
 #### Scenario: Example config shows the opt-out
 - **WHEN** an operator opens `config/ghostship.yaml.example`
