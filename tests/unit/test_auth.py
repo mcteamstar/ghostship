@@ -430,6 +430,39 @@ class TestRateLimitMiddleware(unittest.TestCase):
         self.assertTrue(app.called)  # different token key → not at limit
         self.assertNotEqual(_status_of(messages2), 429)
 
+    def test_caller_key_uses_sha256_prefix_and_source_ip(self):
+        import hashlib
+
+        token = "tokenAAAA"
+        mw, _ = self._make_middleware({})
+        scope = _make_scope("POST", "/login", client=("3.3.3.3", 1))
+
+        key = mw._caller_key(scope, token)
+
+        self.assertEqual(key, f"{hashlib.sha256(token.encode()).hexdigest()[:8]}:3.3.3.3")
+        self.assertNotIn(token, key)
+
+    def test_same_bearer_and_ip_share_rate_limit_bucket(self):
+        limiter = self._limiter(max_requests=1, window_secs=60)
+        mw, app = self._make_middleware({"login_post": limiter})
+        scope = _make_scope(
+            "POST",
+            "/login",
+            client=("3.3.3.3", 1),
+            headers={"authorization": "Bearer tokenAAAA"},
+        )
+
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        self.assertTrue(app.called)
+        self.assertNotEqual(_status_of(messages), 429)
+
+        app.called = False
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        self.assertFalse(app.called)
+        self.assertEqual(_status_of(messages), 429)
+
     def test_trusted_peer_uses_forwarded_address(self):
         self.assertEqual(
             self._caller_key("10.4.0.8", "198.51.100.23", ["10.4.0.0/16"]),
