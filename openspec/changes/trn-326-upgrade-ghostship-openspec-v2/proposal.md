@@ -6,7 +6,7 @@ Ghostship's spec-ops image still bundles OpenSpec 1.14.3 while the Academy skill
 
 ## What Changes
 
-- Upgrade the bundled OpenSpec CLI and its coupled generated Academy skills to the selected v2 release.
+- Upgrade the bundled OpenSpec CLI and its coupled Academy skills to the selected v2 release, including the optional `openspec-verify-change` skill required by the planned hygiene Captain order.
 - Update Ghostship agent prompts and documentation to use backend-supported OpenSpec skill invocation and explain the `continue` fallback.
 - Verify fresh crews discover the skills and can work with existing OpenSpec change artifacts; review migration output before applying changes to existing files.
 - Update the dependency inventory and review evidence for the coupled CLI and skills.
@@ -23,4 +23,4 @@ Ghostship's spec-ops image still bundles OpenSpec 1.14.3 while the Academy skill
 
 ## Impact
 
-The spec-ops container build, Academy's six OpenSpec skills, the Ghost/Spectre/Banshee/Wraith/Reaper persona prompts, Academy skill documentation, dependency inventory and review evidence, and fresh-crew verification. Executor-owned wrappers and its global CLI migration remain out of scope.
+The spec-ops container build, Academy's six core OpenSpec skills and optional `openspec-verify-change` skill, the Ghost/Spectre/Banshee/Wraith/Reaper persona prompts, Academy skill documentation, dependency inventory and review evidence, and fresh-crew verification. Executor-owned wrappers and its global CLI migration remain out of scope.

@@ -9,6 +9,7 @@ OpenSpec repositories accumulate stale changes, incomplete artifacts, contradict
 - Add a manually invoked, read-only Captain workflow for a whole repository or a selected set of OpenSpec changes, including foreign codebases.
 - Resolve and use the target repository's own OpenSpec root/store; never fall back to Ghostship's store or initialize a missing store.
 - Run strict OpenSpec validation and inspect change status, artifact/task completeness, contradictions, stale or missing specs, and relevant code/documentation drift.
+- For changes that appear ready for verification, invoke the bundled optional `openspec-verify-change` skill and include its advisory findings; TRN-326 supplies that skill.
 - Fan out independent, bounded reviews and consolidate findings with paths, status evidence, confidence, and recommended remediation.
 - Report which changes appear ready for verification/archive and which appear stale or out of date, without editing, syncing, archiving, scheduling recurring work, or accessing deployed environments.
 - Keep general code correctness, quality, security, documentation completeness, and privacy review in Indy. This workflow checks documentation only for coherence with OpenSpec and the code it describes.

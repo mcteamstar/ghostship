@@ -10,6 +10,7 @@
 
 - [ ] 2.1 Run strict OpenSpec validation for whole-repository and selected-change scopes; add coverage for validation errors and evidence in the report.
 - [ ] 2.2 Collect artifact and task status for selected changes; add coverage that incomplete, stale, and verification/archive-candidate states are reported without claiming completion or changing state.
+- [ ] 2.3 Invoke the bundled `openspec-verify-change` skill for changes that appear ready for verification; verify its advisory result is reported and unavailable skill evidence is marked not verified.
 
 ## 3. Independent cross-checks and reporting
 

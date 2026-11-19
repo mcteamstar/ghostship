@@ -36,6 +36,17 @@ The workflow SHALL run strict OpenSpec validation for its selected scope and ins
 - **WHEN** status or artifact evidence indicates an incomplete, stale, or superseded change
 - **THEN** the report identifies the evidence and recommends a follow-up without changing the change state
 
+### Requirement: Hygiene pass verifies apparent completion candidates
+For a selected change that appears ready for verification from its artifact and task status, the workflow SHALL invoke the bundled `openspec-verify-change` skill and include its advisory result without syncing specs or archiving the change.
+
+#### Scenario: Candidate change receives verification
+- **WHEN** a selected change has complete planning artifacts and all tracked tasks marked complete
+- **THEN** the hygiene report includes the verifier's findings and treats them as advisory evidence rather than archive approval
+
+#### Scenario: Verifier skill is unavailable
+- **WHEN** the verifier skill cannot be discovered or run for an apparent completion candidate
+- **THEN** the report marks verification as not performed, identifies the missing skill evidence, and makes no clean or verified claim
+
 ### Requirement: Hygiene pass cross-checks specs, implementation, and documentation
 The workflow SHALL use independent, read-only review tasks to find contradictions between OpenSpec artifacts, likely spec-related implementation issues, and documentation drift from the behavior described by the specs and code.
 

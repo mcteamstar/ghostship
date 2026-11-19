@@ -7,11 +7,15 @@ Defines how Ghostship crews receive and use OpenSpec's shared workflow skills, i
 ## ADDED Requirements
 
 ### Requirement: Bundled OpenSpec CLI and Academy skills are version-compatible
-The spec-ops crew image SHALL bundle the selected OpenSpec v2 CLI, and the Academy OpenSpec workflow skills SHALL be generated for and compatible with that same CLI release.
+The spec-ops crew image SHALL bundle the selected OpenSpec v2 CLI, its six core Academy workflow skills, and the optional `openspec-verify-change` skill required by Ghostship's planned hygiene workflow. All bundled Academy skills SHALL be compatible with the selected CLI release.
 
 #### Scenario: Fresh crew receives the paired CLI and skills
 - **WHEN** a fresh spec-ops crew finishes setup
-- **THEN** its installed OpenSpec CLI reports the selected v2 version and its shared skills come from the matching Academy skill set
+- **THEN** its installed OpenSpec CLI reports the selected v2 version and its shared skills include the six core workflows plus the compatible `openspec-verify-change` skill
+
+#### Scenario: Hygiene workflow skill is staged
+- **WHEN** a fresh crew finishes Academy skill setup
+- **THEN** `openspec-verify-change` is discoverable alongside the six core skills and can verify an implemented change before archival
 
 #### Scenario: Dependency review records the resolved pair
 - **WHEN** maintainers review the bundled OpenSpec integration
@@ -33,10 +37,10 @@ OpenSpec workflow guidance shipped by Ghostship SHALL refer to the available `op
 - **THEN** the instructions do not claim that `/opsx:*` commands are available
 
 ### Requirement: Missing optional workflow skills have a CLI instructions fallback
-When Ghostship does not package an optional OpenSpec workflow skill, its guidance SHALL explain how to obtain and follow that workflow's instructions through the bundled CLI.
+When Ghostship intentionally leaves an optional OpenSpec workflow skill unbundled, its guidance SHALL explain how to obtain and follow that workflow's instructions through the bundled CLI.
 
 #### Scenario: Continue workflow is not packaged
-- **WHEN** a crew needs to continue an OpenSpec change and no `openspec-continue-change` skill is installed
+- **WHEN** a crew needs to continue an OpenSpec change and `openspec-continue-change` remains unbundled
 - **THEN** its agent can use the bundled CLI's instructions command for the next required artifact and continue the workflow without assuming a skill exists
 
 ### Requirement: Existing OpenSpec change artifacts remain usable after the upgrade
