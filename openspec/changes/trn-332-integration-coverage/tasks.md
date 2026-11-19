@@ -8,7 +8,7 @@
 ## 2. Add Podman-backed behavioral coverage
 
 - [ ] 2.1 Add a dedicated Podman-backed CI job that builds/selects the required crew image and runs `test_model_defaults.py` and `test_codex_sandbox.py` in disposable containers. Verify missing image/connection or test failure fails the job rather than silently skipping it.
-- [ ] 2.2 Add `verify-admiral-sig` behavioral tests in a disposable crew-image container using a generated Ed25519 key and the real mounted-key path. Verify exit codes 0, 1, and 2 for valid, tampered, and missing-key cases without changing production key-path behavior.
+- [ ] 2.2 Add `verify-admiral-sig` behavioral tests in a disposable crew-image container using a generated Ed25519 key and the real mounted-key path. Verify exit codes 0 for valid, 1 for tampered and malformed messages, and 2 for a missing key without changing production key-path behavior.
 
 ## 3. Exercise a fresh install and startup
 
