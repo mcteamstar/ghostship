@@ -21,4 +21,4 @@ The rate-limiting spec documents an obsolete `GA_TRUSTED_PROXY` switch and last-
 
 ## Impact
 
-`openspec/specs/installation/spec.md`, `openspec/specs/rate-limiting/spec.md`, `docs/configuration.md`, and focused rate-limit tests. Runtime code is not expected to change.
+`openspec/specs/installation/spec.md`, `openspec/specs/rate-limiting/spec.md`, `docs/configuration.md`, and focused rate-limit and configuration-documentation tests. Runtime code is not expected to change.
