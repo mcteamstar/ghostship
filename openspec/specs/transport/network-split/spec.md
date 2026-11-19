@@ -149,4 +149,3 @@ The system SHALL generate an internal secret `GA_TRANSPORT_SECRET` at install ti
 
 - **WHEN** `install.sh` writes the Caddy config for `ga-portal`
 - **THEN** every `reverse_proxy` directive targeting `ga-transport` includes `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}`
-

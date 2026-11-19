@@ -56,4 +56,3 @@ Caddy SHALL be the first auth gate for all traffic — Bearer enforcement for MC
 - **WHEN** `GA_API_KEY` is set
 - **THEN** an unauthenticated MCP or dashboard request is rejected by Caddy before reaching the transport
 - **THEN** the transport's `BearerAuthMiddleware` still runs for requests that reach it directly over `ga-portside` or `ga-starboard`
-

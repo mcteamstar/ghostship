@@ -1060,4 +1060,3 @@ Otherwise the installer runs the existing non-interactive path unchanged.
 
 - The non-interactive path (config present, no `--wizard`) is **unchanged** — no new prompts, no behavior change.
 - No secrets are collected or written during interactive setup. Secret injection is deferred to `ghostship auth login <backend>`.
-
