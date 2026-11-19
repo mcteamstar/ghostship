@@ -53,7 +53,9 @@ Copied into every crew. Provides the four gateway operations not covered by the 
 launch(crew_id, backend=None, profile=None)
   1. Resolve backend (given > transport default). Must be enabled.
   2. Resolve credential profile: explicit profile > single-profile implicit > "default".
-     Check credentials — missing → return login URL; call launch again after auth.
+     Check credentials before creating a crew. Missing `default` → start its login flow
+     (or report one pending), then call launch again. Missing named profile → return
+     `not_authenticated`; run `ghostship auth login <backend> --profile <name>` first.
   3. Create volumes: gs-vol-<id> + gs-home-<id>
   4. Generate Admiral Ed25519 keypair; register public key as Podman secret.
   5. Start crew container with the public key at /run/secrets/.admiral_public_key.
