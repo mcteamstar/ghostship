@@ -137,7 +137,7 @@ fi
 
 ## Avoid duplicate dispatches
 
-For SDD transitions, the full dispatch-coordination pattern—including its pre-spawn intent token, post-spawn assigned-ID confirmation, and pending-marker election—is defined in `academy/orders/sdd.md` and applies to every SDD transition, including Ghost, Banshee, and Reaper dispatches.
+For SDD transitions, follow the full dispatch-coordination pattern in the current Captain standing order, including its pre-spawn intent token, post-spawn assigned-ID confirmation, and pending-marker election. It applies to every SDD transition, including Ghost, Banshee, and Reaper dispatches.
 
 Before dispatching any persona task, apply this three-layer check in order:
 
