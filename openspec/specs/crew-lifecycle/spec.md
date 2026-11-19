@@ -377,15 +377,16 @@ config pin. `full_overrides` SHALL NOT contain a `knowledge` section.
 - **AND** the existing `agent` section overrides are preserved unchanged
 
 ### Requirement: Crew and resource naming convention
-The system SHALL name every crew-scoped Podman resource with a `gs-` prefix derived from the crew_id, kept entirely separate from the `ga-` prefix used for fixed Ghost Academy infrastructure (`ga-transport`, `ga-net`) — so a `crew_id` can never collide with a fixed infra name, regardless of what the caller picks.
+
+The system SHALL name every crew-scoped Podman resource with a gs- prefix derived from the crew_id, kept entirely separate from the ga- prefix used for fixed Ghost Academy infrastructure (ga-transport, ga-portside, ga-starboard) — so a crew_id can never collide with a fixed infrastructure name, regardless of what the caller picks.
 
 #### Scenario: Resource names for a crew
-- **WHEN** a crew is created for `crew_id`
-- **THEN** its container is named `gs-<crew_id>`, its workspace volume `gs-vol-<crew_id>`, its home volume `gs-home-<crew_id>`, and it joins the shared `ga-net` network
+- **WHEN** a crew is created for crew_id
+- **THEN** its container is named gs-<crew_id>, its workspace volume gs-vol-<crew_id>, its home volume gs-home-<crew_id>, and it joins the shared ga-starboard network
 
 #### Scenario: crew_id matching an infra name
-- **WHEN** a crew is created with `crew_id` equal to `transport` or `net`
-- **THEN** the resulting container (`gs-transport` or `gs-net`) does not collide with the fixed `ga-transport` container or `ga-net` network, since `ga-` and `gs-` are different string prefixes
+- **WHEN** a crew is created with crew_id equal to transport or starboard
+- **THEN** the resulting crew container does not collide with fixed ga-transport or the ga-starboard network because ga- and gs- are different prefixes
 
 ### Requirement: Bounded gateway session-token lifetime
 The system SHALL mint gateway session tokens used to establish crew session cookies with a configurable lifetime, defaulting to 24 hours rather than one year, and SHALL use that setting consistently during initial setup, stopped-crew recovery, and transport-startup reconciliation.

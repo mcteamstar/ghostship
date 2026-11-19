@@ -112,11 +112,12 @@ After the transport has passed its health check, the wizard SHALL unconditionall
 - **THEN** a warning is printed but the overall install exits 0; `ghostship setup` can be re-run manually
 
 ### Requirement: Idempotent, repeatable install
-The system SHALL be safe to re-run: existing images are rebuilt, the existing `ga-transport` container is replaced, and an already-existing `ga-net` network is left untouched rather than erroring. Crew workspace/home volumes are out of scope for `install.sh` — they are created per-crew by `launch`, not by installation.
+
+The system SHALL be safe to re-run: existing images are rebuilt, the existing ga-transport container is replaced, and already-existing ga-portside and ga-starboard networks are left untouched rather than erroring. Crew workspace/home volumes are out of scope for install.sh — they are created per-crew by launch, not by installation.
 
 #### Scenario: Re-running install.sh
-- **WHEN** `install.sh` is run again on a machine that already has Podman, `ga-net`, and a running `ga-transport` container
-- **THEN** the script removes and recreates only the `ga-transport` container with freshly built images, without erroring on the already-existing network
+- **WHEN** install.sh is run again on a machine that already has Podman, ga-portside, ga-starboard, and a running ga-transport container
+- **THEN** the script removes and recreates only the ga-transport container with freshly built images, without erroring on the existing networks
 
 ### Requirement: File-based transport auth persistence
 The installation SHALL persist backend credentials only as plain files under `DATA_DIR`, mode `0600`, written by the transport's credential store. They SHALL NOT be stored as Podman secrets. No dedicated bind mount, migration step, or file-driver access is needed: `DATA_DIR` is already bind-mounted read/write into the transport container as `/data`, so the transport reads and writes the files directly.
@@ -239,41 +240,41 @@ The transport server process SHALL read the API key from `/run/secrets/ga-api-ke
 
 ### Requirement: Dedicated Podman machine by default
 
-`install.sh` SHALL provision a dedicated Podman machine (macOS) or dedicated systemd socket-activated Podman instance (Linux) exclusively for Ghost Academy unless `GA_DEDICATED_MACHINE=false` is explicitly set. This is the default because a dedicated machine/instance is exclusive to Ghost Academy — only `ga-transport`, `ga-net`, crew containers, and their images ever run on it — which isolates GA fully from the host's default Podman runtime (avoiding contention or interference from IDE plugins or other tooling) with no ongoing cost beyond the one-time VM/instance provisioning.
+install.sh SHALL provision a dedicated Podman machine (macOS) or dedicated systemd socket-activated Podman instance (Linux) exclusively for Ghost Academy unless GA_DEDICATED_MACHINE=false is explicitly set. This is the default because a dedicated machine/instance is exclusive to Ghost Academy — only ga-portal, ga-radar, ga-transport, crew, login, and worker containers and their images run on it, using the ga-portside and ga-starboard networks — which isolates Ghost Academy from the host's default Podman runtime (avoiding contention or interference from IDE plugins or other tooling) with no ongoing cost beyond one-time provisioning.
 
-The dedicated instance is controlled by `GA_MACHINE_NAME` (default `ghost-academy`), `GA_MACHINE_CPUS` (default 8), `GA_MACHINE_MEMORY` (default 8192 MB), and `GA_MACHINE_DISK` (default 100 GB). All three resource variables are ceilings, not upfront host reservations: `GA_MACHINE_CPUS` caps concurrent vCPU threads that the host scheduler time-shares across real cores (bounded by Apple's Virtualization.framework `maximumAllowedCPUCount`, physical cores minus one, on macOS); `GA_MACHINE_MEMORY` is backed by demand-paged host memory (Apple's Virtualization.framework), so idle host usage stays far below the configured value; `GA_MACHINE_DISK` is backed by a sparse file, so actual disk blocks are only consumed as data is written. All five variables SHALL be documented in `docs/configuration.md` and included as commented-out entries in `config/ghostship.conf.example`, with the example's commented value showing how to opt out (`GA_DEDICATED_MACHINE=false`) rather than the (now-default) enabled value. None of the five has a corresponding command-line flag; they are config-file-only, per the `config-file` capability's resolution order (built-in default → config file → flag), with no ambient-environment-variable fallback.
+The dedicated instance is controlled by GA_MACHINE_NAME (default ghost-academy), GA_MACHINE_CPUS (default 8), GA_MACHINE_MEMORY (default 8192 MB), and GA_MACHINE_DISK (default 100 GB). All three resource variables are ceilings, not upfront host reservations: GA_MACHINE_CPUS caps concurrent vCPU threads time-shared by the host scheduler (bounded by Apple's Virtualization.framework maximumAllowedCPUCount and physical cores minus one on macOS); GA_MACHINE_MEMORY is demand-paged host memory, so idle usage stays below the configured value; GA_MACHINE_DISK is backed by a sparse file, so blocks are consumed as data is written. All five variables SHALL be documented in docs/configuration.md and included as commented-out entries in config/ghostship.conf.example, with GA_DEDICATED_MACHINE=false shown as the opt-out value. None of the five has a command-line flag; they are config-file-only with no ambient-environment-variable fallback, per the config-file capability's resolution order.
 
 #### Scenario: Default — dedicated machine
-- **WHEN** `GA_DEDICATED_MACHINE` is unset
-- **THEN** `install.sh` provisions/uses the dedicated machine/instance named `GA_MACHINE_NAME`
+- **WHEN** GA_DEDICATED_MACHINE is unset
+- **THEN** install.sh provisions or uses the dedicated machine/instance named by GA_MACHINE_NAME
 
 #### Scenario: Opt-out — default Podman socket
-- **WHEN** `GA_DEDICATED_MACHINE=false`
-- **THEN** `install.sh` uses the default Podman socket, unchanged from pre-dedicated-machine behaviour
+- **WHEN** GA_DEDICATED_MACHINE=false
+- **THEN** install.sh uses the default Podman socket
 
 #### Scenario: macOS — first install with dedicated machine
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is macOS and no machine named `GA_MACHINE_NAME` exists
-- **THEN** `install.sh` runs `podman machine init <name> --cpus <GA_MACHINE_CPUS> --memory <GA_MACHINE_MEMORY> --disk-size <GA_MACHINE_DISK>`, starts the machine, enables `podman-restart.service` inside the guest, and uses that machine's in-guest socket for the transport
+- **WHEN** GA_DEDICATED_MACHINE is not false, the OS is macOS, and no machine named by GA_MACHINE_NAME exists
+- **THEN** install.sh runs podman machine init with the configured CPU, memory, and disk limits, starts the machine, enables podman-restart.service in the guest, and uses that machine's in-guest socket for Transport
 
 #### Scenario: macOS — subsequent install with existing dedicated machine
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is macOS and the named machine already exists
-- **THEN** `install.sh` starts the machine if not running (no re-init) and uses its socket
+- **WHEN** GA_DEDICATED_MACHINE is not false, the OS is macOS, and the named machine already exists
+- **THEN** install.sh starts it if not running, does not re-initialize it, and uses its socket
 
 #### Scenario: Linux — first install with dedicated instance
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is Linux
-- **THEN** `install.sh` writes `podman-<GA_MACHINE_NAME>.socket` and `podman-<GA_MACHINE_NAME>.service` systemd unit files under `~/.config/systemd/user/`, reloads the daemon, enables and starts the socket, and uses the resulting socket at `$XDG_RUNTIME_DIR/podman/<GA_MACHINE_NAME>.sock`
+- **WHEN** GA_DEDICATED_MACHINE is not false and the OS is Linux
+- **THEN** install.sh writes podman-GA_MACHINE_NAME.socket and service units under the user's systemd directory, reloads systemd, enables and starts the socket, and uses the resulting runtime socket for Transport
 
 #### Scenario: Linux — storage isolation
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is Linux
-- **THEN** the dedicated Podman service uses `--root ~/.local/share/<GA_MACHINE_NAME>/containers/storage` so its containers are invisible to `podman ps` on the default instance
+- **WHEN** GA_DEDICATED_MACHINE is not false and the OS is Linux
+- **THEN** the dedicated Podman service uses a storage root under the GA_MACHINE_NAME data directory, separate from default Podman storage, so its containers are not shown by podman ps on the default instance
 
 #### Scenario: Transport binds to dedicated socket
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false`
-- **THEN** the transport container is started with the dedicated socket bind-mounted and `PODMAN_SOCKET` pointing to it
+- **WHEN** GA_DEDICATED_MACHINE is not false
+- **THEN** the Transport container receives the dedicated socket mount and PODMAN_SOCKET points to it
 
 #### Scenario: Every Podman command targets the dedicated instance
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false`
-- **THEN** the image pull, every `podman build`, the network create, the secret create, the transport `run`, and the failure-path `logs` tail SHALL all target the same resolved dedicated-instance connection — none SHALL fall back to the default Podman socket
+- **WHEN** GA_DEDICATED_MACHINE is not false
+- **THEN** image pulls, every podman build, network and secret creation, Transport startup, and failure-path logs all target the same resolved dedicated-instance connection and none falls back to the default Podman socket
 
 ### Requirement: Dedicated machine uninstall
 
@@ -1011,6 +1012,26 @@ The project SHALL provide operator-facing documentation that explains the `ghost
 - **WHEN** `ghostship upgrade --skills` is unavailable or the combined command fails mid-way
 - **THEN** the documentation lists the equivalent manual steps (`ghostship upgrade` then `ghostship setup`) so the operator can recover without reading source code
 
+### Requirement: Legacy ga-net cleanup
+
+After the current networks are provisioned and Transport passes its health check, `install.sh` SHALL remove the legacy `ga-net` only when no containers remain attached. If containers remain, installation SHALL leave `ga-net` in place and SHALL NOT migrate those containers during Transport startup. `uninstall.sh` SHALL attempt to remove `ga-net` after removing Ghost Academy crew and Transport containers; a failed network removal SHALL NOT stop the remaining uninstall cleanup.
+
+#### Scenario: Empty legacy network is removed after installation
+
+- **WHEN** installation succeeds and `ga-net` exists with no attached containers
+- **THEN** `install.sh` removes `ga-net`
+
+#### Scenario: Non-empty legacy network is preserved without crew migration
+
+- **WHEN** installation succeeds and one or more containers remain attached to `ga-net`
+- **THEN** `install.sh` leaves `ga-net` in place
+- **THEN** installation does not migrate those containers during Transport startup
+
+#### Scenario: Uninstall attempts legacy network removal after container cleanup
+
+- **WHEN** `uninstall.sh` removes Ghost Academy crew and Transport containers
+- **THEN** it attempts to remove `ga-net` and continues the remaining cleanup if Podman refuses the removal
+
 ## Interactive Setup Mode
 
 ### Trigger
@@ -1039,3 +1060,4 @@ Otherwise the installer runs the existing non-interactive path unchanged.
 
 - The non-interactive path (config present, no `--wizard`) is **unchanged** — no new prompts, no behavior change.
 - No secrets are collected or written during interactive setup. Secret injection is deferred to `ghostship auth login <backend>`.
+

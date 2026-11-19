@@ -10,59 +10,66 @@ Defines the two-network topology that isolates the portal tier from crew contain
 
 The system SHALL provision two static Podman networks replacing `ga-net`:
 
-- `ga-portside` — used exclusively by `ga-portal` and `ga-transport`. No `gs-*` crew container, login container, or worker container SHALL be attached to `ga-portside`.
-- `ga-starboard` — used by `ga-transport` and all `gs-*` crew containers (shared). `ga-portal` SHALL NOT be attached to `ga-starboard`.
+- `ga-portside` — used by `ga-portal`, `ga-transport`, and `ga-radar`. Crew, login, and worker containers SHALL NOT be attached to `ga-portside`.
+- `ga-starboard` — used by `ga-transport`, all `gs-*` crew containers, and ephemeral Kiro (`ga-login-*`), Claude (`ga-claude-login-*`), and Codex (`ga-codex-login-*`) login containers. `ga-portal` and `ga-radar` SHALL NOT be attached to `ga-starboard`; disposable workers use `netns: none`.
 
-`ga-transport` SHALL be attached to both `ga-portside` and `ga-starboard` at all times, bridging the portal tier and the crew tier.
+`ga-transport` SHALL be attached to both `ga-portside` and `ga-starboard` at all times, bridging the portal and crew tiers. Both networks are static install-time networks and are not created or destroyed at crew launch or nuke time.
 
-Both networks are created by `install.sh` and declared as external in `compose.yml`. Neither is created or destroyed at crew launch/nuke time — both are static.
+The install process SHALL create both networks idempotently and declare them as external in Compose.
 
 Network assignments:
 
 | Container | Network(s) |
 |---|---|
 | `ga-portal` | `ga-portside` only |
+| `ga-radar` | `ga-portside` only |
 | `ga-transport` | `ga-portside` + `ga-starboard` |
 | `gs-{crew_id}` (crew) | `ga-starboard` only |
-| `ga-login-{token}` (ephemeral) | `ga-starboard` |
+| `ga-login-*` (Kiro), `ga-claude-login-*`, `ga-codex-login-*` (ephemeral) | `ga-starboard` only |
 | `gs-worker-{token}` (disposable) | none (`netns: none`) |
+
 
 The constants `GA_PORTSIDE_NETWORK = "ga-portside"` and `GA_STARBOARD_NETWORK = "ga-starboard"` SHALL be defined in `lifecycle.py` and imported by `server.py`. No dynamic per-crew network naming function is needed.
 
 #### Scenario: Portal cannot reach crew containers directly
-
 - **WHEN** `ga-portal` attempts to connect to `gs-<crew_id>:5476` via DNS
-- **THEN** the connection fails — `gs-*` hostnames are not resolvable from `ga-portside`
+- **THEN** the connection fails because crew hostnames are not resolvable from `ga-portside`
 
 #### Scenario: Crew containers cannot reach ga-portal directly
-
-- **WHEN** a `gs-*` crew container attempts to connect to `ga-portal` via DNS
-- **THEN** the connection fails — `ga-portal` hostname is not resolvable from `ga-starboard`
+- **WHEN** a crew container attempts to connect to `ga-portal` via DNS
+- **THEN** the connection fails because `ga-portal` is not attached to `ga-starboard`
 
 #### Scenario: Transport is reachable from portside
-
-- **WHEN** `ga-portal` reverse-proxies to `ga-transport:{PORT}`
-- **THEN** Caddy can reach `ga-transport` over `ga-portside` DNS
+- **WHEN** `ga-portal` or `ga-radar` connects to `ga-transport:{PORT}`
+- **THEN** the connection reaches Transport over `ga-portside`
 
 #### Scenario: Transport is reachable from starboard
+- **WHEN** a crew container connects to `ga-transport:{PORT}` on `ga-starboard`
+- **THEN** the connection reaches Transport over `ga-starboard`
 
-- **WHEN** `gs-<crew_id>` dials `ga-transport:{PORT}` on `ga-starboard`
-- **THEN** the connection reaches `ga-transport` — both share `ga-starboard`
+#### Scenario: Radar is isolated from crew containers
+- **WHEN** `ga-radar` attempts to resolve or connect directly to a crew container
+- **THEN** the connection fails because Radar is not attached to `ga-starboard`
 
 #### Scenario: Crew container joins ga-starboard at creation
-
-- **WHEN** `launch` creates a `gs-{crew_id}` container
-- **THEN** `podman inspect gs-{crew_id}` shows the container attached to `ga-starboard` and NOT attached to `ga-portside`
+- **WHEN** `launch` creates a crew container
+- **THEN** it is attached to `ga-starboard` and not to `ga-portside`
 
 #### Scenario: Login container joins ga-starboard
-
-- **WHEN** `_start_login_container` creates a `ga-login-*` container for crew `{crew_id}`
-- **THEN** the container is attached to `ga-starboard` and NOT attached to `ga-portside`
+- **WHEN** an ephemeral Kiro, Claude, or Codex login container is created
+- **THEN** it is attached to `ga-starboard` and not to `ga-portside`
 
 #### Scenario: Worker container joins no network
+- **WHEN** a disposable worker container is created
+- **THEN** it has `netns: none`
 
-- **WHEN** `worker_run` creates a `gs-worker-*` container
-- **THEN** the container has `netns: none` — unchanged from current behaviour
+#### Scenario: Fresh install provisions both networks
+- **WHEN** installation runs on a host where neither network exists
+- **THEN** it creates ga-portside and ga-starboard and Compose declares both as external
+
+#### Scenario: Network provisioning is idempotent
+- **WHEN** installation runs again while both networks already exist
+- **THEN** it completes without attempting to replace or recreate either network
 
 ### Requirement: GA_TRANSPORT_SECRET internal token
 
@@ -143,38 +150,3 @@ The system SHALL generate an internal secret `GA_TRANSPORT_SECRET` at install ti
 - **WHEN** `install.sh` writes the Caddy config for `ga-portal`
 - **THEN** every `reverse_proxy` directive targeting `ga-transport` includes `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}`
 
-### Requirement: Migration of existing crews on startup
-
-When the transport starts and `_reconcile_registry` runs, it SHALL detect any running crew container that is attached to `ga-net` but NOT attached to `ga-starboard`. For each such container the transport SHALL:
-
-1. Connect `ga-transport` to `ga-starboard` (idempotent — it is already on starboard after compose restart).
-2. Stop the container.
-3. Disconnect it from `ga-net` (best-effort — `ga-net` may be absent).
-4. Connect it to `ga-starboard`.
-5. Start the container.
-6. Wait for the gateway to become ready.
-7. Refresh the session cookie.
-
-If migration of a specific crew fails, the transport SHALL log a warning, mark that crew `stopped` in the registry, and continue migrating remaining crews. The transport SHALL NOT refuse to start because of migration failures.
-
-After all crews are processed, if `ga-net` exists and has no attached containers, the transport SHALL attempt `podman network rm ga-net` (best-effort — log warning on failure, never raise).
-
-#### Scenario: Existing crew on ga-net is migrated to ga-starboard
-
-- **WHEN** the transport starts and `gs-alpha` is attached to `ga-net` but not `ga-starboard`
-- **THEN** `gs-alpha` is reconnected to `ga-starboard` and its registry status is `running` after migration
-
-#### Scenario: Migration failure does not block startup
-
-- **WHEN** migration of one crew fails (e.g. container refuses to restart)
-- **THEN** the transport logs a warning, marks that crew `stopped`, and proceeds to start serving requests
-
-#### Scenario: Already-migrated crew is skipped
-
-- **WHEN** the transport starts and `gs-alpha` is already attached to `ga-starboard`
-- **THEN** no migration action is taken for that crew
-
-#### Scenario: ga-net removed after migration
-
-- **WHEN** all crews have been migrated and `ga-net` has no remaining containers
-- **THEN** the transport attempts `podman network rm ga-net`; failure is logged as a warning, not raised

@@ -40,7 +40,7 @@ Dashboard routing SHALL remain port-based — each crew UI is served at a dedica
 
 `ga-portal` (Caddy) SHALL route each crew's dashboard port traffic to the transport's cookie-injecting proxy endpoint (`/crews/{crew_id}/ui/`) rather than directly to the crew gateway (`gs-{crew_id}:5476`). The transport proxy endpoint SHALL inject the crew's `mc_token_5476` session cookie on every forwarded request and SHALL handle both HTTP and WebSocket connections.
 
-The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the transport. This satisfies the KiroCrew gateway's IP-binding constraint — the cookie is bound to the IP that performed the token exchange, which is `ga-transport`'s IP on `ga-net`.
+The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the transport. This satisfies the KiroCrew gateway's IP-binding constraint — the cookie is bound to the IP that performed the token exchange, which is `ga-transport`'s IP on `ga-starboard`.
 
 #### Scenario: Dashboard request via Portal is authenticated
 
@@ -68,6 +68,11 @@ The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the tra
 
 - **WHEN** the crew gateway returns 403 on a proxied request (e.g. after a container restart invalidates the stored cookie)
 - **THEN** the transport re-mints the cookie and retries the request
+
+#### Scenario: Dashboard live features unlock over the connected socket
+
+- **WHEN** the KiroCrew SPA's WebSocket connects successfully (101) through the dashboard port
+- **THEN** the sessions list loads, live task updates stream, and the import modal can be dismissed normally — the behaviours previously blocked by the 403
 
 ### Requirement: Caddy crew server routes to transport proxy
 
@@ -104,63 +109,6 @@ The routing path — browser → `ga-portal` → `ga-transport:/crews/{id}/ui/` 
 
 - **WHEN** `ga-portal` has a misconfigured upstream targeting `gs-<crew_id>:5476`
 - **THEN** the connection fails — `gs-*` are not on `ga-portside`
-
-### Requirement: Gateway allowed-origins includes the crew's own hostname
-
-When launching a crew, the transport SHALL patch `config.local.json` so the
-crew gateway's `dashboard.url` is set to its own internal container origin
-(`http://gs-{crew_id}:{CREW_GATEWAY_PORT}`). The gateway builds its
-`allowed_origins` set at startup from `dashboard.url`; without a configured
-value it falls back to loopback-only
-(`http://localhost:{PORT}`, `http://127.0.0.1:{PORT}`), which does not include
-the container hostname.
-
-The transport's WS proxy injects `Origin: http://gs-{crew_id}:{CREW_GATEWAY_PORT}`
-on the upstream WebSocket handshake. The gateway's `check_origin` validation
-(invoked with `require=True` for WS upgrades) SHALL therefore accept that
-`Origin`, allowing the WebSocket upgrade to complete with `101 Switching
-Protocols` rather than being rejected with `403 WebSocket origin not allowed`.
-
-This requirement constrains only the gateway's own origin. The allowed-origins
-set SHALL continue to exclude all external and attacker origins — the
-container hostname is reachable only from inside `ga-net` via the transport,
-so no external origin becomes permissible.
-
-#### Scenario: Launched crew config carries its own dashboard.url
-
-- **WHEN** a crew is launched and the transport patches `config.local.json`
-- **THEN** the patched config contains `dashboard.url` set to
-  `http://gs-{crew_id}:{CREW_GATEWAY_PORT}` (e.g. `http://gs-alpha:5476`)
-- **THEN** KiroCrew's deep-merge of `config.local.json` over `config.json`
-  applies this value on every gateway start without any restart-logic change
-
-#### Scenario: Gateway allowed-origins contains the container hostname
-
-- **WHEN** the crew gateway builds its `allowed_origins` set at startup from
-  the configured `dashboard.url`
-- **THEN** the set includes `http://gs-{crew_id}:{CREW_GATEWAY_PORT}`
-- **THEN** the set still excludes every external and attacker origin — only
-  the gateway's own internal origin and the existing loopback origins are
-  present
-
-#### Scenario: WebSocket upgrade with proxied Origin is accepted
-
-- **WHEN** the transport WS proxy opens the upstream handshake to
-  `gs-{crew_id}:{CREW_GATEWAY_PORT}` carrying
-  `Origin: http://gs-{crew_id}:{CREW_GATEWAY_PORT}`
-- **THEN** the gateway's `_check_ws_origin` → `check_origin(request,
-  require=True)` validation passes because the `Origin` is in
-  `allowed_origins`
-- **THEN** the gateway responds `101 Switching Protocols` and the WebSocket
-  connects — it is NOT rejected with `403 WebSocket origin not allowed`
-
-#### Scenario: Dashboard live features unlock over the connected socket
-
-- **WHEN** the KiroCrew SPA's WebSocket connects successfully (101) through
-  the dashboard port
-- **THEN** the sessions list loads, live task updates stream, and the import
-  modal can be dismissed normally — the behaviours previously blocked by the
-  403
 
 ### Requirement: Authenticate dashboard WebSocket clients
 
