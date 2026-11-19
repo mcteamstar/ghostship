@@ -316,6 +316,8 @@ class TestListOrderTemplates(unittest.TestCase):
             self.assertEqual(len(entry), 2)
         names = [name for name, _desc in result]
         self.assertIn("sdd", names)
+        self.assertIn("repo-hygiene-sweep", names)
+        self.assertIn("sweepy", names)
 
     def test_missing_ga_orders_dir_warns_and_returns_builtins(self):
         import transport.captain as captain
@@ -353,6 +355,15 @@ class TestLoadOrderTemplate(unittest.TestCase):
         self.assertIsInstance(description, str)
         self.assertIsInstance(body, str)
         self.assertTrue(len(body) > 0)
+
+    def test_repo_hygiene_sweep_name_and_alias_resolve(self):
+        import transport.captain as captain
+        with patch.object(captain, "GA_ORDERS_DIR", ""):
+            description, body = captain._load_order_template("repo-hygiene-sweep")
+            alias_description, alias_body = captain._load_order_template("sweepy")
+        self.assertEqual(description, alias_description)
+        self.assertEqual(body, alias_body)
+        self.assertIn("privacy/sensitive-data sweep", description)
 
     def test_unknown_name_raises_value_error(self):
         import transport.captain as captain
@@ -430,6 +441,22 @@ class TestResolveOrderTemplate(unittest.TestCase):
         self.assertIn("entire codebase", result)
         self.assertNotIn("<change?>", result)
 
+    def test_optional_changes_accepts_comma_separated_names(self):
+        result = self._resolve("scope: <changes?>", "trn-335-one,trn-326-two")
+        self.assertEqual(result, "scope: trn-335-one,trn-326-two")
+
+    def test_optional_changes_without_names_uses_entire_repository(self):
+        result = self._resolve("scope: <changes?>", None)
+        self.assertEqual(result, "scope: entire repository")
+
+    def test_optional_changes_rejects_invalid_member(self):
+        with self.assertRaises(ValueError):
+            self._resolve("scope: <changes?>", "trn-335-valid,Invalid")
+
+    def test_optional_changes_cannot_mix_with_other_change_tokens(self):
+        with self.assertRaises(ValueError):
+            self._resolve("scope: <changes?> and <change?>", None)
+
     def test_invalid_uppercase_name_raises(self):
         with self.assertRaises(ValueError):
             self._resolve("implement <change>", "TRN-UPPER")
@@ -456,6 +483,58 @@ class TestResolveOrderTemplate(unittest.TestCase):
         # Templates that don't use <message> accept message= without error
         result = self._resolve("do the thing", None, message="ignored")
         self.assertEqual(result.strip(), "do the thing")
+
+    def test_repo_hygiene_template_requires_target_and_is_one_pass_read_only(self):
+        import transport.captain as captain
+        with patch.object(captain, "GA_ORDERS_DIR", ""):
+            body = captain._resolve_order_template(
+                "sweepy", "trn-335-openspec-hygiene-pass", message="/workspace/repo"
+            )
+        self.assertIn("Target repository path: /workspace/repo", body)
+        self.assertIn("openspec context --json", body)
+        self.assertIn("openspec validate", body)
+        self.assertIn("openspec validate --all --strict --json", body)
+        self.assertIn("openspec status --change", body)
+        self.assertIn("A validation failure is a confirmed CLI finding", body)
+        self.assertIn("incomplete artifacts/tasks", body)
+        self.assertIn("Treat age alone as a clue, not proof of staleness", body)
+        self.assertIn("Never claim a candidate is verified or archived from status alone", body)
+        self.assertIn("openspec-verify-change", body)
+        self.assertIn("actual advisory findings", body)
+        self.assertIn("stop the pass and escalate an execution blocker", body)
+        self.assertIn("do not produce a partial hygiene report", body)
+        self.assertIn("hygiene specs done trn-335-openspec-hygiene-pass", body)
+        self.assertIn("hygiene implementation done trn-335-openspec-hygiene-pass", body)
+        self.assertIn("hygiene docs done trn-335-openspec-hygiene-pass", body)
+        self.assertIn("Banshee — broad privacy and sensitive-data sweep", body)
+        self.assertIn("Scan the whole target repository, regardless of change-specific scope", body)
+        self.assertIn("hygiene privacy done trn-335-openspec-hygiene-pass", body)
+        self.assertIn("cite paths and line numbers", body)
+        self.assertIn("state confidence", body)
+        self.assertIn("If the resolved nearest root is outside the supplied repository", body)
+        self.assertIn("report a blocker and stop", body)
+        self.assertIn("Never run `openspec init`", body)
+        self.assertIn("`openspec store register`", body)
+        self.assertIn("never copy a credential, token, or unnecessary personal data", body)
+        self.assertIn(".captain_done", body)
+        self.assertIn("Do not make changes, sync, archive, schedule recurring hygiene work", body)
+        self.assertIn("confirmed vs suspected, confidence", body)
+        self.assertNotIn("{{", body)
+
+    def test_repo_hygiene_docs_use_selected_name_and_distinguish_indy(self):
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        architecture = (root / "docs/architecture.md").read_text(encoding="utf-8")
+        for content in (readme, architecture):
+            self.assertIn("repo-hygiene-sweep", content)
+            self.assertIn("sweepy", content)
+        self.assertIn("Use for repository-maintenance passes; Indy remains the change-review workflow", architecture)
+        self.assertIn("change review", readme)
+
+    def test_repo_hygiene_template_requires_message_target_path(self):
+        with self.assertRaisesRegex(ValueError, "requires message"):
+            self._resolve("Target: <message>", None)
 
 
 # ── 7.1 _captain_standing_view ──────────────────────────────────────────────────

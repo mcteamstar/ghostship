@@ -37,7 +37,7 @@ def openspec_inventory():
 
 
 class OpenSpecAssetContractTests(unittest.TestCase):
-    def test_repository_cli_pin_matches_all_six_academy_skills(self):
+    def test_repository_cli_pin_matches_all_seven_academy_skills(self):
         errors = check.validate_openspec_assets(check.ROOT)
         self.assertEqual(errors, [])
 
@@ -65,20 +65,20 @@ class OpenSpecAssetContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-    def test_inventory_rejects_a_skill_version_mismatch_and_v1_command_reference(self):
+    def test_inventory_rejects_optional_skill_version_mismatch_and_v1_command_reference(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             skill_versions = {name: EXPECTED_OPENSPEC_VERSION for name in check.OPENSPEC_SKILLS}
-            skill_versions["openspec-apply-change"] = "1.14.3"
-            self._write_fixture(root, EXPECTED_OPENSPEC_VERSION, skill_versions, stale_skill="openspec-apply-change")
+            skill_versions["openspec-verify-change"] = "1.14.3"
+            self._write_fixture(root, EXPECTED_OPENSPEC_VERSION, skill_versions, stale_skill="openspec-verify-change")
 
             errors, _ = check.validate_inventory(root, openspec_inventory())
 
         self.assertIn(
-            "openspec-skills: openspec-apply-change generatedBy '1.14.3' does not match CLI pin '2.1.0'",
+            "openspec-skills: openspec-verify-change generatedBy '1.14.3' does not match CLI pin '2.1.0'",
             errors,
         )
-        self.assertIn("openspec-skills: openspec-apply-change still references v1 command files", errors)
+        self.assertIn("openspec-skills: openspec-verify-change still references v1 command files", errors)
 
     def test_inventory_rejects_a_non_exact_cli_pin_and_cli_skill_version_drift(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -100,3 +100,17 @@ class OpenSpecAssetContractTests(unittest.TestCase):
             errors, _ = check.validate_inventory(root, openspec_inventory())
 
         self.assertTrue(any("does not match CLI pin '2.2.0'" in error for error in errors))
+
+    def test_inventory_rejects_missing_optional_verify_skill(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill_versions = {name: EXPECTED_OPENSPEC_VERSION for name in check.OPENSPEC_SKILLS}
+            self._write_fixture(root, EXPECTED_OPENSPEC_VERSION, skill_versions)
+            (root / "academy/skills/openspec-verify-change/SKILL.md").unlink()
+
+            errors = check.validate_openspec_assets(root)
+
+        self.assertIn(
+            "openspec-skills: missing Academy skill academy/skills/openspec-verify-change/SKILL.md",
+            errors,
+        )

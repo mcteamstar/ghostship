@@ -179,7 +179,7 @@ EXTRACTED_KINDS = {
     "compose_image", "apt_group", "node_setup", "git_ref", "github_action", "github_python_runtime",
 }
 
-OPENSPEC_SKILLS = (
+OPENSPEC_CORE_SKILLS = (
     "openspec-explore",
     "openspec-propose",
     "openspec-update-change",
@@ -187,11 +187,13 @@ OPENSPEC_SKILLS = (
     "openspec-sync-specs",
     "openspec-archive-change",
 )
+OPENSPEC_OPTIONAL_SKILLS = ("openspec-verify-change",)
+OPENSPEC_SKILLS = OPENSPEC_CORE_SKILLS + OPENSPEC_OPTIONAL_SKILLS
 EXACT_VERSION_RE = re.compile(r"\d+\.\d+\.\d+\Z")
 
 
 def validate_openspec_assets(root: Path) -> list[str]:
-    """Check that the bundled CLI and six Academy core skills use one exact version."""
+    """Check that the bundled CLI and all seven Academy OpenSpec skills use one exact version."""
     errors: list[str] = []
     containerfile = root / "crews" / "spec-ops" / "Containerfile"
     if not containerfile.is_file():

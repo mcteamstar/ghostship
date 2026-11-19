@@ -273,6 +273,8 @@ First read /var/mail/captain and identify orders that are new since your prior c
 
 When new standing orders arrive while a previously-dispatched persona task is still in flight, steer it with the new context rather than waiting for it to finish.
 
+If a standing order gives more specific target-repository or OpenSpec-store rules than the generic guidance below, follow the standing order's rules for that target.
+
 {_RAVEN_STORE_RESOLUTION}
 
 {_RAVEN_SELF_CANCEL}
@@ -306,15 +308,22 @@ def _resolve_order_template(
         raise ValueError("Unknown Captain order template: None")
     _description, body = _load_order_template(template)
     body = _substitute_placeholders(body)
-    if "<change>" in body and "<changes>" in body:
-        raise ValueError("Template body must not contain both <change> and <changes>")
+    change_tokens = ("<change?>", "<changes?>", "<change>", "<changes>")
+    if sum(token in body for token in change_tokens) > 1:
+        raise ValueError("Template body must use only one change placeholder form")
     if "<change?>" in body:
-        if "<change>" in body or "<changes>" in body:
-            raise ValueError("Template body must not mix <change?> with <change> or <changes>")
         scope = change_name if change_name else "entire codebase"
         if change_name:
             _validate_captain_change_name(change_name)
         body = body.replace("<change?>", scope)
+    if "<changes?>" in body:
+        scope = change_name if change_name else "entire repository"
+        if change_name:
+            for name in (part.strip() for part in change_name.split(",")):
+                _validate_captain_change_name(name)
+        body = body.replace("<changes?>", scope)
+    if "<change>" in body and "<changes>" in body:
+        raise ValueError("Template body must not contain both <change> and <changes>")
     if "<change>" in body:
         if change_name is None:
             raise ValueError(f"Template {template!r} requires change_name")

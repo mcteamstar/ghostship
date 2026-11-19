@@ -151,6 +151,39 @@ migration check. None of these tasks is complete. Dependency inventory
 validation passed. The focused pytest regression test could not run because
 pytest is not installed in this environment.
 
+## Optional OpenSpec verifier skill (2026-11-19)
+
+TRN-335's `repo-hygiene-sweep` order requires `openspec-verify-change` for
+changes that appear complete. Generated the Academy skill from the
+`getVerifyChangeSkillTemplate` exported by `@fission-ai/openspec@2.1.0`; the
+npm tarball integrity is
+`sha512-3mVVOU97QmRsqQQYl0Jb7XvIwWES+Jh6nMbGy1tJiQvKVVI1lD7M0PTB2gH2f/ayX4SEoVJGiLKL51Z1pkTHqw==`.
+The workflow body matches the pinned release template, with the example
+`/opsx:verify` command invocation adapted to the delivered skill name. Its
+OpenSpec command usage is supported by the pinned 2.1.0 CLI. The dependency
+checker now requires the verifier alongside the six generated core skills and
+checks its metadata version; a missing verifier is a bundle validation failure.
+
+## Fresh Codex crew smoke (2026-11-19)
+
+Installed the current checkout to Corsair and launched fresh Codex spec-ops
+crew `trn-335-sweepy-smoke`. Inside that crew, `openspec --version` returned
+`2.1.0`, and the Codex skill catalog listed all seven bundled skills,
+including `openspec-verify-change`. The baked `/home/kirocrew/.agents/setup`
+was inspected without running it: it supports Claude, Kiro, and Codex, wiring
+skills to each backend's native path. Skill guidance uses `$openspec-*` for
+Codex and `/openspec-*` for Kiro/Claude.
+
+Invoked `$openspec-verify-change trn-328-portal-trust-boundary` in the supplied
+repository snapshot. The CLI resolved that repository's nearest root and read
+the existing proposal and delta specs. The verifier correctly reported that
+this zero-task stub lacks design/tasks artifacts; no files were edited and
+nothing was archived. This confirms skill discovery and invocation, and that
+the existing change remains readable. Launch-time code inspection confirms
+`AcademyLoader` stages skills and runs `.agents/setup`, while
+`_seed_openspec_store()` initializes only the workspace-root store as a sibling
+of `repo/`; it does not run a migration against delivered project files.
+
 ## Upstream references
 
 - [OpenSpec 2.1.0 release notes](https://github.com/Fission-AI/OpenSpec/releases/tag/v2.1.0)

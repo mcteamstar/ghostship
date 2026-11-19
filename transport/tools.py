@@ -1682,6 +1682,11 @@ def captain(
     autonomy and self-cancels on completion; pass both ``template="willy"``
     and ``message=`` together. The resolved order shares the same recurring
     Raven check-in as a hand-written message.
+    ``repo-hygiene-sweep`` (alias: ``sweepy``) performs one read-only
+    repository hygiene pass. Pass the absolute target repository path in
+    ``message``; optional comma-separated ``change_name`` values scope its
+    change-specific checks while privacy/sensitive-data checks remain
+    repository-wide. It self-cancels after reporting.
     ``stop`` pauses that check-in without deleting it, and ``status`` reports
     its durable state.
 
@@ -1698,15 +1703,19 @@ def captain(
         message: Free-form standing order text. Required when no template is
             given. Also accepted alongside ``free-will`` (and any template
             that uses a ``<message>`` placeholder) to supply the instruction.
+            For ``repo-hygiene-sweep``, provide the absolute target repository
+            path.
         template: Name of a built-in standing-order template. Available
             templates: ``spec-driven-development`` / ``sdd`` / ``specky``
             (single or multi-change lifecycle), ``independent-review`` /
             ``indy`` (scoped or whole-codebase review), ``free-will`` /
-            ``free`` / ``willy`` (open-ended autonomous captaincy).
+            ``free`` / ``willy`` (open-ended autonomous captaincy), and
+            ``repo-hygiene-sweep`` / ``sweepy`` (read-only repository hygiene).
         change_name: Substitution value for a template. For ``sdd``, accepts
             a single change name or a comma-separated list for multi-change
             mode. For ``independent-review``, optional — omit to review the
-            entire codebase.
+            entire codebase. For ``repo-hygiene-sweep``, optional and may be
+            comma-separated; omit to inspect the full repository.
         cron: Cron expression for a new standing-orders check-in.
         interval: Fixed interval in seconds for a new standing-orders check-in.
         timezone: IANA timezone for cron interpretation, matching schedule().
