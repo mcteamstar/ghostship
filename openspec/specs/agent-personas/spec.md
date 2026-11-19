@@ -66,6 +66,13 @@ The system SHALL scope each persona's prompt to the intended OpenSpec workflow d
 - **WHEN** implementation and independent review are complete
 - **THEN** Reaper is the persona whose prompt directs it to synchronize approved specs and archive the completed change
 
+### Requirement: OpenSpec invocation guidance uses backend skill syntax
+When persona prompts explain how to invoke OpenSpec workflows, they SHALL name available `openspec-*` skills and use the selected backend's supported syntax; they SHALL NOT refer to removed `/opsx:*` command files.
+
+#### Scenario: Persona prompt uses supported v2 skill invocation
+- **WHEN** an agent follows an OpenSpec invocation example in a persona prompt
+- **THEN** the example identifies the relevant `openspec-*` skill and uses `$openspec-*` for Codex or `/openspec-*` for a backend that supports slash skill invocation
+
 ### Requirement: Persona division is prompt-level guidance, not a technical gate
 The system SHALL NOT technically restrict which `openspec-*` skills a given persona can invoke; every persona inherits every crew-wide skill by default. Only each persona's own system prompt narrows what it is meant to do.
 

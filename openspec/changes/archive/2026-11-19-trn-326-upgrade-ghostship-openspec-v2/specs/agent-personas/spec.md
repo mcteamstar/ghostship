@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: OpenSpec workflow division by persona
-The system SHALL scope each persona's prompt to the intended OpenSpec explore -> propose -> apply -> archive workflow division: Spectre to explore/propose/update-change, Ghost to all six operations with apply-change as its implementation path, Banshee to explore/propose/update-change/apply-change for independent review and fixes, and Reaper to sync-specs/archive-change. Banshee SHALL hand specification synchronization and change archival to Reaper rather than owning those close-out operations. When a prompt explains how to invoke a workflow, it SHALL name the available `openspec-*` skill and use the syntax supported by the selected backend; it SHALL NOT refer to removed `/opsx:*` command files.
+The system SHALL scope each persona's prompt to the intended OpenSpec explore -> propose -> apply -> archive workflow division: Spectre to explore/propose/update-change, Ghost to all six operations with apply-change as its implementation path, Banshee to explore/propose/update-change/apply-change for independent review and fixes, and Reaper to sync-specs/archive-change. Banshee SHALL hand specification synchronization and change archival to Reaper rather than owning those close-out operations.
 
 #### Scenario: Spectre plans, Ghost implements
 - **WHEN** a change needs to move from idea to implementation
@@ -16,6 +16,11 @@ The system SHALL scope each persona's prompt to the intended OpenSpec explore ->
 #### Scenario: Reaper closes the change
 - **WHEN** implementation and independent review are complete
 - **THEN** Reaper is the persona whose prompt directs it to synchronize approved specs and archive the completed change
+
+## ADDED Requirements
+
+### Requirement: OpenSpec invocation guidance uses backend skill syntax
+When persona prompts explain how to invoke OpenSpec workflows, they SHALL name available `openspec-*` skills and use the selected backend's supported syntax; they SHALL NOT refer to removed `/opsx:*` command files.
 
 #### Scenario: Persona prompt uses supported v2 skill invocation
 - **WHEN** an agent follows an OpenSpec invocation example in a persona prompt
