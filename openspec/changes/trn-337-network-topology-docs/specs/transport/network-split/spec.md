@@ -7,7 +7,7 @@
 The system SHALL provision two static Podman networks replacing `ga-net`:
 
 - `ga-portside` — used by `ga-portal`, `ga-transport`, and `ga-radar`. Crew, login, and worker containers SHALL NOT be attached to `ga-portside`.
-- `ga-starboard` — used by `ga-transport`, all `gs-*` crew containers, and ephemeral `ga-login-*` containers. `ga-portal` and `ga-radar` SHALL NOT be attached to `ga-starboard`; disposable workers use `netns: none`.
+- `ga-starboard` — used by `ga-transport`, all `gs-*` crew containers, and ephemeral Kiro (`ga-login-*`), Claude (`ga-claude-login-*`), and Codex (`ga-codex-login-*`) login containers. `ga-portal` and `ga-radar` SHALL NOT be attached to `ga-starboard`; disposable workers use `netns: none`.
 
 `ga-transport` SHALL be attached to both `ga-portside` and `ga-starboard` at all times, bridging the portal and crew tiers. Both networks are static install-time networks and are not created or destroyed at crew launch or nuke time.
 
@@ -21,7 +21,7 @@ Network assignments:
 | `ga-radar` | `ga-portside` only |
 | `ga-transport` | `ga-portside` + `ga-starboard` |
 | `gs-{crew_id}` (crew) | `ga-starboard` only |
-| `ga-login-{token}` (ephemeral) | `ga-starboard` only |
+| `ga-login-*` (Kiro), `ga-claude-login-*`, `ga-codex-login-*` (ephemeral) | `ga-starboard` only |
 | `gs-worker-{token}` (disposable) | none (`netns: none`) |
 
 #### Scenario: Portal cannot reach crew containers directly
@@ -49,7 +49,7 @@ Network assignments:
 - **THEN** it is attached to `ga-starboard` and not to `ga-portside`
 
 #### Scenario: Login container joins ga-starboard
-- **WHEN** an ephemeral login container is created
+- **WHEN** an ephemeral Kiro, Claude, or Codex login container is created
 - **THEN** it is attached to `ga-starboard` and not to `ga-portside`
 
 #### Scenario: Worker container joins no network

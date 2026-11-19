@@ -84,7 +84,7 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 | `ga-radar` | `ga-portside` only |
 | `ga-transport` | `ga-portside` + `ga-starboard` |
 | `gs-{crew_id}` (crew) | `ga-starboard` only |
-| `ga-login-{token}` (ephemeral) | `ga-starboard` only |
+| `ga-login-*` (Kiro), `ga-claude-login-*`, `ga-codex-login-*` (ephemeral) | `ga-starboard` only |
 | `gs-worker-{token}` (disposable) | none (`netns: none`) |
 
 Crew and login containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` and `ga-radar` cannot reach crew containers by hostname. See `docs/architecture.md` for the full security model.

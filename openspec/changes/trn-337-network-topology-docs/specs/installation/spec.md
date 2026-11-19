@@ -47,3 +47,25 @@ The dedicated instance is controlled by GA_MACHINE_NAME (default ghost-academy),
 #### Scenario: Every Podman command targets the dedicated instance
 - **WHEN** GA_DEDICATED_MACHINE is not false
 - **THEN** image pulls, every podman build, network and secret creation, Transport startup, and failure-path logs all target the same resolved dedicated-instance connection and none falls back to the default Podman socket
+
+## ADDED Requirements
+
+### Requirement: Legacy ga-net cleanup
+
+After the current networks are provisioned and Transport passes its health check, `install.sh` SHALL remove the legacy `ga-net` only when no containers remain attached. If containers remain, installation SHALL leave `ga-net` in place and SHALL NOT migrate those containers during Transport startup. `uninstall.sh` SHALL attempt to remove `ga-net` after removing Ghost Academy crew and Transport containers; a failed network removal SHALL NOT stop the remaining uninstall cleanup.
+
+#### Scenario: Empty legacy network is removed after installation
+
+- **WHEN** installation succeeds and `ga-net` exists with no attached containers
+- **THEN** `install.sh` removes `ga-net`
+
+#### Scenario: Non-empty legacy network is preserved without crew migration
+
+- **WHEN** installation succeeds and one or more containers remain attached to `ga-net`
+- **THEN** `install.sh` leaves `ga-net` in place
+- **THEN** installation does not migrate those containers during Transport startup
+
+#### Scenario: Uninstall attempts legacy network removal after container cleanup
+
+- **WHEN** `uninstall.sh` removes Ghost Academy crew and Transport containers
+- **THEN** it attempts to remove `ga-net` and continues the remaining cleanup if Podman refuses the removal

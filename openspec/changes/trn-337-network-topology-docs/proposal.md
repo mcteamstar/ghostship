@@ -2,13 +2,14 @@
 
 ## Why
 
-The generated Compose topology attaches Radar to `ga-portside`, but the network-split and configuration requirements omit Radar. Other steady-state requirements use the retired `ga-net` layout or omit current Ghost Academy containers from the dedicated-instance inventory.
+The generated Compose topology attaches Radar to `ga-portside`, but the network-split and configuration requirements omit Radar. Other steady-state requirements use the retired `ga-net` layout or omit current Ghost Academy containers from the dedicated-instance inventory. The dashboard-proxy requirements also describe a crew-hostname WebSocket origin that the transport no longer sends.
 
 ## What Changes
 
 - Reconcile the network-split, crew-lifecycle, installation, dashboard-proxy, and dashboard-auth requirements with the current Compose and runtime network assignments.
-- Correct operator documentation and retain `ga-net` only for legacy cleanup implemented by install and uninstall code; remove the unsupported Transport-startup crew-migration requirement.
-- Add the same complete network membership table to configuration and architecture documentation.
+- Correct operator documentation and specify code-backed legacy `ga-net` cleanup: install removes it only when empty, and uninstall attempts removal after Ghost Academy containers are removed. Remove the unsupported Transport-startup crew-migration requirement.
+- Add the same complete network membership table to configuration and architecture documentation, including every backend-specific login-container prefix.
+- Remove the obsolete crew-hostname WebSocket Origin requirement and retain the loopback Origin currently sent by the transport.
 - Do not change Compose or runtime network assignments.
 
 ## Capabilities
