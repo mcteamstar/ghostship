@@ -1837,10 +1837,10 @@ def _resolve_dispatch_slot(
     - ``slot=False``: explicit headless, regardless of enrollment —
       ``(None, None)``.
 
-    ``True`` is not a valid value under the current type annotation; a caller
-    passing it receives headless dispatch (``(None, None)``) — it does NOT
-    fall through to the member-slot path, because the member-slot guard checks
-    ``slot is None`` explicitly.
+    ``True`` is a legacy value, not a distinct slot mode. It logs a warning
+    and is treated as ``None``: enrolled agents use their member slot, while
+    unenrolled agents remain headless. MCP callers cannot pass string-valued
+    slots because the dispatch tool schema accepts only boolean or null.
     """
     if isinstance(crew, Crew):
         enrolled: frozenset[str] = frozenset(crew.enrolled_agents or [])

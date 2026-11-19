@@ -2165,10 +2165,13 @@ def dispatch(
             dispatches headless (no session created, echoed slot ``None``).
             ``False`` — explicit headless, regardless of enrollment: no session
             is created and the echoed slot is ``None``.
-            ``True`` and arbitrary string slot names are no longer accepted —
-            member slots cover all legitimate slotted-dispatch use cases. A
-            member DM slot is pre-created at enrollment time, so no dispatch-time
-            slot pre-creation is performed.
+            ``True`` is a legacy value, not a per-task slot mode: it logs a
+            warning and falls back to the ``None`` behavior. String-valued
+            slots are invalid under this boolean-or-null tool input. A member
+            DM slot is pre-created at enrollment time, so no dispatch-time
+            slot pre-creation is performed. Dashboard port allocation does
+            not affect slot resolution. For ``tasks=[...]``, one resolved slot
+            is shared by every task in the batch.
 
             MEMORY COST: a member-slot attachment spawns a kiro-cli-chat process
             inside the crew container (~300-400 MB RSS). For autonomous or

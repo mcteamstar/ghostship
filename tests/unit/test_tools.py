@@ -123,6 +123,15 @@ class TestCompResourceAliases(unittest.TestCase):
         self.assertEqual(canonical[0]["name"], "comps")
         self.assertIn("comps", canonical[0]["title"].lower())
 
+
+class TestDispatchSlotInputContract(unittest.TestCase):
+    def test_dispatch_slot_annotation_is_boolean_or_null(self):
+        from typing import get_type_hints
+
+        from transport.tools import dispatch
+
+        self.assertEqual(get_type_hints(dispatch)["slot"], bool | None)
+
 # ── TestNuke ──────────────────────────────────────────────────────────────────
 
 class TestNuke(unittest.TestCase):

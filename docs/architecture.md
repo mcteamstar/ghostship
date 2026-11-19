@@ -116,8 +116,12 @@ Built-in templates:
 Every `dispatch` requests a retained run (`keep=true`). Tasks run as isolated subagent processes in `subagent_<task_id>/` with no persistent session attached by default.
 
 **Slot modes:**
-- `slot=None` (default) — enrolled personas route into their attested `member-<slug>` dashboard session (~250 MB RSS).
-- `slot=False` — explicit headless; saves ~250 MB RSS per dispatch.
+- `slot=None` (default) — enrolled personas route into their attested `member-<slug>` dashboard session (~250 MB RSS); unenrolled personas run headless.
+- `slot=False` — explicit headless, regardless of enrollment.
+- `slot=True` — legacy value: logs a warning and falls back to `slot=None`; it does not create a per-task session. String-valued slots are invalid under the MCP tool's boolean-or-null input.
+- Batch dispatch resolves the slot once and shares the same result across every task.
+
+Dashboard port allocation controls browser visibility; it does not change slot resolution.
 
 `steer(task_id, message, force=False)` — running tasks receive `/steer`; completed tasks use `/continue`. `force=True` hard-stops a running task first. On claude/codex backends the gateway may return `steer_unsupported`; transport falls back to `mode=follow_up` (`action: "follow_up_queued"`).
 

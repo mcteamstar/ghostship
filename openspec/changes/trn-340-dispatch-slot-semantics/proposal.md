@@ -10,6 +10,7 @@ The dispatch contract is enrollment-based, but the active task-orchestration spe
 - Specify that `slot=False` explicitly forces headless dispatch.
 - Reject `slot=True` as a distinct per-task slot mode. Preserve the current compatibility behavior: the resolver warns and treats it as `slot=None`.
 - Treat string-valued slots as unsupported; the MCP tool contract exposes `slot` as boolean or null, so string values are invalid tool inputs.
+- Reconcile batch dispatch with the same slot rules; one resolution is shared across every task in a batch.
 - Reconcile the task-orchestration spec, README, architecture, configuration, and dispatch tool description.
 
 ## Capabilities
@@ -22,4 +23,4 @@ The dispatch contract is enrollment-based, but the active task-orchestration spe
 
 ## Impact
 
-The task-orchestration spec, operator documentation, and dispatch tool description. Dispatch routing and runtime input handling are not changing.
+The task-orchestration spec, operator documentation, dispatch tool description, and focused single and batch dispatch tests. Dispatch routing and runtime input handling are not changing.

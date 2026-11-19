@@ -50,6 +50,44 @@ The system SHALL dispatch a task to a named persona in a specified crew as a ded
 - **WHEN** an MCP dispatch request supplies a string value for `slot`
 - **THEN** the boolean-or-null tool input contract rejects the request and no named session is created
 
+## MODIFIED Requirements
+
+### Requirement: dispatch accepts tasks list as an alternative overload
+
+The `dispatch` tool SHALL accept `tasks: list[str]` as an alternative to `task: str`. The two parameters SHALL be mutually exclusive. When `tasks` is provided, all dispatch semantics apply identically to each task in the list. All tasks in one batch share the same `agent`, `model`, `slot`, and `crew_id`.
+
+The `slot` parameter SHALL apply uniformly across all tasks in a batch. The transport SHALL resolve the slot once: `slot=None` routes all tasks for an enrolled persona to the same pre-created member DM slot and leaves all tasks for an unenrolled persona headless; `slot=False` forces every task headless. Legacy `slot=True` SHALL NOT create per-task slots; the resolver warns and treats it as `slot=None`, sharing that resolved behavior across the batch. String-valued slots are invalid under the MCP tool's boolean-or-null input schema and SHALL be rejected.
+
+See `specs/batch-dispatch/spec.md` for the full batch dispatch contract.
+
+#### Scenario: Batch dispatch uses same validation as single dispatch
+- **WHEN** `dispatch` is called with `tasks=[...]` and an agent not on the six-persona roster
+- **THEN** the system returns a validation error without dispatching any task
+
+#### Scenario: Batch dispatch records last_task_at per task
+- **WHEN** `dispatch` is called with `tasks=[...]` and all `/api/spawn` calls succeed
+- **THEN** the transport updates `last_task_at` in the crew registry for each successfully dispatched task
+
+#### Scenario: Enrolled batch uses one member slot by default
+- **WHEN** `dispatch` is called with `tasks=[...]` and no `slot` for an enrolled persona
+- **THEN** every `/api/spawn` request uses the same `parent_session="dashboard:member-<slug>"` and the response identifies that member slot
+
+#### Scenario: Unenrolled batch is headless by default
+- **WHEN** `dispatch` is called with `tasks=[...]` and no `slot` for an unenrolled persona
+- **THEN** no `/api/spawn` request has a `parent_session` and the response has `slot: null`
+
+#### Scenario: False forces every batch task headless
+- **WHEN** `dispatch` is called with `tasks=[...]` and `slot=False` for an enrolled persona
+- **THEN** no `/api/spawn` request has a `parent_session` and the response has `slot: null`
+
+#### Scenario: Batch dispatch with slot=True gives each task its own slot
+- **WHEN** `dispatch` is called with `tasks=[...]` and `slot=True` for an enrolled persona
+- **THEN** the resolver logs a warning, every task uses the same member slot as `slot=None`, and no per-task slots are created
+
+#### Scenario: Batch dispatch with named slot shares one session for all tasks
+- **WHEN** `dispatch` is called with `tasks=[...]` and `slot="my-batch"`
+- **THEN** the boolean-or-null tool input contract rejects the request and no named session is created
+
 ## REMOVED Requirements
 
 ### Requirement: Task dispatch

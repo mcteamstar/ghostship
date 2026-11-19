@@ -21,6 +21,7 @@ The dispatch contract is enrollment-based: `slot=None` routes enrolled agents to
 - Keep `slot=False` as the supported explicit opt-out.
 - Reject `slot=True` as a distinct routing mode while documenting the existing warning and fallback to `slot=None`.
 - Document string-valued slots as invalid tool inputs; do not add runtime handling for them.
+- Resolve the slot once per batch; every task in the batch shares the resolved member slot or is headless.
 - Keep dashboard visibility and resource costs documented separately from slot resolution.
 
 ## Risks / Trade-offs

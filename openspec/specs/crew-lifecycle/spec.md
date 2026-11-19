@@ -1030,7 +1030,7 @@ precede the locked election.
 - **THEN** the other becomes a waiter (blocks until the leader signals readiness)
 - **THEN** the container is started exactly once
 
-### Requirement: slot=True is rejected with a warning in dispatch
+### Requirement: slot=True falls back with a warning in dispatch
 
 When `_resolve_dispatch_slot()` receives `slot=True`, the transport SHALL log a
 warning and treat it as `slot=None` (defaulting to the enrolled member slot

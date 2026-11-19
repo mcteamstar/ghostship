@@ -503,7 +503,7 @@ explicitly by setting the relevant `knowledge.*` toggle in the crew's config.
 | Active task, with a session slot (`slot=None` for an enrolled persona, the default) | ~1.5–1.9 GB (session + subagents) |
 | Idle, session reaped (after `session.timeout_secs`) | ~160 MB |
 
-Without these overrides, idle RSS is ~470 MB due to an eagerly pre-spawned `kiro-cli-chat` process. With `session.eager_spawn=false` (the ghostship default), the session process is not created until first dispatch — and with headless dispatch (`slot=None`), no persistent session process is created at all.
+Without these overrides, idle RSS is ~470 MB due to an eagerly pre-spawned `kiro-cli-chat` process. With `session.eager_spawn=false` (the ghostship default), the session process is created only when needed. Headless dispatch (`slot=False`, or `slot=None` for an unenrolled persona) creates no persistent session. Legacy `slot=True` logs a warning and uses the `slot=None` default; it does not create a per-task session. String-valued slots are invalid tool inputs. Batch dispatch resolves the slot once and shares it across every task. Dashboard port allocation does not affect slot resolution.
 
 ### `session.watchdog_rss_max_mb` guidance
 
