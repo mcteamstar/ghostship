@@ -16,8 +16,9 @@ The rate-limiting spec documents an obsolete `GA_TRUSTED_PROXY` switch and last-
 
 ### Modified Capabilities
 
+- `installation`: document the trusted-proxy CIDR configuration contract for operators.
 - `rate-limiting`: specify the trusted-proxy condition and client-address derivation accurately.
 
 ## Impact
 
-`openspec/specs/rate-limiting/spec.md`, `docs/configuration.md`, and focused rate-limit documentation tests if existing coverage needs adjustment. Runtime code is not expected to change.
+`openspec/specs/installation/spec.md`, `openspec/specs/rate-limiting/spec.md`, `docs/configuration.md`, and focused rate-limit tests. Runtime code is not expected to change.

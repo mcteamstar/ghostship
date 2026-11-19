@@ -1,10 +1,23 @@
 # Spec Delta
 
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: Caller identity uses a trusted source address
+### Requirement: Composite caller-identity key
+The middleware SHALL derive a per-caller key from available request signals:
 
-The middleware SHALL derive a per-caller key from the source IP, adding a fixed SHA-256 prefix of any presented API key. It SHALL consult X-Forwarded-For only when the immediate ASGI peer is within GA_TRUSTED_PROXY_CIDR.
+- **No API key presented**: key is the source IP address.
+- **API key presented (valid or not yet verified)**: key is
+  `SHA-256(api_key)[:8]:<source_ip>` — a fixed-length prefix of the key's hash
+  concatenated with the source IP. The raw key value is never stored in limiter
+  state.
+
+The source IP SHALL be the immediate ASGI peer address unless that peer belongs
+to a CIDR configured in `GA_TRUSTED_PROXY_CIDR`. For a trusted peer with an
+`X-Forwarded-For` header, the source IP SHALL be the first address in that header.
+When the header is absent, the source IP SHALL fall back to the ASGI peer address.
+When `GA_TRUSTED_PROXY_CIDR` is unset or empty, the middleware SHALL ignore
+`X-Forwarded-For`. The CIDR value is parsed during startup and does not change at
+runtime.
 
 #### Scenario: No API key uses an IP-only bucket
 - **WHEN** a request arrives without an Authorization header
@@ -15,15 +28,15 @@ The middleware SHALL derive a per-caller key from the source IP, adding a fixed 
 - **THEN** its limiter key uses SHA-256(api_key)[:8] and the resolved source IP without storing the raw key
 
 #### Scenario: Untrusted peer cannot spoof the source address
-- **WHEN** a request comes from a peer outside GA_TRUSTED_PROXY_CIDR and supplies X-Forwarded-For
+- **WHEN** a request comes from a peer outside `GA_TRUSTED_PROXY_CIDR` and supplies `X-Forwarded-For`
 - **THEN** the source IP is the ASGI peer address and the header is ignored
 
 #### Scenario: Trusted peer uses the first forwarded hop
-- **WHEN** a trusted proxy sends X-Forwarded-For: 10.0.0.1, 192.168.1.5
-- **THEN** the source IP is 10.0.0.1
+- **WHEN** a trusted proxy sends `X-Forwarded-For: 10.0.0.1, 192.168.1.5`
+- **THEN** the source IP is `10.0.0.1`
 
-#### Scenario: Trusted peer without a forwarded address falls back
-- **WHEN** a request comes from a trusted peer without a usable X-Forwarded-For value
+#### Scenario: Trusted peer without a forwarded header falls back
+- **WHEN** a request comes from a trusted peer without an `X-Forwarded-For` header
 - **THEN** the source IP is the ASGI peer address
 
 #### Scenario: Same IP and same key share a bucket
@@ -35,13 +48,5 @@ The middleware SHALL derive a per-caller key from the source IP, adding a fixed 
 - **THEN** they use separate rate-limit buckets
 
 #### Scenario: Unset trusted-proxy configuration ignores forwarded headers
-- **WHEN** GA_TRUSTED_PROXY_CIDR is unset or empty and a request carries X-Forwarded-For
+- **WHEN** `GA_TRUSTED_PROXY_CIDR` is unset or empty and a request carries `X-Forwarded-For`
 - **THEN** the middleware uses the ASGI peer address
-
-## REMOVED Requirements
-
-### Requirement: Composite caller-identity key
-
-**Reason**: The documented GA_TRUSTED_PROXY switch and last-hop behavior do not match the implemented CIDR-based peer check and first-hop extraction.
-
-**Migration**: Use GA_TRUSTED_PROXY_CIDR to list trusted proxy CIDRs. Forwarded headers from peers outside those ranges are ignored.
