@@ -2,7 +2,7 @@
 
 ## 1. Establish a baseline and metadata convention
 
-- [ ] 1.1 Run openspec validate --all --strict --json and save a dated, sanitized summary by category; verify totals match the command output.
+- [x] 1.1 Run `openspec validate --all --strict --report findings --json` and save a dated, sanitized summary by category; verify totals match the command output. (Baseline recorded in proposal.md on 2026-11-20.)
 - [ ] 1.2 Update tracked OpenSpec workflow guidance and change metadata to use the v2-recognized extension form for Plane identifiers; verify each remains mapped to its TRN work item and no unknown-key warning remains.
 
 ## 2. Resolve findings in reviewable batches

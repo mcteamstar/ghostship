@@ -2,7 +2,7 @@
 
 ## Context
 
-See proposal.md for the current strict-validation counts. Findings are spread across main specs and active changes, so cleanup needs a stable baseline and reviewable batches.
+The 2026-11-20 baseline in proposal.md covers 87 items (29 passed, 58 failed) and 178 warnings: 168 overlong requirements, 2 placeholder Purpose sections, 5 missing SHALL/MUST wording findings, and 3 unsupported `ticket` metadata keys. Strict mode reports warning-bearing items as failed; there are no error-level findings. Findings are spread across main specs and active changes, so cleanup needs a stable baseline and reviewable batches.
 
 ## Goals / Non-Goals
 

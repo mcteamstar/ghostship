@@ -2,7 +2,7 @@
 
 ## Why
 
-The current OpenSpec v2 strict validation run reports 58 failures and 182 warnings, including 171 overlong requirements, placeholder Purpose sections, RFC wording, and unsupported `ticket` metadata. The repository needs a measured cleanup plan and a consistent way to keep Plane linkage while producing a clean validation baseline.
+The OpenSpec v2 strict validation baseline was refreshed on 2026-11-20 with `openspec validate --all --strict --report findings --json`. It covers 87 items: 58 failed (55 specs and 3 active changes) and 29 passed. The 178 warnings comprise 168 overlong requirements, 2 placeholder Purpose sections, 5 requirements missing SHALL/MUST wording, and 3 unsupported `ticket` metadata keys. All findings are warnings; there are no error-level findings. The repository needs a measured cleanup plan and a consistent way to keep Plane linkage while producing a clean validation baseline.
 
 ## What Changes
 
