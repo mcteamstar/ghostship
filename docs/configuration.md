@@ -336,7 +336,7 @@ The Podman socket and unsandboxed crew runtime are additional deployment risks n
 
 The transport applies per-endpoint HTTP rate limiting via a `RateLimitMiddleware` ASGI layer that sits **outside** bearer-auth middleware, so every caller — including unauthenticated `/login` requests — is subject to limits.
 
-Each limiter is a sliding window keyed on caller identity: source IP alone when no bearer token is presented, or `SHA-256(token)[:8]:<ip>` when one is (the raw token is never stored). The source IP is the immediate ASGI peer address unless that peer falls within a CIDR in `GA_TRUSTED_PROXY_CIDR`. Only for a trusted peer does the middleware consult `X-Forwarded-For`, using its first address; when the header is absent, it falls back to the ASGI peer address. An unset or empty CIDR list means forwarded headers are ignored. Configure only proxies that sanitize or overwrite `X-Forwarded-For`, because the middleware trusts its first address from a peer in the configured ranges.
+Each limiter is a sliding window keyed on caller identity: source IP alone unless exactly one well-formed bearer token matches the configured API key, in which case the key is `SHA-256(token)[:8]:<ip>` (the raw token is never stored). Missing, malformed, duplicated, and incorrect credentials share the source-IP bucket. The source IP is the immediate ASGI peer address unless that peer falls within a CIDR in `GA_TRUSTED_PROXY_CIDR`. Only for a trusted peer does the middleware consult `X-Forwarded-For`, using its first address; when the header is absent, it falls back to the ASGI peer address. An unset or empty CIDR list means forwarded headers are ignored. Configure only proxies that sanitize or overwrite `X-Forwarded-For`, because the middleware trusts its first address from a peer in the configured ranges.
 
 When a caller exceeds a limit:
 
@@ -349,6 +349,8 @@ Rate limit exceeded. Retry after <window_secs> seconds.
 ```
 
 `Retry-After` is the full window duration. `/health` and `/version` are unconditionally exempt. Paths not matched by any registered limiter pass through without a rate check.
+
+Each endpoint limiter tracks at most 10,000 caller buckets. Expired buckets are swept across callers during admissions. At capacity, a new caller receives the existing 429 response while active caller buckets remain in place; the caller can retry after an active bucket expires.
 
 Per-endpoint limits are configured via the `GA_RATE_LIMIT_*` env vars. See the env var table above.
 

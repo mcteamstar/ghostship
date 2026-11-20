@@ -411,10 +411,12 @@ class TestRateLimitMiddleware(unittest.TestCase):
         self.assertTrue(app.called)
         self.assertNotEqual(_status_of(messages_b), 429)
 
-    def test_caller_key_hashes_bearer_when_present(self):
-        # Same IP, two different bearer tokens → tracked independently.
+    def test_invalid_bearers_share_source_bucket(self):
+        # Invalid credentials do not create token-specific buckets.
         limiter = self._limiter(max_requests=1, window_secs=60)
-        mw, app = self._make_middleware({"login_post": limiter})
+        mw, app = self._make_middleware(
+            {"login_post": limiter}, api_key="configured-key"
+        )
         scope1 = _make_scope("POST", "/login", client=("3.3.3.3", 1),
                              headers={"authorization": "Bearer tokenAAAA"})
         scope2 = _make_scope("POST", "/login", client=("3.3.3.3", 1),
@@ -427,8 +429,9 @@ class TestRateLimitMiddleware(unittest.TestCase):
         messages2, send2 = _collect_send()
         app.called = False
         _run(mw(scope2, _receive, send2))
-        self.assertTrue(app.called)  # different token key → not at limit
-        self.assertNotEqual(_status_of(messages2), 429)
+        self.assertFalse(app.called)
+        self.assertEqual(_status_of(messages2), 429)
+        self.assertEqual(set(limiter._hits), {"3.3.3.3"})
 
     def test_caller_key_uses_sha256_prefix_and_source_ip(self):
         import hashlib
@@ -444,7 +447,9 @@ class TestRateLimitMiddleware(unittest.TestCase):
 
     def test_same_bearer_and_ip_share_rate_limit_bucket(self):
         limiter = self._limiter(max_requests=1, window_secs=60)
-        mw, app = self._make_middleware({"login_post": limiter})
+        mw, app = self._make_middleware(
+            {"login_post": limiter}, api_key="tokenAAAA"
+        )
         scope = _make_scope(
             "POST",
             "/login",
@@ -462,6 +467,64 @@ class TestRateLimitMiddleware(unittest.TestCase):
         _run(mw(scope, _receive, send))
         self.assertFalse(app.called)
         self.assertEqual(_status_of(messages), 429)
+
+    def test_credential_rotation_uses_only_the_current_key_identity(self):
+        limiter = self._limiter(max_requests=1, window_secs=60)
+        mw, app = self._make_middleware(
+            {"login_post": limiter}, api_key="current-key"
+        )
+
+        # A previous credential is no longer authenticated, so it shares IP state.
+        old_scope = _make_scope(
+            "POST", "/login", client=("3.3.3.3", 1),
+            headers={"authorization": "Bearer previous-key"},
+        )
+        messages, send = _collect_send()
+        _run(mw(old_scope, _receive, send))
+        self.assertTrue(app.called)
+
+        # An unauthenticated request from that IP shares the same quota.
+        app.called = False
+        messages, send = _collect_send()
+        _run(mw(_make_scope("POST", "/login", client=("3.3.3.3", 1)), _receive, send))
+        self.assertFalse(app.called)
+        self.assertEqual(_status_of(messages), 429)
+
+        # The current key gets its own hashed identity without storing the key.
+        app.called = False
+        messages, send = _collect_send()
+        current_scope = _make_scope(
+            "POST", "/login", client=("3.3.3.3", 1),
+            headers={"authorization": "Bearer current-key"},
+        )
+        _run(mw(current_scope, _receive, send))
+        self.assertTrue(app.called)
+        import hashlib
+        current_hash = hashlib.sha256(b"current-key").hexdigest()[:8]
+        self.assertIn(f"{current_hash}:3.3.3.3", limiter._hits)
+        self.assertNotIn("current-key", " ".join(limiter._hits))
+
+    def test_capacity_returns_429_without_evicting_active_bucket(self):
+        from transport.security import RateLimiter
+
+        limiter = RateLimiter(max_requests=2, window_secs=60.0, max_keys=1)
+        mw, app = self._make_middleware({"login_post": limiter})
+        messages, send = _collect_send()
+        _run(mw(_make_scope("POST", "/login", client=("1.1.1.1", 1)), _receive, send))
+        self.assertTrue(app.called)
+
+        app.called = False
+        messages, send = _collect_send()
+        _run(mw(_make_scope("POST", "/login", client=("2.2.2.2", 1)), _receive, send))
+        self.assertFalse(app.called)
+        self.assertEqual(_status_of(messages), 429)
+        self.assertEqual(set(limiter._hits), {"1.1.1.1"})
+
+        # Existing active callers keep their bucket and quota at capacity.
+        app.called = False
+        messages, send = _collect_send()
+        _run(mw(_make_scope("POST", "/login", client=("1.1.1.1", 1)), _receive, send))
+        self.assertTrue(app.called)
 
     def test_trusted_peer_uses_forwarded_address(self):
         self.assertEqual(

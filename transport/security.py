@@ -335,25 +335,44 @@ class RateLimiter:
     """Sliding-window request-rate limiter keyed on an arbitrary caller string.
 
     Allows at most ``max_requests`` recorded hits per ``window_secs`` for a
-    given key. Uses the same in-memory sliding-window pruning pattern as
-    ``Throttle``; state is held per-process and resets on restart. Thread-safe:
-    ``record`` prunes, checks, and appends atomically under the lock so two
-    concurrent callers at the boundary can never both be admitted past the
-    limit.
+    given key, with at most ``max_keys`` caller buckets tracked. Uses the same
+    in-memory sliding-window pruning pattern as ``Throttle``; state is held
+    per-process and resets on restart. Thread-safe: ``record`` sweeps, prunes,
+    checks, and appends atomically under the lock so concurrent callers cannot
+    exceed the request quota or bucket capacity.
     """
 
     max_requests: int
     window_secs: float
     _hits: dict[str, list[float]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
-    # Memory bound: O(unique_source_ips × window_secs) — lazy per-key eviction, no global sweep.
+    _last_hits: dict[str, float] = field(default_factory=dict)
+    max_keys: int = 10_000
+    # Memory bound: at most max_keys buckets, swept under _lock on admission.
+
+    def _sweep(self, now: float) -> None:
+        """Remove expired buckets across callers while holding the lock.
+
+        Work is bounded by max_keys. The latest hit is enough to determine
+        whether a bucket has any hits left in its sliding window.
+        """
+        expired = [
+            key
+            for key, last_hit in self._last_hits.items()
+            if now - last_hit >= self.window_secs
+        ]
+        for key in expired:
+            self._hits.pop(key, None)
+            self._last_hits.pop(key, None)
 
     def _prune(self, key: str, now: float) -> list[float]:
         stamps = [t for t in self._hits.get(key, []) if now - t < self.window_secs]
         if stamps:
             self._hits[key] = stamps
+            self._last_hits[key] = max(stamps)
         else:
             self._hits.pop(key, None)
+            self._last_hits.pop(key, None)
         return stamps
 
     def is_limited(self, key: str, now: float | None = None) -> bool:
@@ -367,15 +386,19 @@ class RateLimiter:
 
         Returns ``True`` if the hit was within the limit and recorded; returns
         ``False`` without recording if ``key`` is already at ``max_requests``
-        for the current window.
+        for the current window, or if it is new and all bucket slots are active.
         """
         now = time.time() if now is None else now
         with self._lock:
+            self._sweep(now)
             stamps = self._prune(key, now)
             if len(stamps) >= self.max_requests:
                 return False
+            if not stamps and key not in self._hits and len(self._hits) >= self.max_keys:
+                return False
             stamps.append(now)
             self._hits[key] = stamps
+            self._last_hits[key] = max(stamps)
             return True
 
 
