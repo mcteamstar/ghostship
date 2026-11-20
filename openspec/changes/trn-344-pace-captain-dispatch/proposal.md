@@ -15,7 +15,8 @@ None.
 ### Modified Capabilities
 
 - `captain`
+- `captain/independent-review`
 
 ## Impact
 
-Common Captain guidance, built-in orders, maintained documentation, and focused verification.
+Common Captain guidance, built-in orders, the Captain and independent-review capability contracts, maintained documentation, and focused verification.
