@@ -41,7 +41,7 @@ export PODMAN_SOCK="$SMOKE_RUNTIME/podman.sock"
 unset CONTAINER_HOST CONTAINER_CONNECTION
 mkdir -p "$XDG_CONFIG_HOME/containers"
 export CONTAINERS_CONF="$XDG_CONFIG_HOME/containers/containers.conf"
-printf '[network]\ndefault_rootless_network_cmd = "slirp4netns"\n' > "$CONTAINERS_CONF"
+printf '[engine]\ncgroup_manager = "cgroupfs"\n[network]\ndefault_rootless_network_cmd = "slirp4netns"\n' > "$CONTAINERS_CONF"
 export GA_MACHINE_NAME="$MACHINE_NAME"
 export GA_DEDICATED_MACHINE="false"
 export PATH="$SMOKE_BIN:$PATH"
