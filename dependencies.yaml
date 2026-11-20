@@ -14,7 +14,7 @@ components:
     version_policy: Immutable GHCR digest pin. GitHub release tags are candidates only; correlate each release with the published image digest before an upgrade.
     compatibility: {status: unknown, evidence: TRN-322}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-20, outcome: image-and-schema-verified-runtime-unverified, next_review: 2026-12-20, evidence: TRN-322}
-    notes: Stable KiroCrew v0.13.0 index verified for Linux amd64 and arm64. Live integration pending.
+    notes: Stable KiroCrew v0.13.0 index verified for Linux amd64 and arm64. Live Codex E2E passed on Corsair and Carrier. Operator verified Kiro and Claude on Corsair.
   - id: kiro-cli
     name: Kiro CLI bundled in KiroCrew
     category: derived component
@@ -336,9 +336,9 @@ components:
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-08.md}
   - id: cryptography-base
     name: cryptography (base admission image)
-    category: Python runtime dependency
-    declarations: [{kind: pip_install, path: crews/_base/admission/Containerfile, package: cryptography}]
-    source: {type: pypi, package: cryptography}
-    version_policy: Exact pin; deterministic base-image runtime dependency.
+    category: derived component
+    declarations: [{kind: derived, path: crews/_base/admission/Containerfile, parents: [kirocrew-image]}]
+    source: {type: derived, parent: kirocrew-image}
+    version_policy: Inherited from the pinned KiroCrew image for Admiral signature verification.
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-08.md}

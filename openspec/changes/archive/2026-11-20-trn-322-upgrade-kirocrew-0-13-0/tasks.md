@@ -2,7 +2,7 @@
 
 ## 1. Review the release and verify the image
 
-- [ ] 1.1 Review the KiroCrew `v0.13.0` stable changelog and the 2026-11-17 discovery report for changes affecting Ghostship's gateway, Kiro CLI, credential injection, spawn bodies, Bot and member slots, policy or image assumptions. Record each relevant finding and each no-impact conclusion on the TRN-322 Plane ticket (task 4.2). Verify that the harness-inheritance, `silent`, member-slot and Identity Center profile-lookup changes are each covered.
+- [x] 1.1 Review the KiroCrew `v0.13.0` stable changelog and the 2026-11-17 discovery report for changes affecting Ghostship's gateway, Kiro CLI, credential injection, spawn bodies, Bot and member slots, policy or image assumptions. Record each relevant finding and each no-impact conclusion on the TRN-322 Plane ticket (task 4.2). Verify that the harness-inheritance, `silent`, member-slot and Identity Center profile-lookup changes are each covered.
 - [x] 1.2 Resolve `ghcr.io/kirodotdev/kirocrew:0.13.0` with `podman manifest inspect` or the GHCR registry API. Record the stable index digest and verify Linux amd64 and arm64 manifests before changing any pin. Record both platform digests.
 - [x] 1.3 Pull the stable `0.13.0` image and run a throwaway container from it (not a crew) to record the `dev.kirocrew.kiro-cli.version` label, the `/usr/local/share/kirocrew/kiro-cli-version` marker, and the initialised kiro-cli `migrations` count and maximum version, plus `sqlite_master` table and index definitions. Diff them against `crews/_base/graduation/seed_kiro_db.py` and save the evidence. Verify the evidence states unchanged or lists every difference.
 
@@ -20,7 +20,7 @@
 ## 4. Refresh dependency and operator records
 
 - [x] 4.1 Update `dependencies.yaml` with the stable `0.13.0` pin and a concise compatibility summary.
-- [ ] 4.2 Record on the TRN-322 Plane ticket the release review (1.1), digest and platforms (1.2), Kiro CLI version and migration comparison (1.3), the backend-pin decision, and the compatibility outcome once group 5 has run. Link to supporting evidence in Plane and keep detailed review notes there.
+- [x] 4.2 Record on the TRN-322 Plane ticket the release review (1.1), digest and platforms (1.2), Kiro CLI version and migration comparison (1.3), the backend-pin decision, and the compatibility outcome once group 5 has run. Link to supporting evidence in Plane and keep detailed review notes there.
 - [x] 4.3 Update `docs/configuration.md` (`KC_BASE_IMAGE` default) and `docs/architecture.md` (crew image version). Add a KiroCrew 0.13 upgrade entry to `CHANGELOG.md` covering the new pin, the backend field and the need to recreate crews to adopt the image. Verify no active documentation still names v0.12.2 as the current pin.
 
 ## 5. Build and validate the integration
