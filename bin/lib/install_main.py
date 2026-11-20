@@ -408,7 +408,7 @@ def main() -> None:
         host=host,
         portal_bind=portal_bind,
         ga_host_url=ga_host_url,
-        ga_max_crews=_g("GA_MAX_CREWS", "20"),
+        ga_max_crews=_g("GA_MAX_CREWS", "100"),
         ga_max_active_crews=_g("GA_MAX_ACTIVE_CREWS", "3"),
         ga_idle_timeout_secs=_g("GA_IDLE_TIMEOUT_SECS", "300"),
         ga_subagent_timeout_secs=_g("GA_SUBAGENT_TIMEOUT_SECS", "3600"),

@@ -51,7 +51,7 @@ class ComposeConfig:
     ga_host_url: str = ""
 
     # Transport env vars
-    ga_max_crews: str = "20"
+    ga_max_crews: str = "100"
     ga_max_active_crews: str = "3"
     ga_idle_timeout_secs: str = "300"
     ga_subagent_timeout_secs: str = "3600"
@@ -332,7 +332,7 @@ def _config_from_env() -> ComposeConfig:
         host=host,
         portal_bind=portal_bind,
         ga_host_url=ga_host_url,
-        ga_max_crews=env.get("GA_MAX_CREWS", "20"),
+        ga_max_crews=env.get("GA_MAX_CREWS", "100"),
         ga_max_active_crews=env.get("GA_MAX_ACTIVE_CREWS", "3"),
         ga_idle_timeout_secs=env.get("GA_IDLE_TIMEOUT_SECS", "300"),
         ga_subagent_timeout_secs=env.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"),

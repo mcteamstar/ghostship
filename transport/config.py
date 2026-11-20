@@ -328,7 +328,7 @@ class Config:
     kc_base_image: str = "ghcr.io/kirodotdev/kirocrew@sha256:f4c6c72656e60ed21fd02a86d2b631735660d58d9d0806f7b464acbd3ccb9a26"
 
     # ── Crew lifecycle ───────────────────────────────────────────────────────
-    ga_max_crews: int = 20
+    ga_max_crews: int = 100
     ga_max_active_crews: int = 3
     ga_idle_timeout_secs: int = 300
 
@@ -540,7 +540,7 @@ class Config:
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
             kc_base_image=os.environ.get("KC_BASE_IMAGE", cls.kc_base_image),
-            ga_max_crews=_env_int("GA_MAX_CREWS", "20"),
+            ga_max_crews=_env_int("GA_MAX_CREWS", "100"),
             ga_max_active_crews=_env_int("GA_MAX_ACTIVE_CREWS", "3"),
             ga_idle_timeout_secs=_env_int("GA_IDLE_TIMEOUT_SECS", "300"),
             kc_model_default=os.environ.get("KC_MODEL_DEFAULT", ""),

@@ -7,7 +7,7 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ## Requirements
 
 ### Requirement: Crew creation via launch
-`launch` SHALL create an isolated crew with workspace/home volumes for a valid unique ID, resolve `comp` (legacy `composition` alias; `comp` wins conflicts with a warning; default `spec-ops`), store the image version, and enforce `GA_MAX_CREWS` across registered crews with distinct total/active-limit errors. Dashboard defaulting follows the explicit argument then `GA_DASHBOARD_DEFAULT`; enabled launches return a URL.
+`launch` SHALL create an isolated crew with workspace/home volumes for a valid unique ID, resolve `comp` (legacy `composition` alias; `comp` wins conflicts with a warning; default `spec-ops`), store the image version, and enforce `GA_MAX_CREWS` (default 100) across registered crews with distinct total/active-limit errors. Dashboard defaulting follows the explicit argument then `GA_DASHBOARD_DEFAULT`; enabled launches return a URL.
 
 #### Scenario: First launch for a new crew_id
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
