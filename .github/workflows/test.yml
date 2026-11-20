@@ -153,7 +153,23 @@ jobs:
       - name: Install Podman and smoke dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman podman-compose curl slirp4netns
+          sudo apt-get install -y podman podman-compose curl slirp4netns dbus-user-session
+
+      - name: Start the runner user bus for rootless networking
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          runner_uid="$(id -u)"
+          sudo systemctl start "user@${runner_uid}.service"
+          bus="/run/user/$runner_uid/bus"
+          for attempt in {1..30}; do
+            if [[ -S "$bus" ]] && DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" systemctl --user show-environment >/dev/null; then
+              echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$bus" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Runner systemd user bus did not become ready" >&2
+          exit 1
 
       - name: Install, start, probe, and clean up
         timeout-minutes: 15
