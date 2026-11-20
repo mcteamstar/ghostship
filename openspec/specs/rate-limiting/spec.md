@@ -62,14 +62,14 @@ WebSocket, lifespan) SHALL pass through unchanged.
 
 ### Requirement: Composite caller-identity key
 
-Middleware SHALL key callers by source IP without an API key, or `SHA-256(api_key)[:8]:<source_ip>` when present; raw keys SHALL NOT be stored. It SHALL use the first `X-Forwarded-For` address only for configured trusted peers, otherwise the ASGI peer; trusted CIDRs are parsed at startup.
+Rate limiting SHALL group unauthenticated requests by resolved source IP. Only an authenticated API key SHALL add its hash to the existing composite key. Raw keys SHALL NOT be stored. Trusted peers retain existing forwarded-address resolution; other peers use their ASGI address.
 
 #### Scenario: No API key uses an IP-only bucket
 - **WHEN** a request arrives without an Authorization header
 - **THEN** its limiter key is the resolved source IP alone
 
 #### Scenario: API key is hashed into the caller key
-- **WHEN** a request presents an API key, valid or not yet verified
+- **WHEN** a request presents the currently configured API key
 - **THEN** its limiter key uses SHA-256(api_key)[:8] and the resolved source IP without storing the raw key
 
 #### Scenario: Untrusted peer cannot spoof the source address
@@ -95,6 +95,19 @@ Middleware SHALL key callers by source IP without an API key, or `SHA-256(api_ke
 #### Scenario: Unset trusted-proxy configuration ignores forwarded headers
 - **WHEN** `GA_TRUSTED_PROXY_CIDR` is unset or empty and a request carries `X-Forwarded-For`
 - **THEN** the middleware uses the ASGI peer address
+
+### Requirement: Endpoint limiter state has a finite capacity
+
+Each endpoint limiter SHALL cap tracked keys and reclaim expired keys across callers while preserving atomic quota checks.
+
+#### Scenario: Limiter has no free bucket
+- **WHEN** a new key arrives at capacity after expiry reclamation
+- **THEN** it receives the existing HTTP 429 response and active buckets are preserved
+
+#### Scenario: Inactive bucket expires
+- **WHEN** a key has no hits left in its window
+- **THEN** its capacity is reclaimed without needing another request from that key
+
 ### Requirement: Per-endpoint default limits
 
 The transport SHALL limit `GET /login` to 30/60s, `POST /login` to 5/300s, `/files/*` to 60/60s, `/crews/{id}/api/*` to 120/60s, and `/mcp` to 300/60s. Each is independently overridable; `/crews/{id}/ui/*` is not limited.

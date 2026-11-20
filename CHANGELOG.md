@@ -2,6 +2,10 @@
 
 ## v0.13.1
 
+- Pace Captain dispatches to avoid overwhelming crew resources.
+- Confine crew uploads to their intended workspace and bound rate-limiter state.
+- Preserve accepted results when a batch dispatch is only partially completed.
+
 ## v0.13.0
 
 ### Dashboard and sign-in fixes

@@ -13,7 +13,7 @@ Rate limiting SHALL group unauthenticated requests by resolved source IP. Only a
 - **THEN** its limiter key is the resolved source IP alone
 
 #### Scenario: API key is hashed into the caller key
-- **WHEN** a request presents an API key, valid or not yet verified
+- **WHEN** a request presents the currently configured API key
 - **THEN** its limiter key uses SHA-256(api_key)[:8] and the resolved source IP without storing the raw key
 
 #### Scenario: Untrusted peer cannot spoof the source address
