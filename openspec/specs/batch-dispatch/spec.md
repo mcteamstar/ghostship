@@ -125,3 +125,18 @@ When `pickup` is called with `task_ids` and one or more of the listed IDs has no
 
 - **WHEN** `pickup` is called with `task_ids=["id1", "id2"]` and `id2` returns 404 from the gateway
 - **THEN** the response includes a normal result for `id1` and `{"task_id": "id2", "done": false, "lost": true, "error": "task not found in gateway"}` for `id2`, and the overall `done: false`
+
+### Requirement: Gateway refusal preserves accepted batch members
+
+Batch dispatch SHALL retain and persist prior accepted task IDs when a later spawn is refused by the gateway.
+
+#### Scenario: Gateway refuses a later spawn
+
+- **WHEN** one or more spawns succeed before a later gateway refusal
+- **THEN** dispatch returns a partial result with those task IDs and the sanitized failure
+- **AND** the registry retains those IDs for pickup without repeating the accepted spawns
+
+#### Scenario: Gateway refuses the first spawn
+
+- **WHEN** the gateway refuses the first spawn
+- **THEN** dispatch returns the existing failure response without claiming any accepted members
