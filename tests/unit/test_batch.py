@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 # ── ensure stubs installed ────────────────────────────────────────────────────
@@ -27,6 +28,9 @@ try:
 except ModuleNotFoundError:
     from transport import lifecycle as _lifecycle
 
+from transport import registry as _registry
+from transport import tools as _tools
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -40,6 +44,13 @@ def _fake_crew(crew_id: str = "test-crew") -> dict:
         "status": "running",
         "enrolled_agents": [],
     }
+
+
+def _gateway_refusal(status: int = 422, body: str = "spawn refused"):
+    response = SimpleNamespace(status_code=status, text=body)
+    return _lifecycle.httpx.HTTPStatusError(
+        f"HTTP {status}", request=None, response=response,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -125,6 +136,17 @@ class TestBatchDispatch(unittest.TestCase):
         )
         self.assertIn("tid-alpha", result["task_ids"])
         self.assertIn("tid-beta", result["task_ids"])
+
+    def test_d1_successful_full_batch_response_and_record(self):
+        """All-success response keeps both IDs and records a pending batch."""
+        result, wb, _ = self._dispatch(["task A", "task B"])
+
+        self.assertEqual(result["status"], "dispatched")
+        self.assertEqual(result["task_ids"], ["task-1", "task-2"])
+        self.assertNotIn("error", result)
+        wb.assert_called_once()
+        self.assertEqual(wb.call_args.kwargs["status"], "pending")
+        self.assertEqual(wb.call_args.args[2], result["task_ids"])
 
     def test_d1_write_batch_called_with_pending(self):
         """D1: _write_batch is called with status='pending' on full success."""
@@ -257,6 +279,87 @@ class TestBatchDispatch(unittest.TestCase):
             self.assertEqual(call_kwargs["status"], "partial")
         else:
             self.assertEqual(_args[3], "partial")
+
+    def test_gateway_refusal_before_acceptance_keeps_error_shape_and_redacts(self):
+        """A first-spawn refusal returns only a sanitized failure, with no batch."""
+        crew = _fake_crew()
+        crew["cookie"] = "crew-cookie-secret"
+        refusal = _gateway_refusal(
+            422,
+            "refused crew-cookie-secret mc_token_9777=port-secret gs_session=session-secret",
+        )
+        result, wb, _ = self._dispatch(
+            ["task A", "task B"],
+            require_crew_return=crew,
+            ensure_crew_return=crew,
+            crew_api_side_effect=[refusal],
+        )
+
+        self.assertEqual(set(result), {"error"})
+        self.assertIn("HTTP 422", result["error"])
+        self.assertIn("[redacted]", result["error"])
+        for secret in ("crew-cookie-secret", "port-secret", "session-secret"):
+            self.assertNotIn(secret, result["error"])
+        wb.assert_not_called()
+
+    def test_gateway_refusal_after_acceptance_persists_partial_ids(self):
+        """A later refusal finalizes accepted IDs with sanitized detail."""
+        refusal = _gateway_refusal(
+            422, "refused Authorization: Bearer bearer-secret gs_csrf=csrf-secret",
+        )
+        result, wb, _ = self._dispatch(
+            ["task A", "task B"],
+            crew_api_side_effect=[{"id": "accepted-id"}, refusal],
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["task_ids"], ["accepted-id"])
+        self.assertIn("HTTP 422", result["error"])
+        self.assertIn("[redacted]", result["error"])
+        self.assertNotIn("bearer-secret", result["error"])
+        self.assertNotIn("csrf-secret", result["error"])
+        wb.assert_called_once()
+        self.assertEqual(wb.call_args.args[2], ["accepted-id"])
+        self.assertEqual(wb.call_args.kwargs["status"], "partial")
+
+    def test_partial_batch_ids_are_found_by_pickup(self):
+        """The partial record remains discoverable when its IDs reach pickup."""
+        crew = _fake_crew()
+        backing = {"crews": {"test-crew": crew}}
+        refusal = _gateway_refusal(422, "later spawn refused")
+        api = MagicMock(side_effect=[{"id": "pickup-id"}, refusal])
+
+        with (
+            patch.object(_registry, "_load_registry", return_value=backing),
+            patch.object(_registry, "_save_registry"),
+            patch.object(_lifecycle, "_require_crew", return_value=crew),
+            patch.object(_lifecycle, "_ensure_crew_running", return_value=crew),
+            patch.object(_lifecycle, "_crew_api_with_recovery", api),
+            patch.object(_lifecycle, "_record_last_task_at"),
+        ):
+            dispatched = _lifecycle._dispatch_batch(
+                tasks=["task A", "task B"], agent="ghost", crew_id="test-crew", model=None,
+            )
+
+            self.assertEqual(dispatched["task_ids"], ["pickup-id"])
+            stored = backing["crews"]["test-crew"]["batches"]
+            self.assertEqual(stored[0]["task_ids"], ["pickup-id"])
+            self.assertEqual(stored[0]["status"], "partial")
+
+            with (
+                patch.object(_tools, "_require_crew", return_value=crew),
+                patch.object(_tools, "_ensure_crew_running", return_value=crew),
+                patch.object(_tools, "_get_podman", return_value=MagicMock()),
+                patch.object(_tools, "_to_crew", return_value=SimpleNamespace(container="gs-test-crew")),
+                patch.object(_tools, "_pickup_batch", return_value={"done": False}) as pickup,
+            ):
+                result = _tools.pickup(
+                    crew_id="test-crew", task_ids=dispatched["task_ids"], timeout_secs=0,
+                )
+
+        self.assertEqual(result, {"done": False})
+        self.assertEqual(pickup.call_args.args[2], ["pickup-id"])
+        self.assertEqual(pickup.call_args.kwargs["batch_id"], dispatched["batch_id"])
 
     # ── D3 — spawn returns no task id ──────────────────────────────────────
 

@@ -3037,6 +3037,15 @@ def _dispatch_batch(
             result = _crew_api_with_recovery(
                 crew, crew_id, "POST", "/api/spawn", json=body,
             )
+        except httpx.HTTPStatusError as e:
+            # A non-retryable gateway response (for example, a 4xx refusal)
+            # bypasses recovery as an HTTPStatusError. Convert it at the batch
+            # boundary so accepted members still reach the shared finalizer,
+            # and use the existing sanitizer before surfacing gateway detail.
+            dispatch_error = str(
+                _unresponsive_error(crew_id, "gateway refused batch spawn", crew, e)
+            )
+            break
         except (CrewUnresponsiveError, RuntimeError, ValueError) as e:
             dispatch_error = str(e)
             break
@@ -3072,6 +3081,11 @@ def _dispatch_batch(
             "created_at": created_at,
         }
         return response
+
+    if not task_ids:
+        # Nothing was accepted, so retain the existing simple failure shape
+        # and avoid persisting an empty batch record.
+        return {"error": dispatch_error}
 
     # Task 2.6: partial failure. Record what was started; surface the error.
     _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
