@@ -19,17 +19,7 @@ Truncation to any shorter length is not permitted.
 - **THEN** the transport returns 403 Forbidden
 
 ### Requirement: Operation-typed tokens
-Download tokens and upload tokens MUST be cryptographically non-interchangeable.
-The HMAC payload MUST include the operation type (`get` or `put`) as a prefix.
-A token issued for download MUST be rejected when presented for upload, and vice versa.
-
-The `force` flag SHALL be treated as part of the operation type for upload tokens: a token signed with `force=False` MUST NOT be accepted as authorisation for a pre-clone deletion, and a token signed with `force=True` MUST NOT be accepted for a non-destructive upload. The HMAC payload for `supply` presigned upload tokens SHALL include `force` in the sorted flags string alongside `bundle` and `unpack`. The payload format is:
-
-```
-{crew_id}:{path}:{expires}:POST::{flags}
-```
-
-where `flags` is the sorted, colon-joined set of active boolean options from `{bundle, force, unpack}`. `_sign_upload_url()` and the upload path of `_verify_file_token()` SHALL both include `force` in this flags string so their payloads remain identical.
+Download and upload tokens SHALL be non-interchangeable: the signed payload SHALL include the operation (`get` or `put`). Upload signatures SHALL include the sorted active `bundle`, `force`, and `unpack` flags; signer and verifier SHALL use the same payload. Operation or force mismatches SHALL be rejected.
 
 #### Scenario: Download token rejected on upload endpoint
 - **WHEN** a caller presents a valid evac (download) presigned URL to the supply (upload) endpoint
@@ -112,22 +102,7 @@ regardless of HMAC validity.
 
 ### Requirement: Valid presigned tokens bypass global Bearer auth at all layers
 
-A request to the file-transfer route (`/files/<crew_id>/...`) that carries a
-structurally valid `sig` and `expires` query parameter pair SHALL be forwarded
-to the presigned token verifier without any prior Bearer auth check. The token
-verifier is the sole auth gate for file-transfer requests. An otherwise-valid
-presigned URL SHALL NOT return HTTP 401 due to the absence of an
-`Authorization: Bearer` header.
-
-This applies to both download (GET) and upload (PUT/POST) requests. The
-existing `BearerAuthMiddleware._dispatch_file` path already bypasses Bearer
-auth for `/files/` routes; this requirement makes explicit that any additional
-auth layer (Caddy proxy, transport-secret middleware, or other middleware)
-MUST NOT apply a Bearer requirement to presigned file-transfer requests.
-
-The transport-secret header (`X-Transport-Token`) MAY still be required on
-proxied requests from Caddy to the transport backend, since this is an
-internal infrastructure credential — not a caller-facing Bearer token.
+File-transfer requests with structurally valid `sig` and `expires` parameters SHALL reach the token verifier before Bearer auth; that verifier is the caller-facing gate for GET and PUT/POST. Other middleware SHALL NOT require caller Bearer auth for presigned URLs. `X-Transport-Token` MAY still protect internal Caddy-to-transport requests.
 
 #### Scenario: Presigned download URL fetched without Authorization header
 - **WHEN** a valid, non-expired presigned download URL (from `evac`) is fetched
@@ -202,7 +177,7 @@ file-upload HTTP handlers) SHALL produce an audit event. The event SHALL record 
 - **THEN** an audit event with `action="verify_file_token"` and `outcome="expired"` is recorded
 
 ### Requirement: Gateway error response body is redacted before surfacing to callers
-Any transport function that surfaces an HTTP error response body from a crew gateway call to an MCP tool caller SHALL redact credential and session material from the body text. At minimum the following patterns SHALL be replaced with a `[redacted]` placeholder before the text reaches any log line or tool response: the crew's session cookie value, `mc_token_<port>=<value>` substrings, any `Authorization: Bearer <value>` substring, and cookie attribute values for `gs_session` and `gs_csrf`. Whitespace SHALL be collapsed and the body SHALL be truncated to a bounded maximum before emission.
+Before logging or returning a crew gateway error body, the transport SHALL redact session cookies, `mc_token_<port>`, `Authorization: Bearer` values, and `gs_session`/`gs_csrf` cookie values as `[redacted]`. It SHALL collapse whitespace and truncate the body to a bounded length.
 
 #### Scenario: Crew cookie is redacted from gateway error body
 - **WHEN** a crew gateway returns an HTTP error response whose body contains the crew's session cookie value

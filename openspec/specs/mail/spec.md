@@ -7,18 +7,7 @@ Let agents dispatched into the same crew hand off work and reply to each other a
 ## Requirements
 
 ### Requirement: Raven self-coordination dispatch-intent mail convention
-The system SHALL establish a Raven self-coordination mail convention whereby Raven writes a tokenized dispatch-intent to its own mailbox (`raven@localhost`) before each persona dispatch and records the gateway-assigned task ID immediately afterward, providing a durable coordination signal across check-ins.
-
-Each pre-spawn dispatch-intent message SHALL:
-- Be addressed `To: raven@localhost` (generic form, since all Raven check-ins share the persistent session's mailbox)
-- Use the subject format `dispatching <persona> <intent_id>`, where `<intent_id>` is a unique local token in the form `intent-<uuid>` generated before the spawn call; the gateway's real task ID is not known until the call returns
-- Be written BEFORE the `/api/spawn` call, so the mailbox records intent before the async spawn-list state can lag
-- Include `From: raven+<raven_task_id>@localhost` using the Raven check-in's own derived task ID
-- Correspond to a worker task description beginning with `SDD dispatch <change> <persona> <intent_id>`
-
-After a successful spawn, Raven SHALL write a confirmation message addressed to `raven@localhost` with subject `dispatching <persona> <spawn_task_id>`, where `<spawn_task_id>` is the ID returned by `/api/spawn`, and SHALL link the local intent token in the body. Raven SHALL not invent the gateway ID before the call.
-
-Subsequent Raven check-ins SHALL scan `raven@localhost` for pending and confirmed dispatch-intents when determining whether a persona is already in flight. A pending intent SHALL block through one full subsequent confirmation check; it becomes stale only when no task carries its token and no matching worker is in flight. A confirmed intent becomes stale when its task is shown as finished or absent from `spawn list`. A post-write election SHALL allow only the oldest pending marker for a persona to proceed when check-ins overlap.
+Before spawn, Raven SHALL send a self-addressed marker to `raven@localhost` with subject `dispatching <persona> intent-<uuid>`, and prefix the brief `SDD dispatch <change> <persona> <intent_id>`. On success, it SHALL confirm the gateway task ID and link the token. Check-ins SHALL scan markers: pending blocks one check and is stale only with no matching task or active worker; confirmed is stale when done or absent. An after-write election SHALL allow only the oldest pending marker per persona.
 
 #### Scenario: Raven writes a tokenized intent before spawning Ghost
 - **WHEN** Raven decides to dispatch Ghost for implementation and confirms all three layered signals are clear
@@ -45,7 +34,7 @@ Subsequent Raven check-ins SHALL scan `raven@localhost` for pending and confirme
 - **THEN** Raven treats that confirmed intent as stale/resolved and does not hold on its account — the persona may be dispatched again if orders require it
 
 ### Requirement: Transport-originated Captain mailbox
-The system SHALL recognise `captain@localhost` as a generic address (per the existing two-address-form requirement, "whichever instance is checking") for a crew's standing-orders check-in loop. Unlike every other persona mailbox, which only ever receives mail written by another dispatched persona already inside the crew, `captain@localhost` SHALL also accept mail written from outside the crew container by ghostship's own transport process, on the Admiral's behalf, via `captain(action="order", ...)`.
+The transport SHALL deliver standing orders from outside the crew to generic `captain@localhost` via `captain(action="order", ...)`. Raven SHALL use that mailbox for its check-in loop; other persona mailboxes receive in-crew correspondence.
 
 #### Scenario: Transport writes an Admiral's standing order
 - **WHEN** `captain(crew_id, action="order", message=<text>)` is called
@@ -56,9 +45,7 @@ The system SHALL recognise `captain@localhost` as a generic address (per the exi
 - **THEN** it uses the same generic-address mail-checking behavior every persona already uses for its own mailbox — no special-cased reading logic for this address
 
 ### Requirement: Transport-side mail writes use atomic Maildir delivery
-Unlike agent-composed messages, a message written from outside the crew by the transport SHALL be delivered via the local MTA (`maildeliver`) to ensure atomic write semantics. Each message is written to `new/` as a Maildir entry and atomically renamed — no file corruption under concurrent delivery.
-
-> **Note:** A prior version of this requirement mandated escaping `From ` lines to avoid mbox boundary corruption. This requirement is superseded by the Maildir delivery model introduced in TRN-1: Maildir stores each message as an independent file and does not parse `From ` as a message boundary.
+Transport-originated messages SHALL use the local MTA (`maildeliver`) for atomic Maildir delivery through `tmp/` to `new/`. Each Maildir message is an independent file; delivery does not parse `From ` lines as boundaries.
 
 #### Scenario: Transport delivers standing order atomically to captain mailbox
 - **WHEN** `captain(action="order", ...)` writes a standing order to the crew
@@ -87,9 +74,7 @@ The system SHALL check mail using a single pattern that recognises a message as 
 - **THEN** it does not treat that message as addressed to itself
 
 ### Requirement: Subject-first messaging convention
-The system SHALL establish a subject-first convention for all inter-agent mail: the subject line SHALL carry the complete message wherever possible. The body is reserved for genuinely long context that cannot fit in a subject — a full diff, a multi-step task list, a detailed error log. Status updates, handoff notifications, and requests SHALL go in the subject only, with an empty or minimal body.
-
-Correspondingly, when any agent reads a mailbox, it SHALL read subject lines first to assess what is present before deciding whether to open individual messages. A mailbox can be fully understood from its subject lines alone in the common case.
+Inter-agent subjects SHALL carry complete status, handoff, and request messages where possible; bodies are for longer context such as diffs, task lists, or detailed logs. Agents SHALL read subjects first and open bodies only when needed.
 
 #### Scenario: Simple handoff fits in a subject
 - **WHEN** Ghost finishes implementation and mails Banshee
@@ -104,12 +89,7 @@ Correspondingly, when any agent reads a mailbox, it SHALL read subject lines fir
 - **THEN** it reads subject lines from all 8 mailboxes (`/var/mail/ghost`, `/var/mail/spectre`, `/var/mail/banshee`, `/var/mail/wraith`, `/var/mail/reaper`, `/var/mail/raven`, `/var/mail/captain`, `/var/mail/admiral`) to build situational awareness, only opening message bodies when the subject alone is insufficient to understand what action is needed
 
 ### Requirement: `pickup` surfaces mail subjects for full situational awareness
-The system SHALL skim subject lines from relevant mailboxes on every `pickup` call and include them in the response. This gives the Admiral a mail picture without needing a separate dispatch.
-
-- When `pickup` is called with a `task_id`: skim the mailbox of the agent that ran that task, plus always `/var/mail/captain` and `/var/mail/admiral`.
-- When `pickup` is called without a `task_id` (crew-wide list): skim all persona mailboxes, plus `/var/mail/captain` and `/var/mail/admiral`.
-- Only subject lines are returned — bodies are not read by `pickup`.
-- Only unread messages contribute to counts and subject lists. Reading never modifies the mailbox files.
+Every `pickup` SHALL return unread subjects and counts only. A task-specific call reads that agent's, Captain's, and Admiral's mailboxes; a crew-wide call reads all persona, Captain, and Admiral mailboxes. Bodies are not read, and mailbox files are not modified.
 
 #### Scenario: pickup on a specific task returns agent, captain, and admiral subjects
 - **WHEN** `pickup` is called with a `task_id` for a Ghost task and all three mailboxes have unread mail
@@ -159,14 +139,7 @@ The system SHALL document and enforce (via STANDING_ORDERS and the mail skill) a
 - **THEN** it reads all persona mailboxes and the Admiral mailbox for situational awareness, without marking any messages as consumed — reading never modifies a mailbox file
 
 ### Requirement: Captain mailbox source convention
-The system SHALL distinguish standing orders from crew correspondence in `/var/mail/captain` by the `From:` header alone:
-
-- `From: admiral@localhost` — a standing order written by the transport on the Admiral's behalf via `captain(action="order", ...)`. This is the only authorised source of standing orders.
-- `From: <persona>@localhost` — crew correspondence: a status report, escalation, or question sent by a persona to the Captain. Not a standing order regardless of subject content.
-
-Any agent reading `/var/mail/captain` SHALL apply this distinction. A persona-originated message that resembles a standing order in subject or body does not become one — only `From: admiral@localhost` confers that status.
-
-The transport SHALL write standing orders with a meaningful subject derived from the order content (first line or truncation of the message), not the generic hardcoded string `"Standing order"`.
+Agents SHALL treat Captain mail as a standing order only when `From: admiral@localhost`; persona-originated messages are correspondence regardless of content. The transport SHALL derive each order's subject from its content rather than use the generic `Standing order` subject.
 
 #### Scenario: Admiral sends a standing order
 - **WHEN** `captain(action="order", message="implement SRV-68 per the tasks.md")` is called
@@ -275,17 +248,7 @@ standing order.
 
 ### Requirement: maildeliver confines delivery to known-persona mailboxes under /var/mail
 
-The local delivery boundary (`maildeliver`) SHALL validate the mailbox name derived from a recipient address and SHALL confine every delivery to a direct child directory of `/var/mail/`, before performing any filesystem operation (`mkdir`, write, or rename). A recipient whose derived mailbox name is not a safe, flat name SHALL be rejected with a non-zero exit status and a diagnostic on stderr, and no file SHALL be created anywhere.
-
-The derived mailbox name is the recipient local-part after stripping the `@domain` suffix and the `+extension` plus-address segment (the existing behavior). `maildeliver` SHALL additionally require that this derived name:
-
-- is non-empty;
-- matches the character class `^[a-z][a-z0-9_-]*$` — a lowercase letter followed by lowercase letters, digits, underscores, or hyphens only;
-- contains no path separator (`/`), no parent-directory segment (`..`), no leading `.`, and no NUL byte.
-
-As defense in depth, after constructing the target path `maildeliver` SHALL confirm the resulting mailbox directory is a direct child of `/var/mail/` (its parent resolves to `/var/mail`) and SHALL refuse delivery otherwise, so no interpolation can escape `/var/mail/` even if the name check is bypassed.
-
-This validation SHALL NOT alter delivery for any legitimate recipient: all known persona mailboxes — `ghost`, `spectre`, `banshee`, `wraith`, `reaper`, `raven`, `captain`, `admiral`, in both the generic (`<persona>@localhost`) and instance (`<persona>+<task_id>@localhost`) forms — SHALL continue to deliver atomically via the existing Maildir `tmp/` → `new/` rename.
+Before filesystem I/O, `maildeliver` SHALL strip the domain and plus extension from the recipient local-part and require a non-empty `^[a-z][a-z0-9_-]*$` mailbox name with no separator, `..`, leading dot, or NUL. It SHALL confirm the resolved target's parent is `/var/mail`; otherwise it SHALL reject with non-zero status and stderr without creating files. Valid generic and instance persona addresses retain atomic Maildir delivery.
 
 #### Scenario: Legitimate persona recipient delivers unchanged
 

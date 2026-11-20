@@ -8,28 +8,7 @@ Defines the two-network topology that isolates the portal tier from crew contain
 
 ### Requirement: Network model — portside and shared starboard
 
-The system SHALL provision two static Podman networks replacing `ga-net`:
-
-- `ga-portside` — used by `ga-portal`, `ga-transport`, and `ga-radar`. Crew, login, and worker containers SHALL NOT be attached to `ga-portside`.
-- `ga-starboard` — used by `ga-transport`, all `gs-*` crew containers, and ephemeral Kiro (`ga-login-*`), Claude (`ga-claude-login-*`), and Codex (`ga-codex-login-*`) login containers. `ga-portal` and `ga-radar` SHALL NOT be attached to `ga-starboard`; disposable workers use `netns: none`.
-
-`ga-transport` SHALL be attached to both `ga-portside` and `ga-starboard` at all times, bridging the portal and crew tiers. Both networks are static install-time networks and are not created or destroyed at crew launch or nuke time.
-
-The install process SHALL create both networks idempotently and declare them as external in Compose.
-
-Network assignments:
-
-| Container | Network(s) |
-|---|---|
-| `ga-portal` | `ga-portside` only |
-| `ga-radar` | `ga-portside` only |
-| `ga-transport` | `ga-portside` + `ga-starboard` |
-| `gs-{crew_id}` (crew) | `ga-starboard` only |
-| `ga-login-*` (Kiro), `ga-claude-login-*`, `ga-codex-login-*` (ephemeral) | `ga-starboard` only |
-| `gs-worker-{token}` (disposable) | none (`netns: none`) |
-
-
-The constants `GA_PORTSIDE_NETWORK = "ga-portside"` and `GA_STARBOARD_NETWORK = "ga-starboard"` SHALL be defined in `lifecycle.py` and imported by `server.py`. No dynamic per-crew network naming function is needed.
+The system SHALL replace `ga-net` with static `ga-portside` (portal/transport/Radar) and `ga-starboard` (transport/crews/logins). Portal/Radar SHALL NOT join starboard; crews/logins SHALL NOT join portside; workers use `netns: none`. Transport bridges both. Install SHALL create them idempotently as external networks. Define constants in `lifecycle.py`, import into `server.py`, and use no per-crew names.
 
 #### Scenario: Portal cannot reach crew containers directly
 - **WHEN** `ga-portal` attempts to connect to `gs-<crew_id>:5476` via DNS
@@ -73,27 +52,7 @@ The constants `GA_PORTSIDE_NETWORK = "ga-portside"` and `GA_STARBOARD_NETWORK = 
 
 ### Requirement: GA_TRANSPORT_SECRET internal token
 
-The system SHALL generate an internal secret `GA_TRANSPORT_SECRET` at install time. This token SHALL be the primary control preventing crew containers on `ga-starboard` from accessing `ga-transport` MCP and API routes.
-
-**Generation and storage:**
-- Generated at install time: `openssl rand -hex 32`
-- Written as Podman secret `ga-transport-secret`
-- Mounted into `ga-transport` at `/run/secrets/ga-transport-secret`
-- Injected into `ga-portal` as environment variable `GA_TRANSPORT_SECRET`
-- `GA_TRANSPORT_SECRET` generation SHALL be idempotent at re-install (skip if secret already exists)
-
-**Caddy config (`ga-portal`):**
-- SHALL add `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}` to ALL upstream requests to `ga-transport`, including MCP, files, dashboard, and health routes — every route without exception
-
-**Transport middleware:**
-- SHALL reject any request missing the `X-Transport-Token` header with HTTP 401 before `BearerAuthMiddleware` runs
-- SHALL load the secret at startup via `_load_transport_secret()` — same pattern as `_load_api_key()`: reads from `/run/secrets/ga-transport-secret`, raises `RuntimeError` with a safe message if absent
-- SHALL register the secret value with the log redaction filter so it never appears in logs
-- `transport/config.py` SHALL gain a `ga_transport_secret` field populated by `_load_transport_secret()`
-
-**Crew containers on `ga-starboard` SHALL NOT receive `GA_TRANSPORT_SECRET` in any form** — neither as an environment variable, a mounted secret, nor via any other mechanism.
-
-**GA_API_KEY** remains optional and is a separate concern — external client auth at the Caddy edge only. This requirement does not alter `GA_API_KEY` behaviour.
+Install SHALL generate a 32-byte hex `GA_TRANSPORT_SECRET` as idempotent Podman secret `ga-transport-secret`, mounted in transport and passed to portal. Caddy SHALL inject it as `X-Transport-Token` on every upstream request to transport. Middleware SHALL load it at startup, fail safely if absent, populate `transport/config.py`, redact it from logs, and reject missing tokens with 401 before Bearer auth. Crew containers SHALL never receive it. `GA_API_KEY` remains optional client auth at Caddy.
 
 #### Scenario: Request with correct portal token reaches transport
 
@@ -122,11 +81,7 @@ The system SHALL generate an internal secret `GA_TRANSPORT_SECRET` at install ti
 
 ### Requirement: install.sh provisions portside and starboard
 
-`install.sh` SHALL create both `ga-portside` and `ga-starboard` (each idempotent). `compose.yml` SHALL declare both as external. `ga-portal` is assigned to `ga-portside`; `ga-transport` is assigned to both `ga-portside` and `ga-starboard`. Per-crew or per-login networks are NOT created by `install.sh` and are NOT in `compose.yml`.
-
-`install.sh` SHALL generate `GA_TRANSPORT_SECRET` and write it as the `ga-transport-secret` Podman secret. This step SHALL be idempotent — if the secret already exists with the correct name, do not regenerate it.
-
-`install.sh` SHALL also include a best-effort `ga-net` cleanup step: if `ga-net` exists and has no containers, remove it silently; skip if it has containers.
+`install.sh` SHALL create both networks idempotently and Compose SHALL declare them external; portal uses portside and transport both. Install SHALL create the secret only when absent and SHALL NOT create crew/login networks. It SHALL silently remove empty `ga-net` but keep it when containers remain.
 
 #### Scenario: Fresh install creates both networks
 

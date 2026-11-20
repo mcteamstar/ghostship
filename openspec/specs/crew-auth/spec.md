@@ -34,13 +34,7 @@ The system SHALL read the saved `ga-kiro-auth` file and inject its rows into eve
 
 ### Requirement: Crew secrets not persisted in plaintext after injection
 
-After the transport successfully injects the admiral public key and `policy_signing_key` into a
-crew container, the registry entry written to `crews.json` SHALL NOT contain the plaintext
-values of those secrets. Instead, the registry SHALL store a non-reversible identifier
-derived from each secret sufficient for log correlation but useless for replay. The admiral
-Ed25519 private key SHALL be stored in `DATA_DIR/secrets/<crew_id>.admiral_secret` only;
-it SHALL NOT appear in `crews.json` in any form. The public key MAY be stored in the
-registry for reference, but this is not required.
+After injection, `crews.json` SHALL store only non-reversible identifiers for the Admiral public key and `policy_signing_key`, never their plaintext. The private key SHALL exist only at `DATA_DIR/secrets/<crew_id>.admiral_secret`; the public key MAY be retained for reference.
 
 #### Scenario: crews.json entry does not contain plaintext admiral_secret after launch
 
@@ -65,32 +59,9 @@ registry for reference, but this is not required.
 - **WHEN** the transport injects the admiral public key and policy signing key
 - **THEN** both files inside the crew container are correctly written with the real values,
   confirming that hygiene of `crews.json` does not break the injection path
+### Requirement: Admiral signing keys are isolated
 
-### Requirement: Admiral mail signed with Ed25519 asymmetric keypair
-
-The transport SHALL generate an Ed25519 keypair at crew launch time, before the crew
-container is created. The private key SHALL be stored in
-`DATA_DIR/secrets/<crew_id>.admiral_secret` (mode 0600) and SHALL never be injected into
-the crew container. The public key SHALL be delivered to the crew container as a Podman
-secret, mounted read-only at `/run/secrets/.admiral_public_key` (owned by root, mode 0444).
-The mount target SHALL NOT sit inside the home volume or the workspace volume.
-It SHALL NOT be written via a container-exec script.
-
-The `captain.py` signing path (`_format_captain_mail`) SHALL use the Ed25519 private key
-to produce a detached signature over the canonical length-prefixed payload defined in
-`admiral-sig/payload-format`. The old string-interpolation payload
-(`Subject:<s>\nFrom:<f>\n\n<body>`) SHALL NOT be used. The `hmac` signing path SHALL be
-removed.
-
-Before constructing the signing payload, the signer SHALL validate that the Subject and
-From header values contain no newline characters (`\n` or `\r`); if either does, it SHALL
-raise `ValueError` without producing a signature.
-
-The `verify-admiral-sig` script SHALL verify the `X-Admiral-Sig` header using the Ed25519
-public key read from `.admiral_public_key`, constructing the payload using the same
-canonical length-prefixed encoding. It SHALL NOT read `.admiral_secret`. The exit code
-contract (0 = valid, 1 = mismatch or invalid message structure, 2 = key not found) is
-unchanged.
+The transport SHALL generate an Ed25519 keypair before crew creation, keep the private key only at `DATA_DIR/secrets/<crew_id>.admiral_secret` with mode 0600, and never inject it. The public key SHALL be a root-owned, read-only Podman secret at `/run/secrets/.admiral_public_key` (mode 0444), outside home/workspace volumes and not written by container exec.
 
 #### Scenario: Transport generates Ed25519 keypair at launch
 
@@ -99,11 +70,36 @@ unchanged.
   is stored outside the container and the public key is injected as a read-only secret
   inside the container
 
+#### Scenario: Compromised agent cannot forge Admiral mail by reading the public key
+
+- **WHEN** an agent process running as `kirocrew` reads `.admiral_public_key`
+- **THEN** it cannot derive the private key from the public key and therefore cannot
+  produce a valid `X-Admiral-Sig` for a forged message
+
+#### Scenario: Compromised agent cannot forge Admiral mail by substituting the public key
+
+- **WHEN** an agent process running as `kirocrew` attempts to overwrite `.admiral_public_key`
+  with a public key of its own choosing
+- **THEN** the write fails, because `.admiral_public_key` is a read-only Podman secret mount
+  and the container lacks `CAP_SYS_ADMIN` to remount it read-write
+
+### Requirement: Admiral mail is signed with Ed25519
+
+`_format_captain_mail` SHALL sign the canonical length-prefixed payload with Ed25519, reject Subject or From values containing CR/LF before signing, and SHALL NOT use the old interpolation or HMAC path.
+
 #### Scenario: Admiral mail carries valid Ed25519 signature
 
 - **WHEN** `captain(action="order", ...)` delivers a standing order to a crew
 - **THEN** the mail includes an `X-Admiral-Sig` header containing a base64url-encoded
   Ed25519 signature over the canonical length-prefixed payload
+
+#### Scenario: Signer rejects newline header values
+- **WHEN** Subject or From contains a carriage return or newline
+- **THEN** `_format_captain_mail` raises `ValueError` before producing a signature
+
+### Requirement: Admiral signature verifier uses the public key only
+
+`verify-admiral-sig` SHALL verify `X-Admiral-Sig` with the public key and canonical payload, SHALL NOT read `.admiral_secret`, and SHALL return 0 for valid, 1 for invalid structure/signature, or 2 when the public key is absent.
 
 #### Scenario: verify-admiral-sig accepts genuine Admiral mail
 
@@ -121,20 +117,6 @@ unchanged.
 
 - **WHEN** `verify-admiral-sig` cannot find `.admiral_public_key` after retries
 - **THEN** it exits with code 2 (transient)
-
-#### Scenario: Compromised agent cannot forge Admiral mail by reading the public key
-
-- **WHEN** an agent process running as `kirocrew` reads `.admiral_public_key`
-- **THEN** it cannot derive the private key from the public key and therefore cannot
-  produce a valid `X-Admiral-Sig` for a forged message
-
-#### Scenario: Compromised agent cannot forge Admiral mail by substituting the public key
-
-- **WHEN** an agent process running as `kirocrew` attempts to overwrite `.admiral_public_key`
-  with a public key of its own choosing
-- **THEN** the write fails, because `.admiral_public_key` is a read-only Podman secret mount
-  and the container lacks `CAP_SYS_ADMIN` to remount it read-write
-
 ### Requirement: Kiro auth state transitions
 The transport SHALL track kiro auth as unauthenticated, pending or authenticated, from whether kiro holds an active credential. `POST /login/kiro/builder-id` or `POST /login/kiro/identity-center` moves to pending; `GET /login/kiro` completing moves to authenticated; `POST /login/kiro/api-key` moves to authenticated; `POST /logout/kiro` moves to unauthenticated from either state, cancelling any pending flow. The transport SHALL NOT make any other transition.
 

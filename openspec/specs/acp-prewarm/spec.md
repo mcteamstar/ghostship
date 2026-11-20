@@ -2,23 +2,13 @@
 
 ## Purpose
 
-TBD — describes the prewarm capability for ACP sessions. Update Purpose after archive.
+Keeps ACP crew sessions warm in the background so later operations can start faster without exposing a separate client-facing prewarm operation.
 
 ## Requirements
 
-### Requirement: Prewarm operation establishes a warm ACP session
+### Requirement: Prewarm remains an internal capability
 
-The transport SHALL maintain prewarm as an internal capability only. The `prewarm` MCP tool and the `POST /crews/{crew_id}/prewarm` REST endpoint SHALL be removed. No MCP client SHALL see a `prewarm` tool in the schema. The internal `_prewarm_crew` function SHALL remain the canonical entry point; all prewarm functionality SHALL be invoked either automatically at crew setup or implicitly by other tools.
-
-The prewarm operation SHALL be triggered implicitly as a background side-effect of `supply` (after issuing a presigned URL) and `schedule` (after creating a new job). These background warm-ups SHALL be non-blocking and non-fatal: any exception SHALL be logged at WARNING and SHALL NOT propagate to the calling tool.
-
-#### Scenario: Prewarm a stopped crew
-- **WHEN** `_prewarm_crew` is called for a registered crew whose container is stopped, and the memory and active-crew gates permit a start
-- **THEN** the transport starts the container, waits for the gateway to become ready, causes the session process to be forked with a completed ACP handshake, and returns a status indicating the crew is now warm
-
-#### Scenario: Prewarm returns without blocking on real work
-- **WHEN** a background prewarm is triggered by `supply` or `schedule`
-- **THEN** the calling tool returns before the prewarm completes, and no `dispatch` of real agent work is issued as part of the warm-up
+The transport SHALL keep `_prewarm_crew` as the canonical prewarm entry point and SHALL NOT expose prewarming as an MCP tool or REST route.
 
 #### Scenario: Prewarm is not exposed as an MCP tool
 - **WHEN** an MCP client lists available tools
@@ -32,6 +22,18 @@ The prewarm operation SHALL be triggered implicitly as a background side-effect 
 - **WHEN** `POST /crews/{crew_id}/prewarm` is called without a valid `GA_API_KEY`
 - **THEN** the request reaches the generic 404 handler; no authentication check for this route is performed
 
+### Requirement: Background prewarm warms crew sessions
+
+Crew setup SHALL invoke `_prewarm_crew` automatically. Successful `supply` calls after presigned-URL issuance and `schedule` calls after new job creation SHALL start non-blocking background prewarms; failures SHALL be logged at WARNING without failing the caller.
+
+#### Scenario: Prewarm a stopped crew
+- **WHEN** `_prewarm_crew` is called for a registered crew whose container is stopped, and the memory and active-crew gates permit a start
+- **THEN** the transport starts the container, waits for the gateway to become ready, causes the session process to be forked with a completed ACP handshake, and returns a status indicating the crew is now warm
+
+#### Scenario: Prewarm returns without blocking on real work
+- **WHEN** a background prewarm is triggered by `supply` or `schedule`
+- **THEN** the calling tool returns before the prewarm completes, and no `dispatch` of real agent work is issued as part of the warm-up
+
 #### Scenario: Prewarm is triggered implicitly by supply
 - **WHEN** `supply` successfully issues a presigned URL for a crew
 - **THEN** a background warm-up is started for that crew
@@ -43,3 +45,7 @@ The prewarm operation SHALL be triggered implicitly as a background side-effect 
 #### Scenario: Prewarm background failure does not fail the caller
 - **WHEN** the background warm-up triggered by `supply` or `schedule` raises an exception
 - **THEN** the exception is logged at WARNING level and the response from `supply` or `schedule` is unaffected
+
+#### Scenario: Crew setup invokes prewarm
+- **WHEN** crew setup reaches its automatic warm-up step
+- **THEN** the transport invokes the internal `_prewarm_crew` operation without requiring a client call

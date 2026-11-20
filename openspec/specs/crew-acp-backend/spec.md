@@ -78,11 +78,7 @@ The `crews()` MCP tool response SHALL include the `acp_backend` value for each c
 
 ### Requirement: Claude backend external network requirement
 
-When `GA_CREW_ACP_BACKEND=claude`, crew containers require outbound HTTPS access to the Anthropic API endpoint. By default this is `api.anthropic.com`. When `ANTHROPIC_BASE_URL` is set, the transport SHALL inject it as `ANTHROPIC_BASE_URL` into Claude-backend crew containers, allowing traffic to be directed to an Anthropic-compatible endpoint (e.g. a local model router or proxy).
-
-The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=claude` SHALL name the effective endpoint: `api.anthropic.com` when `ANTHROPIC_BASE_URL` is unset, or the configured URL when it is set.
-
-`ANTHROPIC_BASE_URL` has no effect when `GA_CREW_ACP_BACKEND != "claude"`.
+When `GA_CREW_ACP_BACKEND=claude`, crew containers SHALL use outbound HTTPS to `api.anthropic.com` by default. If `ANTHROPIC_BASE_URL` is set, the transport SHALL inject and log that endpoint; it SHALL have no effect on other backends.
 
 #### Scenario: Base URL unset — default Anthropic endpoint used
 - **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ANTHROPIC_BASE_URL` is unset
@@ -101,11 +97,7 @@ The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=claude`
 
 ### Requirement: Codex backend external network requirement
 
-When `GA_CREW_ACP_BACKEND=codex`, crew containers require outbound HTTPS access to the OpenAI API endpoint. By default this is `api.openai.com`. When `OPENAI_BASE_URL` is set, the transport SHALL inject it as `OPENAI_BASE_URL` into Codex-backend crew containers, allowing traffic to be directed to an OpenAI-compatible endpoint (e.g. a local model router or proxy).
-
-The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=codex` SHALL name the effective endpoint: `api.openai.com` when `OPENAI_BASE_URL` is unset, or the configured URL when it is set.
-
-`OPENAI_BASE_URL` has no effect when `GA_CREW_ACP_BACKEND != "codex"`.
+When `GA_CREW_ACP_BACKEND=codex`, crew containers SHALL use outbound HTTPS to `api.openai.com` by default. If `OPENAI_BASE_URL` is set, the transport SHALL inject and log that endpoint; it SHALL have no effect on non-Codex crews.
 
 #### Scenario: Base URL unset — default OpenAI endpoint used
 - **WHEN** `GA_CREW_ACP_BACKEND=codex` and `OPENAI_BASE_URL` is unset

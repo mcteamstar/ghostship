@@ -7,7 +7,7 @@ Expose crew orchestration to any MCP client as a single streamable-HTTP server (
 ## Requirements
 
 ### Requirement: Streamable-HTTP MCP transport on a configurable port
-The system SHALL serve MCP over streamable HTTP on port `64057` inside the transport container, listening on the fixed in-container address `0.0.0.0` so that `ga-portal` can reach it over the internal Podman network. The transport's listen address SHALL NOT be read from `HOST`. Host-side exposure SHALL be determined solely by the address and port `ga-portal` publishes on (`HOST`, default `127.0.0.1`, and `PORT`, default `64057`). The transport container SHALL publish no host port. When `GA_API_KEY` is unset or empty, the transport SHALL preserve the existing trust model. When `GA_API_KEY` is non-empty, every HTTP request to the MCP listener SHALL include `Authorization: Bearer <GA_API_KEY>` and the transport SHALL reject missing, malformed, or incorrect credentials before MCP processing.
+The transport SHALL serve streamable HTTP MCP at `0.0.0.0:64057` without publishing a host port; `HOST`/`PORT` control only the portal's host binding. Empty `GA_API_KEY` preserves current trust; otherwise every MCP request SHALL pass Bearer validation before processing.
 
 #### Scenario: Default bind address for containerised install
 - **WHEN** the transport starts inside a container with `HOST` unset
@@ -54,15 +54,7 @@ The system SHALL expose a `transport://agents` MCP resource that lists every age
 
 ### Requirement: Order template resource
 
-The system SHALL expose the following MCP resources for standing-order template discovery and retrieval:
-
-**Summary index — `transport://orders`**
-The system SHALL expose a `transport://orders` MCP resource that returns a lightweight index of all available standing-order templates — built-in and user-defined. Each entry SHALL include only the template name and its one-line description. The full body of any template SHALL NOT be included in this response.
-
-**Per-template resource — `transport://orders/{name}`**
-The system SHALL expose a `transport://orders/{name}` MCP resource for each available template. When read, it SHALL return the template's complete resolved body exactly as `captain(action="order", template=<name>, ...)` would use it — with all placeholder substitutions applied and the front-matter description stripped from the body. If the requested template does not exist, the resource SHALL return an appropriate error or 404-equivalent response rather than an empty body.
-
-Both resources SHALL remain available without any running crew, since templates are static transport-side content.
+The MCP server SHALL expose `transport://orders` as a name and one-line-description index and `transport://orders/{name}` as the complete resolved template body used by `captain(action="order")`, with substitutions applied and front matter removed. Unknown names SHALL return an error; both resources SHALL work without a running crew.
 
 #### Scenario: Templates present
 - **WHEN** `transport://orders` is read and one or more templates are available
@@ -97,43 +89,7 @@ The system SHALL identify itself to MCP clients as `transport` (server name) whi
 
 ### Requirement: Tool descriptions reinforce workflow order and make tool relationships explicit
 
-The description text of the core lifecycle tools SHALL make the intended
-workflow sequence explicit and name the relationships between tools, so that an
-MCP client model selecting tools from the description alone sequences calls
-correctly without consulting `docs/`. The canonical sequence is
-**launch → supply → dispatch → pickup / steer → evac → nuke**, with `captain`
-as the autopilot alternative to the manual dispatch/pickup/steer relay.
-
-For the eight core tools, each description SHALL name its step in that sequence
-and its relationship to the adjacent tools:
-
-- **`launch`** — SHALL frame itself as step 1 (create a crew workspace) and
-  state that `supply` must precede any repo-touching dispatch.
-- **`supply`** — SHALL frame itself as step 2 (seed the workspace) and make the
-  guardrail explicit that dispatching into an unsupplied/empty crew is a real
-  failure mode.
-- **`dispatch`** — SHALL frame itself as step 3 (send a task to an agent
-  persona), state that the agent has zero context beyond the `task` string, and
-  name `pickup` as the next step.
-- **`pickup`** — SHALL frame itself as step 4 (check progress or collect the
-  result) and name its relationship to `steer`.
-- **`steer`** — SHALL frame itself as step 4b (redirect a running task or
-  continue a completed session) and state the running-vs-completed distinction
-  up front.
-- **`evac`** — SHALL frame itself as step 5 (extract results, diffs, or a git
-  bundle) and note that it pairs with `supply` as the file-exchange protocol.
-- **`nuke`** — SHALL frame itself as step 6 (destroy the crew and both volumes)
-  and state that `evac` must come first because the teardown is irreversible.
-- **`captain`** — SHALL frame itself as the autopilot path (hand the full SDD
-  cycle to a recurring Raven check-in) and name its relationship to the manual
-  dispatch/pickup/steer relay.
-
-The server-level `description=` field SHALL name the workflow sequence
-explicitly rather than listing tools without order.
-
-These are content requirements on description text only. No tool signature,
-runtime behavior, tool grouping, or the tool-discovery ordering required by
-"Tool surface covers the full crew lifecycle" is changed.
+Tool descriptions SHALL teach `launch → supply → dispatch → pickup/steer → evac → nuke`: supply before repo work, empty-workspace risk, task-string context, steer's running/completed distinction, evac/supply pairing, and nuke's irreversibility after evac. `captain` is the Raven autopilot alternative. The server description SHALL name the sequence; signatures, runtime, grouping, and discovery order are unchanged.
 
 #### Scenario: A core tool description names its workflow step
 
@@ -173,9 +129,7 @@ runtime behavior, tool grouping, or the tool-discovery ordering required by
   unchanged
 
 ### Requirement: Tool surface covers the full crew lifecycle
-The system SHALL expose exactly these tools to MCP clients, grouped and ordered by what they operate on — workspace tools first (`crews`, `launch`, `supply`, `evac`, `nuke`), then agent tools (`captain`, `dispatch`, `schedule`, `steer`, `pickup`, `bridge`) — covering creation, file exchange, teardown, autonomous and manual task orchestration, and blocking task waits.
-
-The transport SHALL also expose `GET /openapi.json` as part of its public HTTP surface. This route is listed in the transport spec (`trn-openapi-schema`) and is not a new MCP tool, but its existence is part of the transport's documented public surface.
+MCP SHALL expose workspace tools in order (`crews`, `launch`, `supply`, `evac`, `nuke`), then agent tools (`captain`, `dispatch`, `schedule`, `steer`, `pickup`, `bridge`). The public HTTP surface SHALL also include `GET /openapi.json`; it is not an MCP tool.
 
 #### Scenario: Tool discovery
 - **WHEN** an MCP client lists tools on the `ghostship` connection
@@ -277,22 +231,7 @@ base URL for all externally-reachable endpoints. Presigned file URLs
 - **THEN** the returned URL uses `GA_HOST_URL` as its base (e.g. `https://my-host.example.com/files/...`)
 
 ### Requirement: crews() response shape
-The `crews()` MCP tool SHALL return a JSON object with a top-level `crews` array. Each crew entry SHALL include:
-- `crew_id` (string)
-- `container` (string)
-- `status` (string: `"running"` | `"stopped"`)
-- `comp` (string) — the canonical crew comp name
-- `composition` (string) — a same-value compatibility alias during the rollback window
-- `created_at` (ISO 8601 string)
-- `last_task_at` (ISO 8601 string | null)
-- `uptime_secs` (integer | null) — present for running crews and absent or null for stopped crews
-- `gateway_healthy` (boolean)
-- `crew_image_version` (string)
-- `dashboard_url` (string | null)
-- `policy_version` (integer)
-- `agents` (array) — one entry per tracked crew task, each containing `task_id` (string), `agent` (string), `done` (boolean), and `elapsed_secs` (number)
-
-The `agents` entries SHALL NOT include `last_tool`. The top-level response SHALL also include `host_memory_available_gb`, `active_crews`, and `max_active_crews`. When persisted data has only `composition`, the response SHALL resolve `comp` from that value. When persisted `comp` and `composition` differ, `comp` SHALL be authoritative, the mismatch SHALL be logged, and the response SHALL emit both fields with the authoritative value.
+`crews()` SHALL return a top-level `crews` array with each crew's ID, container, status, canonical `comp` and compatibility `composition`, timestamps, uptime, health, image version, dashboard URL, policy version, and tracked agents (`task_id`, `agent`, `done`, `elapsed_secs`; never `last_tool`). Include host memory and active/max counts at top level. Legacy `composition` supplies missing `comp`; on mismatch, `comp` wins and the mismatch is logged.
 
 #### Scenario: crews() omits last_tool from agent entries
 - **WHEN** `crews()` is called and one or more agents are listed for a crew

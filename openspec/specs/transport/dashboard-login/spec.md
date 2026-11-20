@@ -9,21 +9,7 @@ Ghostship's visual identity.
 ## Requirements
 
 ### Requirement: Dashboard login page renders HTML form
-The transport SHALL serve an HTML login page at `GET /dashboard/login` that:
-- Displays a centred card on a dark background (`#0f0f0f`)
-- Uses Ghostship purple (`#7c3aed`) as the primary action colour, with a
-  darker hover state (`#6d28d9`)
-- Displays the ghost emoji (👻) as a large, animated hero element above the
-  form title, with a continuous float animation (translate Y ±6px, 3s ease-in-out)
-- Renders the API key input as a password field with a show/hide toggle
-  (eye icon button) implemented in inline vanilla JS
-- Displays the card at 360px wide with adequate label and field spacing
-- Shows an inline shake animation on the error paragraph when a login attempt
-  fails, rather than a plain `display: block` reveal
-- Keeps all existing hidden fields (`next`, `csrf_token`), form structure, and
-  async fetch submit + redirect logic intact
-- Includes no external CSS or JS dependencies — all styles and scripts are
-  inline in the returned HTML string
+`GET /dashboard/login` SHALL serve standalone HTML with a centered 360px `#0f0f0f` card, `#7c3aed` action color and `#6d28d9` hover, and a floating ghost hero. The password field SHALL have an inline vanilla-JS visibility toggle; failed login SHALL shake the error text. Preserve `next` and `csrf_token`, async submit and redirect, and use no external CSS or JavaScript.
 
 #### Scenario: Login page loads
 - **WHEN** a browser requests `GET /dashboard/login`

@@ -28,9 +28,8 @@ Auto-provisions TLS certificates via Caddy for every environment — local/priva
 - **THEN** Caddy serves plain HTTP only and no certificate provisioning occurs
 
 ### Requirement: Internal CA root certificate path is surfaced
-When `GA_PORTAL_TLS_MODE=internal`, the install output SHALL print the path to Caddy's root CA certificate and instruct the operator to trust it once (e.g. `caddy trust` or importing it into the OS/browser trust store). `ghostship status` SHALL also surface this path. The install script SHALL NOT modify the system trust store automatically.
 
-On macOS, the volume mountpoint returned by `podman volume inspect` is inside the Podman VM, so the certificate path printed by `ghostship status` and `install.sh` is not directly accessible on the host filesystem. When running on macOS, both outputs SHALL additionally print a `podman machine ssh` command that extracts the certificate from the VM and writes it to a host-accessible file, so the operator can import it into the macOS trust store without needing to know the VM path syntax.
+In internal TLS mode, install output and `ghostship status` SHALL print Caddy's root CA path and instruct one-time trust; the installer SHALL NOT modify the system trust store.
 
 #### Scenario: Install prints the CA path
 - **WHEN** `install.sh` completes with `GA_PORTAL_TLS_MODE=internal`
@@ -39,6 +38,10 @@ On macOS, the volume mountpoint returned by `podman volume inspect` is inside th
 #### Scenario: ghostship status reports the CA path
 - **WHEN** `ghostship status` runs with `GA_PORTAL_TLS_MODE=internal`
 - **THEN** its output includes the root CA certificate path
+
+### Requirement: macOS outputs include a host-accessible CA extraction command
+
+On macOS, install and status SHALL also print a `podman machine ssh` command that copies the CA from the VM to a host-accessible file.
 
 #### Scenario: macOS install prints host-extraction command
 - **WHEN** `install.sh` completes with `GA_PORTAL_TLS_MODE=internal` on macOS

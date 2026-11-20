@@ -11,19 +11,7 @@ agents authenticate on first launch without a silent schema mismatch.
 
 ### Requirement: Base-image pin tracks the target KiroCrew gateway version
 
-The crew-image build SHALL pin the base image to the KiroCrew gateway version the
-crew is intended to run, expressed as an immutable tag or digest, and the pin
-default SHALL be identical in the admission build definition and the shipped
-configuration default so that a build with no override matches an install build.
-The pin SHALL be KiroCrew v0.12.2, released 2026-11-12, at immutable multi-arch
-index digest
-`sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e`.
-The image contains Kiro CLI 2.27.1; this version SHALL be verified from the image
-rather than inferred from the gateway release number. The digest SHALL be
-recorded as the `KC_BASE_IMAGE` default in
-`crews/_base/admission/Containerfile`. The comment block above the ARG SHALL
-record the KiroCrew version, actual Kiro CLI version, digest, and verification
-date.
+The crew-image build SHALL pin KiroCrew v0.12.2 (released 2026-11-12) at immutable multi-arch digest `sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e`; admission and shipped defaults SHALL match. The bundled Kiro CLI SHALL be verified from the image as 2.27.1. The `KC_BASE_IMAGE` default in `crews/_base/admission/Containerfile` SHALL have a comment with both versions, digest, and verification date.
 
 #### Scenario: operator builds with the default base image
 
@@ -54,24 +42,9 @@ date.
   applied
 - **THEN** that build uses the explicit override
 - **AND** a build without an override continues to use the v0.12.2 default.
-
 ### Requirement: kiro-cli DB seed matches the base-image migration schema
 
-The build-time kiro-cli database seed SHALL pre-seed the migration rows and
-resulting SQLite schema used by the pinned image's active Kiro CLI chat runtime,
-so that at launch the crew only needs to insert authentication rows with no
-migration wait or restart cycle. The seed SHALL record, in a human-readable
-annotation, the gateway version and actual bundled Kiro CLI version it was
-verified against, the verification date, and the observed migration count and
-maximum version. The v0.12.2 image contains Kiro CLI 2.27.1 and the active chat
-runtime has 11 migration rows, versions 0 through 10 (maximum 10). Its schema
-includes `auth_kv` with `key TEXT PRIMARY KEY, value TEXT`, `state` with
-`value BLOB`, the `conversations` and `conversations_v2` tables and indexes, and
-the `extracted_kas_versions` and `pinned_bin_versions` tables. The seed SHALL
-match those migration rows and definitions; verification MAY inspect and query
-the image directly or inspect its published layers when direct execution is
-unavailable. A future base-image upgrade SHALL re-verify both migration rows and
-the resulting table/auth schema before release.
+The seed SHALL include the pinned image's 11 migration rows (versions 0 through 10, maximum 10) and schema: `auth_kv(key TEXT PRIMARY KEY, value TEXT)`, `state(value BLOB)`, `conversations`, `conversations_v2` and indexes, `extracted_kas_versions`, and `pinned_bin_versions`. A human-readable annotation SHALL record verified gateway/CLI versions, date, and migration count. Image upgrades SHALL reverify rows and schema; verification MAY inspect the image or its published layers.
 
 #### Scenario: seed verified and matching the base image
 
@@ -118,7 +91,6 @@ the resulting table/auth schema before release.
 - **THEN** the seed contains 11 migration rows for versions 0 through 10
 - **AND** its `state`, conversation, version, and authentication table
   definitions match the image schema.
-
 ### Requirement: OpenSpec Node runtime satisfies the gateway Node floor
 
 The spec-ops crew image SHALL install a Node runtime that meets or exceeds the Node

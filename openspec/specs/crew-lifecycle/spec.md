@@ -7,11 +7,7 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ## Requirements
 
 ### Requirement: Crew creation via launch
-The system SHALL create an isolated crew container with a dedicated workspace volume and a dedicated home volume when `launch` is called with a valid, unique `crew_id`. The container image and manifest path SHALL be resolved from the crew registry using the canonical `comp` argument. The legacy `composition` argument remains an accepted alias during the rollback window. If both arguments are present, `comp` SHALL be authoritative; when the values differ, the system SHALL use `comp` and log a warning naming both values. If only `composition` is present, its value SHALL be used. If neither is present, the existing `"spec-ops"` default SHALL be applied. At launch time, the system SHALL read the `org.ghostship.version` OCI label from the crew container and store it in the registry as `crew_image_version`. The `launch` tool SHALL refuse to create a new crew when the number of registered crews (running + stopped) is at or above `GA_MAX_CREWS` (default: 20). The error message SHALL distinguish between the total-registered limit and the active-running limit.
-
-`launch` gains a `dashboard` parameter (default `null`). When `dashboard=true`, `launch` allocates a port from the configured range, registers it with Portal, stores `dashboard_port` in the registry, and returns `dashboard_url` in the response. When `dashboard=false` or when `dashboard=null` (default) and `GA_DASHBOARD_DEFAULT` is unset or false, no port is allocated and `dashboard_url` is `null`.
-
-When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call behaves as if `dashboard=True` was passed unless the caller explicitly passes `dashboard=False`. The caller-supplied value always wins over the site default. The resolution rule is: `effective_dashboard = dashboard if dashboard is not None else GA_DASHBOARD_DEFAULT`.
+`launch` SHALL create an isolated crew with workspace/home volumes for a valid unique ID, using canonical `comp` (legacy `composition` alias; `comp` wins conflicts with a warning; default is `spec-ops`). It SHALL store the image's `org.ghostship.version`, and enforce `GA_MAX_CREWS` across registered crews with distinct total/active-limit errors. Dashboard allocation follows the explicit argument, then `GA_DASHBOARD_DEFAULT`; enabled launches store and return a port URL, otherwise URL is null.
 
 #### Scenario: First launch for a new crew_id
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
@@ -74,7 +70,7 @@ When `GA_DASHBOARD_DEFAULT=true`, every `launch()` call behaves as if `dashboard
 - **THEN** no dashboard is allocated and `dashboard_url` is null — existing default behaviour preserved
 
 ### Requirement: Crew teardown via nuke
-The system SHALL require explicit confirmation before tearing down a crew. Once confirmed, it SHALL attempt to remove the crew's container and both volumes and remove the crew from the registry after all cleanup attempts. When `GA_DASHBOARD_PORT_ENABLED=true` and the crew has a `dashboard_port` assigned, `nuke` SHALL stop the listener and release the port before removing the registry entry. The system SHALL NOT frame `nuke` as routine cleanup or a normal post-task step; its documentation and tooling aliases SHALL communicate that it is a destructive workspace teardown intended only when the operator wants to permanently discard the workspace. If any Podman resource cannot be removed, `nuke` SHALL return a cleanup-failure status and identify each resource whose cleanup failed; it SHALL NOT report an unqualified successful teardown.
+`nuke` SHALL require confirmation, attempt to remove the container and both volumes, and remove the registry entry after cleanup attempts. It SHALL stop any dashboard listener and release its port. Documentation SHALL describe it as destructive permanent teardown, not routine cleanup. Resource failures SHALL be identified and return a cleanup-failure status.
 
 #### Scenario: Nuke without confirmation
 - **WHEN** `nuke` is called for an existing `crew_id` without `confirm=True`
@@ -109,11 +105,7 @@ The system SHALL require explicit confirmation before tearing down a crew. Once 
 
 ### Requirement: REST API to retrofit or remove a dashboard
 
-`POST /crews/{crew_id}/dashboard` SHALL allocate a UI port and start a listener for an already-running crew (same behaviour as `launch(dashboard=True)`). Returns `{"dashboard_url": "..."}` on success, or a no-op returning the existing `dashboard_url` if the crew already has a dashboard active.
-
-`DELETE /crews/{crew_id}/dashboard` SHALL stop the listener and release the port for a running crew. Returns `{"dashboard_url": null}` on success, or a no-op returning `{"dashboard_url": null}` if no dashboard is active.
-
-Both endpoints respect `GA_API_KEY` auth and `GA_DASHBOARD_PORT_ENABLED`.
+`POST /crews/{crew_id}/dashboard` SHALL allocate a UI port and return its URL, idempotently reusing an active dashboard. `DELETE` SHALL stop the listener, release the port, and return null, including when already inactive. Both endpoints honor `GA_API_KEY` and `GA_DASHBOARD_PORT_ENABLED`.
 
 #### Scenario: POST /dashboard on a running crew
 - **WHEN** `POST /crews/my-crew/dashboard` is called for a crew without a `dashboard_port`
@@ -143,7 +135,7 @@ The `nuke` dry-run response (called without `confirm=True`) SHALL include the co
 - **THEN** the response includes `scheduled_jobs: 0` and `scheduled_job_names: []`
 
 ### Requirement: Confirmed nuke clears scheduled jobs before container teardown
-When `nuke(confirm=True)` is called, the system SHALL attempt to cancel all scheduled jobs from the transport registry by issuing a `DELETE /api/crons/<job_id>` request to the gateway for each job before tearing down the container or removing the registry entry. If the gateway is unreachable, individual cancellation failures SHALL be logged at `WARNING` level and SHALL NOT prevent the nuke from proceeding. The crew registry entry (including all schedule entries) SHALL be removed after teardown regardless of individual cancellation outcomes.
+Before teardown, confirmed nuke SHALL issue `DELETE /api/crons/<job_id>` for each registered schedule. Cancellation failures SHALL be logged at WARNING but SHALL NOT prevent teardown; remove the crew and all schedule entries afterward regardless.
 
 #### Scenario: Confirmed nuke with running container and active schedules
 - **WHEN** `nuke(confirm=True)` is called for a crew that is running and has two scheduled jobs in the transport registry
@@ -163,60 +155,16 @@ When `nuke(confirm=True)` is called, the system SHALL attempt to cancel all sche
 
 ### Requirement: Crew setup completion is all-or-nothing
 
-The system SHALL only mark a crew "running" after all required setup steps have
-succeeded, and SHALL clean up the crew if any required step fails. Auth injection
-SHALL be verified by exit code, not by pattern-matching the output string.
-
-The Admiral Ed25519 keypair is established **before** crew setup begins, as part
-of container creation rather than as a setup step: the transport generates the
-keypair, persists the private seed host-side, registers the public key as a
-Podman secret, and attaches that secret to the `container_create` spec. The
-public key is therefore present in the container from the moment it first
-starts, and no setup step injects it. See the `crew-auth` capability for the
-keypair requirements.
-
-The setup steps SHALL execute in dependency order:
-
-1. Wait for gateway (pre-restart)
-2. Inject kiro-cli auth (`_inject_auth`)
-3. Generate the `policy_signing_key` — before restart, so it is in place before
-   the security policy is injected
-4. Patch crew config (`_patch_crew_config`) — including the required `agent`
-   field sourced from `GA_CREW_AGENT` (default: `"kiro"`)
-5. Container restart (auth + config take effect)
-6. Wait for gateway (post-restart)
-7. Copy agents, skills, steering
-8. Seed OpenSpec store
-9. Inject security policy (depends only on `policy_signing_key`, not on the
-   gateway and not on the Admiral keypair)
-10. Wait for KiroCrew to seed built-in agent files (gateway-dependent)
-11. Patch model overrides — write `agents` directory files **before** calling
-    any gateway endpoint, because the agents directory is write-protected at
-    runtime in KiroCrew 0.5.0
-12. Mint session cookie
-13. Read version label, write registry entry
-
-The host-side write of the Admiral private seed SHALL use `os.fsync` before
-closing the file descriptor, so the seed is durable before any standing order
-can be signed against it. Durability is no longer about in-container
-readability: the private seed never enters the container.
-
-The `_patch_crew_config` call in step 4 (pre-restart) SHALL write the `agent`
-field into `config.local.json` so the gateway picks it up on first start. The
-field SHALL be sourced from the `GA_CREW_AGENT` transport environment variable
-(default: `"kiro"`).
-
-The `_copy_agents` call (step 7) — and any other setup step that writes agent
-JSON files into `KIRO_AGENTS_DIR` — SHALL occur **after** the post-restart
-gateway is ready and SHALL NOT be called after the gateway is already serving
-requests, because KiroCrew 0.5.0 makes the agents directory write-protected at
-runtime.
+The system SHALL mark a crew running only after required setup succeeds and SHALL clean up on any required-step failure. Auth injection is verified by exit code, not output text.
 
 #### Scenario: Successful setup
 
 - **WHEN** all setup steps succeed
 - **THEN** the crew is marked "running", and the Admiral public key has been
   present in the container since it first started
+
+### Requirement: Admiral signing key is ready before crew setup
+Before first startup, transport SHALL generate the Ed25519 keypair, persist and `fsync` the private seed host-side, and attach the public key as a Podman secret. Setup SHALL NOT inject the private key.
 
 #### Scenario: Admiral secret present before post-restart gateway
 
@@ -234,6 +182,9 @@ runtime.
 - **THEN** no `container_exec` call writes Admiral key material, and the private
   seed exists only host-side
 
+### Requirement: Setup failures prevent crew registration
+Required setup failures SHALL clean up the crew and SHALL NOT mark it running.
+
 #### Scenario: Cookie mint fails
 
 - **WHEN** every step up to and including cookie minting succeeds except
@@ -247,6 +198,9 @@ runtime.
 #### Scenario: Auth injection output is not used as a success signal
 - **WHEN** the auth injection command exits with a non-zero exit code but its output contains the word "injected"
 - **THEN** the system treats the injection as failed, not as successful
+
+### Requirement: Setup steps follow dependency order
+Setup SHALL follow: pre-restart gateway wait, auth, policy-key generation, config patch (`agent` from `GA_CREW_AGENT`, default `kiro`), restart, post-restart gateway wait, copy agents/skills/steering, seed OpenSpec, inject policy, wait for built-in agents, patch model files, mint cookie, then record image version and registry. Agent files SHALL be written after gateway readiness and before it serves requests because the runtime directory is read-only.
 
 #### Scenario: Agent files written before runtime write-protection
 - **WHEN** `_copy_agents` is called during crew setup
@@ -271,7 +225,7 @@ is still making progress.
 
 ### Requirement: Concurrent restart outcome reads are generation-stable
 
-The restart serialization mechanism uses a per-crew `threading.Event` to wake waiters after the leader records an outcome. The transport SHALL maintain a `_startup_generation: dict[str, int]` map (guarded by `_startup_events_lock`, with the same lifecycle as `_startup_events`) that records the current generation number for each crew. When a new leader is elected for `crew_id`, the generation counter for that crew SHALL be incremented (or initialized to 0 on first use). A waiter SHALL capture the generation before calling `event.wait()`. After `event.wait()` returns, the waiter SHALL re-read the generation under `_startup_events_lock`. If the generation has changed, a new restart cycle has started; the waiter SHALL NOT read `_crew_restart_outcomes` for the old cycle but instead SHALL treat the wait as a timeout (raise a RuntimeError indicating concurrent restart cycle confusion) or retry `_ensure_crew_running` from the top.
+The transport SHALL track per-crew `_startup_generation` under `_startup_events_lock`. A restart leader increments it; waiters capture it before waiting and re-read it afterward. If it changed, they SHALL NOT read the old outcome and SHALL retry `_ensure_crew_running` or report a timeout.
 
 #### Scenario: Two waiters, leader fails — both see the failure
 
@@ -294,34 +248,7 @@ The restart serialization mechanism uses a per-crew `threading.Event` to wake wa
 - **THEN** the waiter reads `success=True` from `_crew_restart_outcomes` and returns normally; the generation counter is incremented but does not change between the waiter's capture and its post-wait read
 
 ### Requirement: Headless crew config overrides
-overrides into each crew's `config.local.json` at launch, covering not just the
-`agent` section but also `stt`, `session`, `telemetry`, and top-level keys.
-
-The fixed overrides for all spec-ops crews are:
-
-| Config path | Value | Rationale |
-|---|---|---|
-| `stt.enabled` | `false` | No microphone in a headless server crew |
-| `session.eager_spawn` | `false` | No interactive user; spawn on first dispatch only |
-| `session.timeout_secs` | `300` | Reclaim session memory within 5 min of task completion |
-| `session.watchdog_rss_max_mb` | `2000` | Hard RSS ceiling per session; recycle if exceeded (above ~1.9 GB active task peak) |
-| `telemetry.beacon_enabled` | `false` | No outbound beacon on server deployment |
-| `auto_update` | `false` | Prevent version drift on a pinned container image |
-
-The `patch_crew_config.py` container script SHALL accept a full config override
-dict (not just agent-scoped keys) and deep-merge all top-level sections into
-`config.local.json`. This deep-merge capability is unchanged by this change; it already
-supports any future top-level section (including `knowledge`) should an operator opt in,
-with no patcher change required.
-
-Knowledge auto-ingest is **not** written into `full_overrides`. As of KiroCrew 0.9.0
-(PR #2448) knowledge auto-ingest is opt-in and already defaults off upstream. Verification
-against the pinned base image (`kiro_crew` 0.9.0rc4) established there is no single
-`knowledge.auto_ingest` boolean to pin — the toggles are separate fields
-(`auto_ingest_artifacts`, `auto_add_documents`), each defaulting to `false` — so pinning one
-would write an inert dead key. The disabled posture therefore relies on the verified
-upstream default (decision D1 = Option B), guarded by a CI regression test rather than a
-config pin. `full_overrides` SHALL NOT contain a `knowledge` section.
+At launch, transport SHALL deep-merge spec-ops overrides into `config.local.json` across agent, stt, session, telemetry, and top-level sections. Defaults disable STT, eager spawn, beacon telemetry, and auto-update; set session timeout to 300s and RSS cap to 2000MB. The patcher SHALL accept full-section overrides. It SHALL omit knowledge settings: KiroCrew 0.9.0 has separate opt-in ingest flags defaulting off, guarded by CI.
 
 #### Scenario: Fresh crew launch has headless overrides applied
 
@@ -533,26 +460,7 @@ The `crews` tool response SHALL include `created_at` (ISO 8601 UTC, from the exi
 
 ### Requirement: Pre-launch memory gate
 
-Before starting a stopped crew container, the transport SHALL check available
-memory and gate the launch on sufficient headroom. On Linux, the transport SHALL
-use the kernel's `MemAvailable` value from `/proc/meminfo`; on non-Linux hosts,
-it SHALL use the Podman info API's available-memory value.
-
-The gate is controlled by three environment variables:
-
-| Variable | Type | Default | Description |
-|:---------|:-----|:--------|:------------|
-| `GA_MIN_FREE_MEM_GB` | float | 2.0 | Minimum available memory (GB) required to proceed with launch |
-| `GA_MEMORY_WAIT_SECS` | int | 60 | Maximum seconds to wait for memory to become available |
-| `GA_SPAWN_MIN_MEMORY_GB` | float | 1.5 | Value patched into KiroCrew's `spawn_min_memory_gb` config |
-
-The system SHALL poll in 5-second increments until either sufficient memory is
-available or the timeout expires. If timeout expires, the system SHALL return a
-human-readable error message including the crew ID, current available memory, and
-required threshold — without crashing or triggering an OOM.
-If the Linux `MemAvailable` value cannot be read or parsed, the system SHALL fail
-closed and report that available memory could not be determined; it SHALL NOT
-substitute raw `MemFree` for admission.
+Before waking a stopped crew, transport SHALL require headroom from Linux `MemAvailable` or Podman info elsewhere. It polls every five seconds until `GA_MIN_FREE_MEM_GB` (2.0 default) is met or `GA_MEMORY_WAIT_SECS` (60 default) expires; timeout or unknown memory fails closed with crew, available, and required values. Patch `spawn_min_memory_gb` from `GA_SPAWN_MIN_MEMORY_GB` (1.5 default).
 
 #### Scenario: Linux admission uses MemAvailable
 - **WHEN** a stopped crew container is being restarted on Linux and `/proc/meminfo` reports `MemAvailable` above `GA_MIN_FREE_MEM_GB`
@@ -627,19 +535,7 @@ them into the crew's config, replacing the current hardcoded `0` values.
 
 ### Requirement: Crew configuration supports operator-tunable task timeout
 
-The transport SHALL apply operator-configured task timeout and turn limit
-overrides to each crew's local configuration at launch time. Both values SHALL
-be driven by environment variables with sensible defaults that allow long-running
-implementation tasks to complete without hitting the KiroCrew default ceiling.
-
-The following operator-level environment variables SHALL be supported:
-
-| Variable | Default | Description |
-|---|---|---|
-| `GA_SUBAGENT_TIMEOUT_SECS` | 3600 | Maximum wall-clock seconds per task (subagent_timeout_secs) |
-| `GA_SUBAGENT_MAX_TURNS` | 200 | Maximum turns per task (subagent_max_turns) |
-
-Both variables SHALL be documented in `docs/configuration.md`.
+At launch, transport SHALL write task timeout and turn limits from `GA_SUBAGENT_TIMEOUT_SECS` (default 3600) and `GA_SUBAGENT_MAX_TURNS` (default 200). `docs/configuration.md` SHALL document both settings.
 
 #### Scenario: Operator sets custom timeout
 
@@ -709,18 +605,7 @@ The system's documentation SHALL describe the threat model for the admiral secre
 - **THEN** they find an explanation of why the admiral secret must not be in a world-readable file, what the delivery mechanism protects against, and what it does not protect against
 
 ### Requirement: Configurable model default patch
-The `_patch_crew_config` function SHALL write `KC_MODEL_DEFAULT` (when set and non-empty) into the crew's `config.local.json` as the `default_model` field inside the `agent` config block. When `KC_MODEL_DEFAULT` is unset or empty, `_patch_crew_config` SHALL NOT write a `default_model` field, leaving KiroCrew's built-in default unchanged. The variable SHALL be documented in `docs/configuration.md`.
-
-The `_patch_crew_config` function SHALL also write the `agent` field into the
-`agent` config block, sourced from `GA_CREW_AGENT` (default: `"kiro"`). KiroCrew
-0.4.0 requires this field to be present in `config.local.json`; crew creation
-fails at the gateway with a 4xx if it is absent at the time the config is read.
-
-The effective model for any given agent is resolved in this precedence order (highest first):
-1. `KC_MODEL_OVERRIDE` — transport patches the per-agent `"model"` field directly in every agent JSON file; beats everything
-2. Per-agent `"model"` field in the agent JSON (e.g. `academy/agents/*.json`) — explicit per-agent pin
-3. `KC_MODEL_DEFAULT` — patched into `config.local.json` as `default_model`; applies when the per-agent field is absent or cleared
-4. KiroCrew built-in default — the hardcoded fallback inside KiroCrew when no other override is in effect
+`_patch_crew_config` SHALL set `agent.default_model` from non-empty `KC_MODEL_DEFAULT` (otherwise omit it) and set `agent` from `GA_CREW_AGENT` (default `kiro`). Document the default. Effective model precedence is `KC_MODEL_OVERRIDE`, per-agent model, `KC_MODEL_DEFAULT`, then KiroCrew's built-in default.
 
 #### Scenario: KC_MODEL_DEFAULT set
 - **WHEN** the transport is started with `KC_MODEL_DEFAULT=anthropic/claude-sonnet-4`
@@ -762,9 +647,7 @@ The transport SHALL use `ghcr.io/kirodotdev/kirocrew:0.6.0` as the default value
 
 ### Requirement: Crew config patches sandbox=off for Podman rootless compatibility
 
-The `_patch_crew_config` function SHALL write `"sandbox": "off"` into the `agent` block of `config.local.json`. This disables the KiroCrew inner namespace sandbox, which performs a `MS_REMOUNT|MS_BIND|MS_RDONLY` bind-mount to seal credential directories read-only and exits rc=1 (fail-closed) if that mount fails.
-
-In KiroCrew 0.5.0 this behaviour was introduced. In KiroCrew 0.6.0 the sandbox mode `"auto"` became the explicit gateway default (previously the default was named `"off"` on hosts that did not support namespaces, but is now `"auto"` on all capable hosts). Under Podman rootless the kernel denies the remount with EPERM because user namespaces inside rootless containers lack the required mount privilege; without this override every agent spawn fails with `AcpRuntimeDead rc=1`. The `"sandbox": "off"` value is a pre-existing KiroCrew config option — it short-circuits `detect_backend()` to return `"none"` before the mount is attempted. The Podman container itself remains the OS-level isolation boundary.
+`_patch_crew_config` SHALL set `agent.sandbox` to `off` to avoid unsupported inner namespace remounts under rootless Podman. The Podman container remains the OS isolation boundary.
 
 #### Scenario: Crew spawns succeed on Podman rootless
 - **WHEN** a crew is launched on a Podman rootless host (the standard ghostship deployment)
@@ -783,12 +666,7 @@ In KiroCrew 0.5.0 this behaviour was introduced. In KiroCrew 0.6.0 the sandbox m
 
 ### Requirement: subagent_max_turns ceiling documentation
 
-The `_patch_crew_config` function writes `GA_SUBAGENT_MAX_TURNS` (default 200) into `config.local.json` as `subagent_max_turns`. This value is subject to a KiroCrew-enforced ceiling:
-
-- KiroCrew 0.5.0: ceiling was 200
-- KiroCrew 0.6.0: ceiling raised to 1000
-
-The transport default of 200 is within the 0.6.0 ceiling. Operators who wish to allow longer-running tasks may set `GA_SUBAGENT_MAX_TURNS` up to 1000 without a KiroCrew validation error.
+The transport SHALL set `subagent_max_turns` from `GA_SUBAGENT_MAX_TURNS` (default 200). Documentation SHALL identify 1000 as the KiroCrew 0.6.0 ceiling and state that higher values may be clamped or rejected.
 
 #### Scenario: Default subagent_max_turns is within 0.6.0 ceiling
 - **WHEN** `GA_SUBAGENT_MAX_TURNS` is unset
@@ -804,7 +682,7 @@ The transport default of 200 is within the 0.6.0 ceiling. Operators who wish to 
 
 ### Requirement: Bounded in-process memory for task timestamp tracking
 
-The transport process SHALL evict completed-task timestamp entries from the in-process `_task_timestamps` store once an entry's `completed_at` timestamp is more than `_TASK_TIMESTAMP_TTL_SECS` (default 3600 seconds) in the past. Eviction SHALL be performed inside the `_task_timestamps_lock` section on each `_pickup_single` and `_pickup_list` call, after updating the timestamps for the current task. The eviction scan SHALL visit only completed entries (those with a non-null `completed_at`). The TTL SHOULD be configurable via an environment variable `GA_TASK_TIMESTAMP_TTL_SECS`.
+On each `_pickup_single` and `_pickup_list`, transport SHALL evict completed `_task_timestamps` entries older than `_TASK_TIMESTAMP_TTL_SECS` (default 3600s), under its lock after updating current timestamps. It SHALL scan only completed entries. `GA_TASK_TIMESTAMP_TTL_SECS` SHOULD configure the TTL.
 
 #### Scenario: Completed task entries are evicted after TTL
 
@@ -820,18 +698,7 @@ The transport process SHALL evict completed-task timestamp entries from the in-p
 
 ### Requirement: Active crew limit enforced before restart
 
-The transport SHALL enforce a separate limit on simultaneously running crew
-containers via `GA_MAX_ACTIVE_CREWS` (default: 3). Before starting a stopped
-crew container, `_ensure_crew_running` SHALL count the number of currently
-running containers by verifying actual Podman container state, not by reading
-registry `status` alone. Any registry entry whose `status` is `"running"` but
-whose Podman container is not actually running SHALL be excluded from the running
-count and SHALL have its registry `status` corrected to `"stopped"` as a side
-effect of the check.
-
-This limit protects host memory independently of the registered-crew count: an
-operator can keep many idle crews registered while preventing too many from
-running simultaneously.
+Before starting a stopped crew, `_ensure_crew_running` SHALL enforce `GA_MAX_ACTIVE_CREWS` (default 3) using actual Podman state. It SHALL exclude and correct stale registry entries marked running but not running in Podman. This memory limit is independent of the total registered-crew limit.
 
 #### Scenario: Active limit not reached
 - **WHEN** `_ensure_crew_running` is called for a stopped crew and fewer than
@@ -874,7 +741,7 @@ The system SHALL check for a valid auth file at the very start of `launch`, befo
 - **THEN** the auth gate passes, the registry placeholder is written, and launch proceeds normally
 
 ### Requirement: Crew auto-start serialised per crew
-The `_ensure_crew_running` function SHALL serialise the probe-then-start sequence on a per-crew asyncio lock so that at most one caller at a time executes the "is container running?" → `container_start` critical section for a given `crew_id`. Concurrent callers for the same crew SHALL wait on the lock and, once unblocked, verify the container is now running before returning; they SHALL NOT each independently issue a `container_start`. Concurrent callers for **different** crew IDs SHALL NOT be serialised against each other.
+`_ensure_crew_running` SHALL guard each crew's probe/start with a per-crew asyncio lock. Same-crew callers wait and recheck before returning, avoiding duplicate starts; different crews remain concurrent.
 
 #### Scenario: Concurrent auto-start calls for the same crew
 - **WHEN** two or more callers invoke `_ensure_crew_running` concurrently for the same `crew_id` while the crew container is stopped
@@ -890,14 +757,7 @@ The `_ensure_crew_running` function SHALL serialise the probe-then-start sequenc
 
 ### Requirement: crews() active_crews reflects actual Podman state
 
-The `crews()` tool SHALL compute `active_crews` by verifying actual Podman
-container state for every registry entry whose `status` is `"running"`. A crew
-SHALL be included in `active_crews` only if its container is confirmed running
-via `container_is_running`. A crew whose registry says `"running"` but whose
-container is not actually running SHALL be reported with `status: "stopped"` in
-the response and SHALL NOT be counted in `active_crews`. The registry entry for
-any such crew SHALL be corrected to `status: "stopped"` as a side effect of
-the `crews()` call.
+`crews()` SHALL count only registry-running crews confirmed running by Podman. It SHALL report stale entries as stopped and correct their registry status.
 
 #### Scenario: Registry-running crew whose container is actually running
 - **WHEN** `crews()` is called and a crew has `status: "running"` in the registry
@@ -947,19 +807,7 @@ After `container_start` returns and before proceeding with post-start setup (coo
 
 ### Requirement: Crew container environment includes KIROCREW_CREW_ID
 
-The crew container environment MUST include `KIROCREW_CREW_ID` set to the
-crew's identifier (the registry key and the suffix of the container name
-`gs-<crew_id>`).
-
-Rationale: crew-internal scripts — including the Raven self-cancel mechanism
-(`_RAVEN_SELF_CANCEL` in `transport/captain.py`) — use `$KIROCREW_CREW_ID` to
-construct transport URLs of the form
-`http://ga-transport:64057/crews/${crew_id}/captain/stop`. Without this var,
-the path segment is empty and the request returns 401 before reaching the
-endpoint's auth layer.
-
-`KIROCREW_CREW_ID` MUST be set in the same `container_env` dict as
-`KIROCREW_CORS_ORIGINS` in the `launch` code path (`transport/server.py`).
+The crew container environment MUST set `KIROCREW_CREW_ID` to its registry ID/container suffix, in the same `container_env` as `KIROCREW_CORS_ORIGINS`. Raven's internal stop URL construction depends on it.
 
 #### Scenario: Crew container receives KIROCREW_CREW_ID
 

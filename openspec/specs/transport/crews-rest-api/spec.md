@@ -85,15 +85,7 @@ The response shape SHALL be:
 
 ### Requirement: `GET /api/crews` includes captain schedule state per crew
 
-Each crew entry in the `GET /api/crews` response SHALL include a `captain` field
-reflecting the crew's captain schedule entry from the transport registry. When a
-captain schedule entry exists, the field SHALL be an object with `enabled`
-(boolean), `schedule` (human-readable string derived from `interval_secs` or
-`cron_expr`), and `current_task_id` (string or null). When no captain entry exists,
-`captain` SHALL be null.
-
-The captain state SHALL be read from the crew's registry entry directly (no gateway
-probe) so it is available for stopped crews without waking them.
+Each `GET /api/crews` item SHALL include `captain` as an object with `enabled`, human-readable `schedule`, and `current_task_id` when registered, otherwise null. The value SHALL come from the registry without a gateway probe so stopped crews stay stopped.
 
 #### Scenario: Crew with active captain returns captain object
 - **WHEN** `GET /api/crews` is called for a fleet containing a crew with a captain schedule
@@ -106,7 +98,6 @@ probe) so it is available for stopped crews without waking them.
 #### Scenario: Crew without captain returns null
 - **WHEN** `GET /api/crews` is called and a crew has no captain schedule entry
 - **THEN** that crew's entry includes `"captain": null`
-
 ### Requirement: `GET /api/crews` shares data assembly with the MCP `crews()` tool
 
 The data returned by `GET /api/crews` SHALL be assembled by the same code path as

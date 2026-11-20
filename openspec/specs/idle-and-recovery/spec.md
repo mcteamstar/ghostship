@@ -7,11 +7,8 @@ Free host resources by stopping idle crew containers automatically, restart them
 ## Requirements
 
 ### Requirement: Idle container stop
-The system SHALL stop a crew's container after it has had no active dispatched tasks, no running cron execution, and no cron execution since its last activity for `GA_IDLE_TIMEOUT_SECS`, and SHALL NOT stop a crew that has active work regardless of elapsed idle time. A crew that has just completed setup SHALL have its activity timestamp initialized at setup completion, so the timeout is measured from that point rather than from a missing or zero timestamp. Any enabled gateway cron job — regardless of whether it has fired yet — SHALL by itself count as active work and prevent an idle stop, since an enabled schedule is a standing commitment to run that a fire-history check alone cannot see before its first firing. Any enabled transport-side Captain schedule entry with a real `next_fire_at` (i.e. `next_fire_at < _NEVER_FIRE_AT`) SHALL equally count as active work and prevent an idle stop; Captain schedule entries are not reflected in `/api/crons` and must be checked in the transport registry directly. When the idle monitor cannot determine crew activity due to a transient API error (connection failure, timeout, or unexpected response), it SHALL skip the crew for the current cycle and leave it running — it SHALL NOT proceed to stop a crew whose activity state is unknown.
 
-#### Scenario: A freshly scheduled job with a long interval survives to its first firing
-- **WHEN** a crew has an enabled cron job whose `every_secs` exceeds `GA_IDLE_TIMEOUT_SECS`, and that job has never yet fired
-- **THEN** the idle monitor does not stop the crew, because the enabled job alone counts as active work
+The system SHALL stop a crew only after `GA_IDLE_TIMEOUT_SECS` with no active task, cron execution, or recent activity; completed setup SHALL initialize a fresh activity timestamp, and active work SHALL prevent stopping.
 
 #### Scenario: A disabled job does not keep a crew alive
 - **WHEN** a crew's only cron job is disabled and there is no other activity
@@ -33,6 +30,18 @@ The system SHALL stop a crew's container after it has had no active dispatched t
 - **WHEN** a crew's registry status is `auth_required`
 - **THEN** the idle monitor skips it entirely, never stopping a container that hasn't finished setup
 
+#### Scenario: Newly completed setup receives a full idle window
+- **WHEN** crew setup completes successfully and the crew is registered as `running`
+- **THEN** the registry records the current time as `last_used` before the idle monitor can evaluate the crew
+
+### Requirement: Enabled schedules keep a crew alive
+
+Any enabled gateway cron SHALL keep a crew alive, even before its first firing. An enabled Captain entry with `next_fire_at < _NEVER_FIRE_AT` SHALL also keep it alive; gateway state comes from `/api/crons`, Captain state from the transport registry.
+
+#### Scenario: A freshly scheduled job with a long interval survives to its first firing
+- **WHEN** a crew has an enabled cron job whose `every_secs` exceeds `GA_IDLE_TIMEOUT_SECS`, and that job has never yet fired
+- **THEN** the idle monitor does not stop the crew, because the enabled job alone counts as active work
+
 #### Scenario: Crew with enabled captain schedule is not idle-stopped
 - **WHEN** a crew has an enabled captain schedule entry with `next_fire_at` in the near future and no active spawned tasks or gateway crons
 - **THEN** the idle monitor does NOT stop the crew
@@ -49,20 +58,36 @@ The system SHALL stop a crew's container after it has had no active dispatched t
 - **WHEN** a crew has an enabled gateway cron job (in `/api/crons`) and no active spawned tasks
 - **THEN** the idle monitor does NOT stop the crew (existing behaviour preserved)
 
-#### Scenario: Newly completed setup receives a full idle window
-- **WHEN** crew setup completes successfully and the crew is registered as `running`
-- **THEN** the registry records the current time as `last_used` before the idle monitor can evaluate the crew
+### Requirement: Unknown activity state fails safe
+
+If the idle monitor cannot determine activity because of an API error, it SHALL skip that crew and leave it running for the current cycle.
 
 #### Scenario: API error during activity check
 - **WHEN** the idle monitor's request to `/api/spawn` or `/api/crons` fails with a connection error, timeout, or unexpected HTTP response
 - **THEN** the idle monitor skips that crew for the current cycle and leaves it running
+### Requirement: Stopped crews restart on the next request
 
-### Requirement: Transparent restart on next use
-The system SHALL detect a stopped crew container on the next `dispatch`, `pickup`, `steer`, `evac`, `deliver`, or `schedule` call, or on the next file GET/PUT request against the `/files/` endpoints (which is what actually moves bytes for `evac`/`deliver`), restart it, wait for its gateway, and refresh its session cookie before forwarding the request or returning a presigned URL. Because the required configuration patch is applied through `container_exec`, the restart path SHALL start the stopped container provisionally, apply the patch while that container is running, stop it, start it again, and wait for the gateway exactly once after the final start. The patch SHALL create its destination directory when it is absent, and the path SHALL NOT wait for the gateway after the provisional start. After the gateway is ready, the system SHALL reconcile the crew's schedule registry with the gateway's current cron state before reseeding — reading `/api/crons` and updating the registry entry for each job present in the gateway to match its reported enabled state and schedule type; only jobs absent from the gateway are then registered from the registry. The gateway is the source of truth for schedule state; the registry is a reseed bootstrap cache only.
+The next dispatch, pickup, steer, evac, deliver, schedule, or file GET/PUT SHALL restart a stopped crew, wait for its gateway, and refresh its cookie before forwarding work or returning a URL.
 
 #### Scenario: First caller after idle-stop
 - **WHEN** any of those tools or file requests is made for a crew whose container is stopped
 - **THEN** the system starts the container provisionally, applies configuration patches through exec, stops and starts the container again so the patch is loaded, waits for the gateway once, mints a new session cookie, updates the registry, and then forwards the original request
+
+#### Scenario: deliver() returns a URL after restarting the crew
+- **WHEN** the `deliver` tool is called for a crew whose container is currently stopped
+- **THEN** the tool call itself performs the provisional start, exec patch, final restart, and single gateway wait before signing and returning the upload URL, and the later file POST retains its own recovery check
+
+### Requirement: Restart applies required configuration before final gateway wait
+
+The restart path SHALL start provisionally, apply the config patch (creating its directory if needed), stop and start again, then wait once for the final gateway; it SHALL NOT wait after the provisional start.
+
+#### Scenario: Single gateway wait on wake
+- **WHEN** a stopped crew container is woken through the normal stopped-container path
+- **THEN** the container is started exactly twice, stopped once for the configuration bounce, and the gateway wait is performed exactly once after the final start; no gateway wait occurs between the provisional start and the exec patch
+
+### Requirement: Concurrent restart callers share a stable outcome
+
+A restart leader SHALL release waiters only after recording its outcome; concurrent callers SHALL receive the same generation-stable result.
 
 #### Scenario: Concurrent callers during restart
 - **WHEN** a second call for the same crew arrives while a restart triggered by an earlier call is still in progress
@@ -80,13 +105,9 @@ The system SHALL detect a stopped crew container on the next `dispatch`, `pickup
 - **WHEN** exactly a leader and one waiter complete a restart cycle without any third caller
 - **THEN** the generation counter does not change between the waiter's capture and its post-wait read, and the waiter proceeds normally using the leader's outcome
 
-#### Scenario: deliver() returns a URL after restarting the crew
-- **WHEN** the `deliver` tool is called for a crew whose container is currently stopped
-- **THEN** the tool call itself performs the provisional start, exec patch, final restart, and single gateway wait before signing and returning the upload URL, and the later file POST retains its own recovery check
+### Requirement: Gateway cron state is reconciled after restart
 
-#### Scenario: Single gateway wait on wake
-- **WHEN** a stopped crew container is woken through the normal stopped-container path
-- **THEN** the container is started exactly twice, stopped once for the configuration bounce, and the gateway wait is performed exactly once after the final start; no gateway wait occurs between the provisional start and the exec patch
+Once ready, the transport SHALL read `/api/crons`, update registry state for jobs present in the gateway, and reseed only jobs absent there; the gateway is the source of truth.
 
 #### Scenario: Paused cron in gateway syncs to registry on restart
 - **WHEN** a crew container restarts and its gateway reports a cron job with `"enabled": false`
@@ -95,7 +116,6 @@ The system SHALL detect a stopped crew container on the next `dispatch`, `pickup
 #### Scenario: Missing cron registered from registry on restart
 - **WHEN** a crew container restarts and a registry schedule entry is absent from the gateway's `/api/crons` response
 - **THEN** the transport registers it in the gateway (the true bootstrap case — brand new container)
-
 ### Requirement: Registry reconciliation on startup
 
 The system SHALL reconcile the crew registry against actual Podman state on transport startup without starting stopped crew containers. It SHALL preserve their workspaces, schedules, dashboard allocations and registry records, and SHALL mark existing stopped containers stopped. It SHALL retain the existing guarded handling of containers confirmed absent and tolerate transient Podman errors without deleting records.
@@ -122,7 +142,7 @@ The system SHALL reconcile the crew registry against actual Podman state on tran
 
 ### Requirement: Due work wakes stopped crews after startup
 
-The system SHALL preserve Ghostship-tracked schedules and Captain state across restart. Due work SHALL use guarded on-demand recovery when monitors run; future or disabled work SHALL NOT wake a crew before it is due. Existing schedule execution semantics SHALL continue to apply. A schedule present only in a stopped gateway is not discoverable until that crew wakes, and this limitation SHALL be documented. Memory admission SHALL account for starts that have been admitted but whose gateways are not yet ready. A wake that fails after its container was started SHALL leave that container stopped.
+After restart, monitors SHALL wake stopped crews only for due enabled work, preserving Ghostship schedules and Captain state. Future or disabled work SHALL NOT wake crews. Admitted starts SHALL count against memory until ready, and a failed wake SHALL leave its started container stopped; gateway-only schedules remain undiscoverable until wake and SHALL be documented.
 
 #### Scenario: Enabled work is due
 - **WHEN** an enabled schedule or Captain check-in becomes due for a stopped crew
@@ -159,7 +179,6 @@ The system SHALL preserve Ghostship-tracked schedules and Captain state across r
 #### Scenario: Gateway ready but cookie mint fails
 - **WHEN** the gateway becomes ready during a wake but a fresh session cookie cannot be minted
 - **THEN** the wake is reported as failed, the container is stopped, and waiters receive the same failure rather than a generic stopped-status error
-
 ### Requirement: Survives podman-machine / host restarts
 The system SHALL keep the transport container itself restarting automatically across a full Podman restart (machine stop/start on macOS, or a `systemctl --user` restart / relogin on Linux), via `--restart=always` plus an enabled `podman-restart.service`.
 
@@ -167,13 +186,9 @@ The system SHALL keep the transport container itself restarting automatically ac
 - **WHEN** the podman machine (macOS) or the user's systemd session (Linux) restarts
 - **THEN** the `ga-transport` container comes back up on its own once Podman is running again, without any manual `podman run` or `podman start`
 
-### Requirement: Schedule monitor reads gateway cron state as source of truth for enabled status
+### Requirement: Schedule monitor uses gateway enabled state
 
-The schedule monitor SHALL determine whether a job is enabled by reading the `enabled` field from the gateway's `/api/crons` response for the crew, not from the transport registry. The registry's `sched["enabled"]` field SHALL be treated as a reseed bootstrap cache only — the same contract that applies to all other cron state since TRN-82.
-
-When the gateway reports `enabled: false` for a scheduled job, the schedule monitor SHALL skip firing that job and SHALL write `enabled: false` back to the registry entry for that job, keeping the registry in sync with gateway state.
-
-When the crew container is stopped and cannot be woken (gateway is unreachable), the schedule monitor SHALL fall back to the registry's `enabled` field as a best-effort signal — preserving the existing fail-open behaviour for stopped crews.
+When reachable, the schedule monitor SHALL read `/api/crons` for enabled status, skip disabled jobs, and write `enabled: false` back to the registry.
 
 #### Scenario: Gateway reports job disabled — monitor skips and writes back
 
@@ -185,6 +200,10 @@ When the crew container is stopped and cannot be woken (gateway is unreachable),
 - **WHEN** the schedule monitor evaluates a due job and the gateway's `/api/crons` response for that crew lists the job with `"enabled": true`
 - **THEN** the monitor fires the job as normal (existing behaviour)
 
+### Requirement: Schedule monitor falls back to registry when gateway is unreachable
+
+For a stopped crew that cannot be woken, the monitor SHALL use registry `enabled` as a best-effort fallback; a missing gateway field SHALL default to enabled.
+
 #### Scenario: Crew stopped, gateway unreachable — monitor falls back to registry
 
 - **WHEN** the schedule monitor evaluates a job for a crew that cannot be woken (`_ensure_crew_running` raises or the crew was already stopped before the gateway fetch), so the gateway's `/api/crons` response is unavailable
@@ -194,23 +213,9 @@ When the crew container is stopped and cannot be woken (gateway is unreachable),
 
 - **WHEN** the gateway's `/api/crons` response includes a job entry but the `"enabled"` field is absent
 - **THEN** the monitor treats the job as enabled and fires it (fail-open, preserving existing behaviour)
-
 ### Requirement: Eager registry self-healing for externally stopped containers
 
-The transport SHALL correct stale `status: "running"` registry entries for
-crew containers that have been stopped outside ghostship (e.g. via direct
-`podman stop`, a VM reboot, or a Podman machine restart) during normal
-operation — not only at transport startup reconciliation. Specifically,
-whenever `crews()` or `_ensure_crew_running` checks container state and
-discovers a registry entry with `status: "running"` whose container is not
-actually running, it SHALL write `status: "stopped"` back to the registry
-for that entry before returning.
-
-This self-healing is a side effect of the state verification performed in
-those two code paths. It does not replace startup reconciliation; it
-supplements it so that the registry converges to accurate state within the
-first operation that observes the discrepancy, rather than waiting for the
-next transport restart.
+When `crews()` or `_ensure_crew_running` finds a registry entry marked running whose container is stopped, the transport SHALL write `status: "stopped"` before returning. This supplements startup reconciliation and SHALL NOT restart the container.
 
 #### Scenario: crews() heals a stale running entry
 - **WHEN** `crews()` is called and a crew has `status: "running"` in the
@@ -237,10 +242,9 @@ next transport restart.
 - **THEN** the container is NOT automatically restarted — healing only corrects
   the registry status; restart happens only when a tool call explicitly
   requires the crew (dispatch, pickup, etc.)
-
 ### Requirement: _ensure_crew_running waiter propagates leader failure
 
-When the leader coroutine in `_ensure_crew_running` fails to restart a crew (memory gate exceeded, active-crew limit, gateway timeout, or any other exception), it SHALL record an explicit failure outcome on the shared Event before releasing it. Waiter coroutines that wake from that Event SHALL read the recorded outcome and raise the leader's error rather than inferring crew health from registry status. The leader SHALL also record an outcome and signal waiters when failure occurs during leader setup before the main restart body, including the initial container-running probe or an early container stop.
+The restart leader SHALL record success or failure on the shared Event before releasing it, including failures during initial probe/setup. Waiters SHALL raise the leader's recorded error rather than infer health from registry state.
 
 #### Scenario: Leader restart fails — memory gate
 - **WHEN** `_ensure_crew_running` is called for a stopped crew AND the memory gate blocks the restart

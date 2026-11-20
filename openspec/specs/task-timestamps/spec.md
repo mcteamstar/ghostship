@@ -18,13 +18,8 @@ The `dispatch` tool SHALL include a `created_at` field in its response, containi
 - **THEN** each task's `created_at` entry is written atomically and no entry is lost or partially overwritten
 
 ### Requirement: pickup (task) response includes lifecycle timestamps
-The `pickup` tool, when called with a `task_id`, SHALL include `created_at`, `started_at`, and `completed_at` fields in its response.
 
-- `created_at`: when the task was dispatched. Always present.
-- `started_at`: when the agent began executing. Present once the task has started; `null` if not yet started.
-- `completed_at`: when the task finished (done or error). Present once complete; `null` if still running.
-
-Reads and conditional updates to the in-memory timestamp store inside `pickup` SHALL be protected by the same `threading.Lock` used by `dispatch` so that a concurrent `dispatch` write cannot race with a `pickup` read-modify-write on `started_at` or `completed_at`.
+`pickup(task_id=...)` SHALL return `created_at`, `started_at`, and `completed_at`; creation time is always present, while the latter fields are null until the task starts or completes.
 
 #### Scenario: pickup on a running task
 - **WHEN** `pickup` is called with a `task_id` for a task that is still running
@@ -34,10 +29,13 @@ Reads and conditional updates to the in-memory timestamp store inside `pickup` S
 - **WHEN** `pickup` is called with a `task_id` for a completed task
 - **THEN** the response includes `created_at`, `started_at`, and `completed_at` as ISO 8601 strings
 
+### Requirement: Task timestamps are synchronized
+
+Reads and conditional timestamp updates in `pickup` SHALL use the same `threading.Lock` as `dispatch`.
+
 #### Scenario: Concurrent pickup and dispatch on the same task
 - **WHEN** a `pickup` call reads and updates timestamps concurrently with a `dispatch` call writing to the same store
 - **THEN** no timestamp entry is lost or partially written
-
 ### Requirement: pickup (crew-wide) task list entries include timestamps
 When `pickup` is called without a `task_id`, each task entry in the returned list SHALL include `created_at`, `started_at`, and `completed_at` with the same semantics as above. The read of the timestamp store for the crew-wide list SHALL also be protected by the `threading.Lock`.
 

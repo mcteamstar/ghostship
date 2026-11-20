@@ -89,6 +89,8 @@ In both branches, never create the root as a side effect: do not run `openspec i
    ```
    This creates a scaffolded change in the planning home resolved by the CLI with `.openspec.yaml`.
 
+   **Plane ticket metadata:** When a change tracks a Plane work item, preserve its TRN identifier in `.openspec.yaml` as `x-ticket: TRN-<number>`. OpenSpec v2 reserves `x-` for extension keys; do not use the bare `ticket` key.
+
 5. **Get the artifact build order**
    ```bash
    openspec status --change "<name>" --json

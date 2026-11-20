@@ -297,17 +297,7 @@ to avoid resurrecting entries that were removed concurrently.
 
 ### Requirement: Test suite runs safely inside crew containers
 
-The test suite SHALL be partitioned into Podman-dependent tests and pure unit
-tests. Tests that require a real Podman socket SHALL be decorated with
-`@unittest.skipUnless(shutil.which("podman"), "requires podman")` so they are
-skipped automatically when Podman is not available (e.g., inside a crew
-container). The top of the relocated test module (formerly
-`transport/test_transport.py`, now living under `tests/` per the
-`test-orchestration` capability) SHALL continue to document which test
-classes are Podman-dependent and which are safe to run anywhere, and its
-dual import-resolution shim (package-style `transport.server` import vs. a
-flat-import fallback) SHALL be reconciled against the new location rather
-than left to depend on which of the two branches happens to still resolve.
+The test suite SHALL separate pure unit tests from Podman-dependent tests, which skip unless Podman is available. Tests relocated under `tests/` SHALL document which classes require Podman and retain a working package/flat import shim.
 
 #### Scenario: Full suite completes inside a crew container
 - **WHEN** the relocated test suite's unit-category tests are run inside a crew container where Podman is absent
@@ -340,17 +330,7 @@ potentially active crew whose cookie merely expired.
 
 ### Requirement: e2e suite fixture model
 
-The e2e test suite SHALL use a module-level shared crew as the primary fixture,
-launched once per test file rather than once per test class, so that stateless
-test classes share a single running crew without incurring per-class launch and
-teardown overhead.
-
-Each test file SHALL declare a module-level `SHARED_CREW_ID` constant and
-implement `setUpModule` / `tearDownModule` to launch and nuke the shared crew.
-Test classes that operate only on task, job, supply, or schema namespaces (with
-no cross-class state interference) SHALL read `CREW_ID` from the module-level
-`SHARED_CREW_ID` and SHALL NOT implement their own `setUpClass` or
-`tearDownClass` that launch or nuke a crew.
+Each e2e file SHALL launch one module-level `SHARED_CREW_ID` crew in `setUpModule` and nuke it in `tearDownModule`. Stateless classes SHALL reuse it and SHALL NOT launch or nuke per class.
 
 #### Scenario: Module-level crew is launched once per file
 - **WHEN** the e2e test runner imports a test file
@@ -457,12 +437,7 @@ The test suite SHALL exercise `TransportSecretMiddleware` and `_load_transport_s
 - **THEN** `git checkout -b <branch> origin/<branch>` is called to check out the first available remote branch
 
 ### Requirement: Static guardrail test prevents hardcoded pre-0.9.0 SEL path
-The test suite SHALL include a static-assertion test that scans all Python files under `transport/` and fails if any file contains a string literal matching a pre-0.9.0 KiroCrew SEL key path pattern (`sel_key`, `sel-key`, `sel.key`, or `/sel/` as a path segment). This test SHALL pass on the current tree (no such literal exists today) and SHALL fail if such a literal is introduced in a future commit, preventing silent regression to the pre-0.9.0 path convention.
-
-The test SHALL NOT flag:
-- The SQL `SELECT` keyword (a false-positive on `sel`) in `transport/container_scripts/read_auth.py`.
-- The `.local_secret` docstring in `transport/lifecycle.py` (unrelated internal-API-secret reference).
-- The `policy_signing_key` / `trust_keys` strings in `transport/container_scripts/inject_policy.py` (ghostship's own policy key, not the SEL key).
+The suite SHALL scan all `transport/` Python files and fail on pre-0.9.0 SEL path literals (`sel_key`, `sel-key`, `sel.key`, `/sel/`). It SHALL avoid false positives for SQL `SELECT`, `.local_secret`, and policy signing/trust keys.
 
 #### Scenario: Test passes on clean tree
 - **WHEN** the guardrail test is run against the transport source tree that contains no pre-0.9.0 SEL key path literal
@@ -877,16 +852,7 @@ manual inspection.
 
 ### Requirement: Critical transport modules have direct unit test coverage
 
-The unit test suite SHALL include direct tests for the following modules that
-previously had zero dedicated coverage:
-- `transport/security.py` — via `tests/unit/test_security.py`
-- `transport/files.py` HMAC machinery — via `tests/unit/test_files.py`
-- `transport/container_scripts/inject_policy.py` and `transfer_raw.py` — via
-  `tests/unit/test_container_scripts.py`
-- `transport/openapi.py` schema generation — via `tests/unit/test_openapi.py`
-
-Each test file SHALL contain at minimum: one passing test per exported function or
-security-relevant path, with a named failure mode the test guards.
+Direct unit tests SHALL cover `transport/security.py`, file HMACs, policy injection/raw transfer, and OpenAPI generation in their `tests/unit` modules. Each SHALL exercise exported functions or security paths and name a guarded failure mode.
 
 #### Scenario: test_security.py exists and passes
 - **WHEN** `pytest tests/unit/test_security.py` is run
@@ -918,15 +884,7 @@ security-relevant path, with a named failure mode the test guards.
 
 ### Requirement: PodmanClient has dedicated unit tests
 
-`transport/podman.py` SHALL have a dedicated `tests/unit/test_podman.py` that
-exercises PodmanClient against a mock or patched HTTP transport. Key paths covered
-SHALL include container create/start/stop/inspect, `container_exec_stdin`, archive
-put/get, network create/connect/disconnect, volume create/remove, and error handling
-(HTTP 500, malformed JSON, socket failure).
-
-`FakePodmanClient` in `conftest.py` SHALL be verified to implement the same interface
-as the real `PodmanClient` (same method signatures and return shapes for all methods
-it stubs).
+`tests/unit/test_podman.py` SHALL exercise PodmanClient with mocked HTTP for container, stdin, archive, network, volume, and error paths. `FakePodmanClient` SHALL match the real client's method signatures and return shapes.
 
 #### Scenario: PodmanClient error paths produce structured exceptions
 - **WHEN** the Podman socket returns HTTP 500 for a container operation

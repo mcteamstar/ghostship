@@ -8,7 +8,7 @@ Enable the KiroCrew gateway SPA to load and navigate correctly when accessed via
 
 ### Requirement: Each crew is assigned a unique UI port on the transport at launch
 
-The transport SHALL allocate a unique port from the configured range (`GA_DASHBOARD_PORT_RANGE_START` to `GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE - 1`) when a crew is launched with `dashboard=true` and start a transport listener on that port. All requests arriving on that port SHALL be reverse-proxied to `http://gs-{crew_id}:5476/{path}`. WebSocket upgrade requests SHALL be bidirectionally proxied to the upstream crew gateway via `httpx-ws`. The allocated port SHALL be stored in the crew registry and returned in the `launch` response as `dashboard_url`.
+When launched with `dashboard=true`, the transport SHALL allocate and store a unique port from the configured range, start a listener, and return it as `dashboard_url`. HTTP and WebSocket requests SHALL proxy to `http://gs-{crew_id}:5476/{path}`, with bidirectional WebSocket forwarding via `httpx-ws`.
 
 #### Scenario: SPA loads at root of origin
 - **WHEN** a browser opens `http://ghostship-host.example.ts.net:64058/`
@@ -72,9 +72,7 @@ When `GA_DASHBOARD_PORT_ENABLED=false`, the transport SHALL skip all port alloca
 
 ### Requirement: Transport strips Accept-Encoding from crew proxy requests
 
-The transport's crew UI proxy MUST strip the `Accept-Encoding` header from all outbound requests to crew gateways. This ensures crew gateways always return uncompressed responses that the transport can pass through transparently.
-
-The transport proxies raw bytes via `_async_http.stream()` without decompressing the response body. If `Accept-Encoding` is forwarded, the crew gateway may return compressed content. The transport strips `Content-Encoding` from all proxied responses (hop-by-hop header handling), so the browser receives compressed bytes with no encoding hint and cannot decompress them — causing a JS parse failure.
+The crew UI proxy MUST remove `Accept-Encoding` from outbound requests and `Content-Encoding` from responses. It streams raw bytes without decompression; forwarded compression would leave the browser unable to decode the response.
 
 #### Scenario: Crew gateway always receives uncompressed request
 
@@ -92,7 +90,7 @@ The transport proxies raw bytes via `_async_http.stream()` without decompressing
 
 ### Requirement: Portal reads message content from REST, not WebSocket payload bodies
 
-The ghostship portal SHALL read message content (assistant text, tool-call titles, tool output) exclusively from the REST API (`GET /api/sessions/{id}/messages`). The portal MAY consume WebSocket messages only for session-state change notifications (turn started, turn ended, new-message signal). The portal SHALL NOT depend on `assistant_content`, `tool_title`, or any other non-user content field being present in WebSocket broadcast payloads. This separation ensures that upstream WS broadcast redaction of non-user content is invisible to the portal.
+The portal SHALL read assistant text, tool titles, and tool output only from `GET /api/sessions/{id}/messages`. WebSocket messages MAY signal session-state changes, but the portal SHALL NOT rely on non-user content fields in WS payloads.
 
 #### Scenario: Full message content rendered despite WS broadcast redaction
 - **WHEN** the upstream crew gateway strips `assistant_content` and `tool_title` from WS broadcast payloads (as in KiroCrew 0.9.0+)

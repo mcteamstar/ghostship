@@ -29,7 +29,7 @@ The documentation SHALL describe the `GA_HOST_URL` variable, its fallback behavi
 
 ### Requirement: Crew UI access
 
-The transport SHALL serve crew UI access via dedicated per-port listeners. Each crew launched with `dashboard=True` gets a port in the range `[GA_DASHBOARD_PORT_RANGE_START, GA_DASHBOARD_PORT_RANGE_START + GA_DASHBOARD_PORT_RANGE_SIZE)`. All requests on that port SHALL be reverse-proxied by the transport to the crew gateway over the internal ghost-academy Podman network. WebSocket upgrade requests SHALL be bidirectionally proxied via `httpx-ws`. Crew containers do not bind any host ports. Full behavior specified in `crew-ui-spa-routing/spec.md`.
+For each `dashboard=True` crew, the transport SHALL allocate a dedicated listener in the configured dashboard port range and proxy HTTP and WebSocket traffic to its gateway over the internal Podman network. Crew containers SHALL bind no host ports. See `crew-ui-spa-routing` for details.
 
 #### Scenario: Requests proxied to crew gateway via port
 - **WHEN** a browser request arrives on an allocated dashboard port
@@ -88,7 +88,7 @@ The transport SHALL inject its own public origin (the base of `GA_HOST_URL`, or 
 - **THEN** the upstream query string is exactly `q=hello%0Aworld&limit=10`
 
 ### Requirement: Crew REST API reverse proxy
-The transport SHALL expose `GET|POST|PUT|PATCH|DELETE /crews/{crew_id}/api/{path:path}` routes that reverse-proxy to `http://gs-{crew_id}:5476/api/{path}` on the crew's internal gateway. The crew SHALL be auto-woken before any request is forwarded. The transport SHALL forward the original method, path, query string, body, and headers (excluding `host`). Before forwarding, the transport SHALL remove every raw query-string byte in the ASCII control ranges `0x00`–`0x1F` and `0x7F`, while preserving the order and value of all remaining bytes. Percent-encoded query text SHALL NOT be decoded or altered by this sanitisation. The transport SHALL inject the internal session cookie (`mc_token_5476=<value>`) so that REST calls succeed without a separate browser login. Response status, headers, and body SHALL be streamed back to the caller.
+The transport SHALL proxy GET, POST, PUT, PATCH, and DELETE `/crews/{crew_id}/api/{path}` requests to the crew gateway, waking the crew first and injecting its `mc_token_5476` cookie. It SHALL preserve method, path, query, body, and headers except `host`, then stream the response. Before forwarding, remove raw ASCII control bytes from the query while preserving remaining bytes and percent escapes.
 
 #### Scenario: API proxy forwards internal session cookie
 - **WHEN** `GET /crews/my-crew/api/spawn` is requested

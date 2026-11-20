@@ -8,22 +8,9 @@ container-exec operations; secrets must be delivered via stdin only.
 
 ## Requirements
 
-### Requirement: Secrets delivered via stdin, not process arguments
+### Requirement: Exec secrets are delivered through stdin
 
-When the transport runs a container-exec script that requires a secret value, the secret
-SHALL be passed to the script via its stdin stream. The script SHALL read the secret from
-`sys.stdin.read()` and strip surrounding whitespace. The secret value SHALL NOT appear in
-any element of the process's argument list (`argv`). Container creation specs for crew
-containers SHALL include `no_new_privileges: true` to prevent privilege escalation via
-setuid binaries.
-
-The admiral public key is the exception to the container-exec/stdin pattern: it SHALL be
-delivered as a Podman secret, created via `podman secret create` and attached to the
-container spec at `container_create` time (target `/run/secrets/.admiral_public_key`,
-uid/gid 0, mode 0444). The target SHALL lie outside every volume mount point, so that the
-directories Podman creates for it cannot render a volume-backed path unwritable to
-`kirocrew`. It SHALL NOT be passed to any container-exec script, and the private key SHALL
-NOT enter the container in any form.
+When a container-exec script needs a secret, the transport SHALL pass it through stdin; the script SHALL read `sys.stdin.read()` and strip surrounding whitespace. Secret values SHALL NOT appear in `argv`.
 
 #### Scenario: Secret not present in exec command arguments
 
@@ -38,17 +25,9 @@ NOT enter the container in any form.
 - **THEN** the script reads its secret or key material from stdin (stripped of whitespace)
   and writes it to the destination file with mode 0600; the value never appears in argv
 
-#### Scenario: Admiral public key delivered as a Podman secret, not via exec
+### Requirement: Container exec specs disable new privileges
 
-- **WHEN** a crew container is created
-- **THEN** the Ed25519 public key is attached as a Podman secret in the `container_create`
-  spec, mounted read-only at `.admiral_public_key`; no `container_exec` call writes this file
-
-#### Scenario: Admiral public key mount is read-only
-
-- **WHEN** a process running as `kirocrew` inside the container attempts to write to
-  `.admiral_public_key`
-- **THEN** the write fails because the file is a read-only Podman secret mount
+Crew and worker container-exec specs SHALL set `no_new_privileges: true`.
 
 #### Scenario: Container exec spec includes no_new_privileges
 
@@ -60,6 +39,21 @@ NOT enter the container in any form.
 - **WHEN** a worker container is created via `worker_run`
 - **THEN** the Podman container spec includes `no_new_privileges: true`
 
+### Requirement: Admiral public key is delivered as a Podman secret
+
+The public key SHALL be created as a Podman secret and mounted read-only at `/run/secrets/.admiral_public_key` (uid/gid 0, mode 0444), outside every volume mount. It SHALL NOT be passed via exec, and the private key SHALL NOT enter the container.
+
+#### Scenario: Admiral public key delivered as a Podman secret, not via exec
+
+- **WHEN** a crew container is created
+- **THEN** the Ed25519 public key is attached as a Podman secret in the `container_create`
+  spec, mounted read-only at `.admiral_public_key`; no `container_exec` call writes this file
+
+#### Scenario: Admiral public key mount is read-only
+
+- **WHEN** a process running as `kirocrew` inside the container attempts to write to
+  `.admiral_public_key`
+- **THEN** the write fails because the file is a read-only Podman secret mount
 ### Requirement: Minimal capability set for crew containers
 Crew containers SHALL be created with a capability drop-list that removes
 `CAP_NET_RAW` and `CAP_SYS_ADMIN` from the container's effective capability set.

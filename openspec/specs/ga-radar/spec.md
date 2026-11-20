@@ -25,21 +25,7 @@ Image: `localhost/ga-radar:latest`, built from `radar/Containerfile`.
 
 ### Requirement: ga-radar serves the Radar SPA and fleet API
 
-`ga-radar` SHALL expose five routes:
-
-| Method | Path | Description |
-|:-------|:-----|:------------|
-| `GET /` | | Serve `static/index.html` |
-| `GET /static/*` | | Serve static assets (CSS, JS) |
-| `GET /api/crews` | | Proxy fleet data from `ga-transport /internal/crews` |
-| `GET /api/crews/{crew_id}/agents` | | Proxy live task list for one crew from `ga-transport /internal/crews/{crew_id}/agents` |
-| `GET /health` | | Return `{"status": "ok"}` — no auth required |
-
-Static files in `radar/static/` (`index.html`, `style.css`, and the ES module
-bundle: `main.js`, `format.js`, `state.js`, `render.js`, `data.js`) are baked
-into the image at build time. `main.js` is the entry point; it polls
-`GET /api/crews` every 5s with no external dependencies. On row expand, it
-calls `GET /api/crews/{crew_id}/agents` to fetch live task data on demand.
+`ga-radar` SHALL serve the SPA and static assets, proxy fleet and per-crew agent data to `ga-transport`, and expose unauthenticated `/health`. Static ES modules SHALL be baked into the image; the SPA polls fleet data every five seconds and fetches live tasks when a row expands.
 
 #### Scenario: SPA served at root
 
@@ -72,16 +58,7 @@ calls `GET /api/crews/{crew_id}/agents` to fetch live task data on demand.
 
 ### Requirement: ga-radar authenticates to ga-transport with the shared secret
 
-`ga-radar` SHALL read the transport secret from `/run/secrets/ga-transport-secret`
-at startup (delivered as a Podman secret). It SHALL include the secret as
-`X-Transport-Token` on every call to `ga-transport /internal/crews`. If the
-secret file is absent, `ga-radar` SHALL start with an empty token and log a
-warning.
-
-| Variable | Source | Description |
-|:---------|:-------|:------------|
-| `TRANSPORT_URL` | compose.yml env | Base URL of ga-transport |
-| `ga-transport-secret` | Podman secret | Shared token for `X-Transport-Token` |
+At startup, `ga-radar` SHALL read `/run/secrets/ga-transport-secret` and send it as `X-Transport-Token` to the transport. If absent, it SHALL start with an empty token and log a warning. `TRANSPORT_URL` supplies the transport base URL.
 
 #### Scenario: Secret absent at startup
 

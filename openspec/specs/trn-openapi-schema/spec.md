@@ -27,16 +27,15 @@ The transport SHALL serve an OpenAPI 3.x–compliant JSON document at `GET /open
 
 ### Requirement: Schema covers all transport HTTP routes
 
-The OpenAPI schema SHALL include every HTTP route exposed by the transport, covering:
-- MCP endpoint (`/mcp`)
-- Authentication routes (`/login`, `/logout`)
-- Dashboard auth routes (`/dashboard/login`, `/dashboard/logout`, `/dashboard/auth`)
-- Crew proxy routes (`/crews/{crew_id}/ui`, `/crews/{crew_id}/api`, `/crews/{crew_id}/dashboard`)
-- Health and version routes (`/health`, `/version`)
-- File transfer routes (`/files/{crew_id}/{path}`)
-- Schema route itself (`/openapi.json`)
+The OpenAPI schema SHALL include every transport HTTP route.
 
-Each route entry SHALL include the HTTP method(s), a brief description, and whether the route requires Bearer authentication.
+#### Scenario: Schema lists all transport route groups
+- **WHEN** the OpenAPI schema is generated
+- **THEN** it includes `/mcp`, `/login`, `/logout`, `/dashboard/login`, `/dashboard/logout`, `/dashboard/auth`, `/crews/{crew_id}/ui`, `/crews/{crew_id}/api`, `/crews/{crew_id}/dashboard`, `/health`, `/version`, `/files/{crew_id}/{path}`, and `/openapi.json`
+
+### Requirement: OpenAPI routes carry complete metadata
+
+Each route SHALL list its HTTP method(s), brief description, and Bearer-auth requirement.
 
 #### Scenario: Authenticated routes are annotated in the schema
 
@@ -47,7 +46,6 @@ Each route entry SHALL include the HTTP method(s), a brief description, and whet
 
 - **WHEN** `GET /openapi.json` is fetched
 - **THEN** routes declared in `public_routes` (e.g. `/version`, `/dashboard/login`) have no `security` array, or an explicit empty `security: []` override
-
 ### Requirement: Schema includes MCP tool definitions
 
 The OpenAPI schema SHALL include a section documenting the MCP tool surface. Each registered MCP tool SHALL appear with its name, description, and JSON Schema input definition, extracted directly from the `@mcp.tool()` decorator registrations.

@@ -55,18 +55,7 @@ The system SHALL dispatch a task to a named persona in a specified crew as a ded
 - **THEN** the boolean-or-null tool input contract rejects the request and no named session is created
 
 ### Requirement: Task status and collection
-The system SHALL report a task's progress and result when polled, and SHALL list all tasks in a crew when no specific task is named. The system SHALL always include mail state in the pickup response without requiring any flag or option. The system SHALL support an optional `timeout_secs` parameter that, when greater than zero, polls until the task completes, the timeout elapses, or new Admiral mail arrives.
-
-The system SHALL cap the internal poll window at `GA_PICKUP_MAX_POLL_SECS` (default 30s) regardless of the caller-supplied `timeout_secs` value. When the internal cap fires before the caller's `timeout_secs` has elapsed (i.e. the task is still running), the system SHALL return the current task state as a normal (non-error) JSON response with `"reason": "timeout"`. The MCP transport error path SHALL NOT be used for a clean timeout expiry.
-
-The system SHALL read all crew mailboxes on every `pickup` call (all six persona mailboxes, `/var/mail/captain`, and `/var/mail/admiral`) and include subject lines and counts in the response. Only subject lines are returned — message bodies are not read. Reading mailboxes never modifies them.
-
-What is reported back is tuned to how `pickup` was called:
-
-- When `pickup` is called with a `task_id`: report the task's agent mailbox, captain, and admiral — subjects and counts for those three.
-- When `pickup` is called without a `task_id` (crew-wide): report all persona mailboxes, captain, and admiral.
-
-In both cases all 8 mailboxes are read; only the reported set differs.
+Polling SHALL report task progress and result; omitting the task ID SHALL list all crew tasks. `pickup` SHALL wait only when `timeout_secs > 0`, ending on completion, timeout, or new Admiral mail. Its cap is `GA_PICKUP_MAX_POLL_SECS` (default 30s); cap expiry SHALL return normal JSON with `reason: timeout`. Each call reads all eight mailboxes without modifying them and returns subjects/counts only: task-specific calls report that agent, Captain, and Admiral; crew-wide calls report all eight.
 
 #### Scenario: Poll a specific task
 - **WHEN** `pickup` is called with a `task_id` and `crew_id`
@@ -167,7 +156,7 @@ The system SHALL redirect a still-running task in place, and SHALL resume a comp
 - **THEN** `steer` cannot be used, since the job has a `job_id`, not a `task_id` — a new `schedule` call, or for a standing-orders Captain check-in a `captain(action="order", ...)` call, is the only path
 
 ### Requirement: Recurring task scheduling
-The system SHALL schedule a recurring task on a crew using either a cron expression or a fixed interval in seconds (parameter named `interval`), and SHALL reject a request that supplies both or neither. The system SHALL default `agent` to `ghost` when not specified, matching `dispatch`'s default; a Captain check-in that should run as Raven SHALL set `agent` explicitly. The system SHALL accept a `fire_immediately` boolean parameter that controls whether the job's task is dispatched once immediately upon creation, before the first scheduled interval or cron tick fires.
+The system SHALL schedule by either cron or `interval` seconds and reject requests supplying both or neither. It SHALL default `agent` to `ghost`; Raven check-ins SHALL name Raven explicitly. `fire_immediately` SHALL control whether a task runs once at creation before the first scheduled tick.
 
 #### Scenario: Schedule by cron
 - **WHEN** `schedule` is called with a `cron` expression and no `interval`
@@ -362,14 +351,7 @@ parameter — `dispatch` is always immediate. `dispatch` SHALL always return a
 
 ### Requirement: Idempotent one-shot job deletion
 
-When the schedule monitor fires a one-shot (delay) job, the system SHALL make the job permanently non-repeating before issuing the gateway DELETE. Specifically, the transport SHALL:
-
-1. Mark the registry entry for the one-shot job as `enabled: false` and set its `next_fire_at` to `_NEVER_FIRE_AT` **atomically under `_registry_lock`** before attempting the gateway DELETE.
-2. Then issue `DELETE /api/crons/{job_id}` to the gateway.
-
-If the DELETE succeeds, the registry entry MAY be removed. If the DELETE fails (any exception or non-success response), the job SHALL NOT be re-fired by the schedule monitor in any subsequent cycle, because the registry marks it disabled with `next_fire_at = _NEVER_FIRE_AT`. The DELETE failure SHALL be logged at WARNING level.
-
-This requirement applies whether or not the task dispatch that preceded the DELETE succeeded. The registry update and the gateway DELETE are separate steps: the registry update is the durable safety gate; the DELETE is a best-effort cleanup.
+Before deleting a fired one-shot job, the transport SHALL atomically set its registry entry to `enabled: false` and `next_fire_at: _NEVER_FIRE_AT` under `_registry_lock`, then issue the gateway DELETE. This safety gate applies regardless of dispatch outcome. Successful deletion MAY remove the entry; failure SHALL be logged at WARNING and the monitor SHALL never refire the job.
 
 #### Scenario: One-shot job fires successfully, DELETE succeeds
 
@@ -400,7 +382,7 @@ The transport schedule registry SHALL contain schedule entries only for crews th
 
 ### Requirement: Dispatch tool supports per-task model override
 
-The `dispatch` tool SHALL accept an optional `model` string parameter. When provided, it SHALL be forwarded as `model` in the `/api/spawn` request body, pinning that one task's model regardless of the dispatched persona's configured `model` in its agent JSON. When omitted, the request body SHALL NOT include a `model` field and existing precedence (`KC_MODEL_OVERRIDE` > per-agent `model` > `KC_MODEL_DEFAULT` > KiroCrew built-in) is unaffected. The system SHALL validate `model` before forwarding it: reject a non-string value, and reject a value exceeding the crew gateway's own model-name length/format bounds, returning a clear transport-level error without contacting the crew API.
+`dispatch` SHALL accept an optional `model` string and forward it for that task. Before contacting the crew API, it SHALL reject non-strings and values outside gateway model-name bounds. When omitted, it SHALL omit `model` and preserve precedence: `KC_MODEL_OVERRIDE`, agent model, `KC_MODEL_DEFAULT`, then gateway default.
 
 #### Scenario: Dispatch with a model override
 - **WHEN** `dispatch(task="...", agent="ghost", crew_id="my-crew", model="claude-opus-5")` is called
@@ -420,7 +402,7 @@ The `dispatch` tool SHALL accept an optional `model` string parameter. When prov
 
 ### Requirement: Schedule tool supports per-job model override
 
-The `schedule` tool SHALL accept an optional `model` string parameter, for `cron`, `interval`, and `delay` (one-shot) job creation alike. When provided, it SHALL be forwarded as `model` in the `/api/crons` request body, pinning that one recurring or one-shot job's model. The transport SHALL retain the pin with the scheduled job and SHALL include it when re-registering a missing job after a crew or transport restart and when firing a due job through the transport-owned schedule monitor. If `fire_immediately` causes an immediate `/api/spawn`, that first run SHALL receive the same `model` when one was provided. The same validation and precedence rules as the `dispatch` tool's `model` parameter apply.
+`schedule` SHALL accept an optional `model` for cron, interval, and one-shot delay jobs. It SHALL retain and forward the pin on immediate, monitor-fired, and restart-reseeded runs. Validation and precedence SHALL match the `dispatch` model parameter.
 
 #### Scenario: Schedule with a model override
 - **WHEN** `schedule(interval=300, message="...", agent="ghost", crew_id="my-crew", model="claude-sonnet-5")` is called
@@ -440,7 +422,7 @@ The `schedule` tool SHALL accept an optional `model` string parameter, for `cron
 
 ### Requirement: Captain standing-orders check-in supports model override
 
-The `captain(action="order")` call SHALL accept an optional `model` string parameter, forwarded as `model` in the `/api/crons` request body when a new standing-orders check-in job is created. When a new job is configured to `fire_immediately`, the immediate Raven `/api/spawn` SHALL receive the same model. The transport SHALL retain the pin for restart re-seeding and transport-owned schedule-monitor ticks. The parameter's format SHALL be validated on every call regardless of action, and an invalid value SHALL return an error even when resuming. A syntactically valid value SHALL have no effect when resuming a previously paused check-in, since no new job is created in that path; an existing pin SHALL remain unchanged.
+`captain(action="order")` SHALL accept an optional model for new check-in jobs and propagate it to immediate, monitor-fired, and restart-reseeded runs. It SHALL validate the value on every call, including resume; invalid values fail, while a valid value on resume leaves the existing pin unchanged.
 
 #### Scenario: Captain order with a model override on a new check-in
 - **WHEN** `captain(crew_id="my-crew", action="order", template="sdd", change_name="...", interval=300, model="claude-opus-5")` creates a new check-in job
@@ -460,11 +442,7 @@ The `captain(action="order")` call SHALL accept an optional `model` string param
 
 ### Requirement: dispatch accepts tasks list as an alternative overload
 
-The `dispatch` tool SHALL accept `tasks: list[str]` as an alternative to `task: str`. The two parameters SHALL be mutually exclusive. When `tasks` is provided, all dispatch semantics apply identically to each task in the list. All tasks in one batch share the same `agent`, `model`, `slot`, and `crew_id`.
-
-The `slot` parameter SHALL apply uniformly across all tasks in a batch. The transport SHALL resolve the slot once: `slot=None` routes all tasks for an enrolled persona to the same pre-created member DM slot and leaves all tasks for an unenrolled persona headless; `slot=False` forces every task headless. Legacy `slot=True` SHALL NOT create per-task slots; the resolver warns and treats it as `slot=None`, sharing that resolved behavior across the batch. String-valued slots are invalid under the MCP tool's boolean-or-null input schema and SHALL be rejected.
-
-See `specs/batch-dispatch/spec.md` for the full batch dispatch contract.
+`dispatch` SHALL accept either `task: str` or mutually exclusive `tasks: list[str]`. Each batch task uses the same agent, model, slot, crew, and dispatch semantics; slot routing is resolved once (`None` and legacy `True` share the resolved default, while `False` is headless). Strings are invalid slots and SHALL be rejected. See `batch-dispatch` for the full contract.
 
 #### Scenario: Batch dispatch uses same validation as single dispatch
 

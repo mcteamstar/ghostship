@@ -1,30 +1,13 @@
 # crew-member-enrollment Specification
 
 ## Purpose
-TBD - created by archiving change trn-187-member-based-dispatch. Update Purpose after archive.
+Binds deployed agents to named KiroCrew member threads at launch and restart, recording enrollment so dispatch can use each agent’s attested member session.
 
 ## Requirements
 
 ### Requirement: Agent enrollment at crew launch
 
-Every agent deployed into a crew at launch time SHALL be enrolled as a named
-KiroCrew crew member before the crew is declared ready. Enrollment is performed
-by calling the gateway's `POST /api/members/{slug}/thread` endpoint for each
-deployed agent's slug after the gateway is ready and agent files are deployed.
-Enrollment is idempotent — re-enrolling an already-enrolled agent is a no-op.
-Enrollment failures for individual agents are non-fatal: the crew still
-launches; unenrolled agents operate without attestation. The set of enrolled
-agent slugs SHALL be stored in the crew registry and consulted at dispatch time.
-On crew restart or recovery, enrollment SHALL be re-run to ensure bindings
-survive gateway restarts.
-
-Each agent enrolled at launch SHALL carry a `memory_store` config key set to
-`"default"`. Under KiroCrew 0.9.0+, `"default"` SHALL remain a valid store
-identifier — the store internally switches to vector-similarity retrieval, but
-the string `"default"` is still accepted without modification. Ghostship SHALL
-NOT be required to add any additional memory-related config key (embedding
-model, ranking mode, or re-embedding flag) to the agent enrollment payload; the
-gateway owns those defaults entirely.
+Before a crew is ready, the transport SHALL enroll each deployed agent through the gateway, record enrolled slugs, and repeat enrollment after restart. Enrollment SHALL be idempotent and a per-agent failure SHALL NOT prevent launch.
 
 #### Scenario: Agents are enrolled at fresh crew launch
 
@@ -39,6 +22,14 @@ gateway owns those defaults entirely.
 - **THEN** the transport re-enrolls all agents before declaring the crew ready
 - **THEN** `enrolled_agents` is updated in the crew registry
 
+#### Scenario: Enrollment is idempotent and non-fatal
+- **WHEN** an already-enrolled agent is enrolled again, or one agent enrollment fails during launch
+- **THEN** duplicate enrollment is a no-op and a per-agent failure does not prevent the crew from launching
+
+### Requirement: Agent memory store defaults at enrollment
+
+Each enrolled agent SHALL use `memory_store: "default"`; the gateway SHALL own vector-similarity defaults without additional memory configuration keys.
+
 #### Scenario: memory_store "default" accepted under KiroCrew 0.9.0
 
 - **WHEN** a crew is launched against a KiroCrew 0.9.0+ base image
@@ -50,18 +41,9 @@ gateway owns those defaults entirely.
 - **WHEN** a crew is launched against a KiroCrew 0.9.0+ base image
 - **THEN** the enrollment payload contains no embedding-model, ranking-mode, or re-embedding config key beyond `"memory_store": "default"`
 - **THEN** the crew launches and agents enroll successfully without those keys
-
 ### Requirement: Member-based dispatch for enrolled agents
 
-Enrolled persona agents dispatched via the `dispatch()` MCP tool SHALL be
-routed into their member DM slot (`parent_session="dashboard:member-{slug}"`)
-rather than a generic chat slot. This gives the agent an attested session
-identity. The slot returned to the caller SHALL echo the clean agent name (e.g.
-`"ghost"`, not `"member-ghost"`). Crews without `enrolled_agents` SHALL route
-unenrolled agents to headless dispatch (no `parent_session`). The `slot`
-parameter on `dispatch` SHALL accept only `None` (the default) or `False`;
-string slot names and `True` (UUID auto-generation) are no longer accepted
-values.
+Dispatch SHALL route enrolled agents to `dashboard:member-{slug}` and echo the clean name; unenrolled agents and explicit `slot=False` SHALL dispatch headless with no `parent_session` and a null slot. `slot` SHALL accept only `None` or `False`.
 
 #### Scenario: Enrolled agent dispatch uses member slot
 
@@ -83,3 +65,7 @@ values.
   crew with `enrolled_agents` containing `"ghost"`
 - **THEN** the task is dispatched headless with no `parent_session`
 - **THEN** the returned slot is `null`
+
+#### Scenario: Only supported slot values are accepted
+- **WHEN** `dispatch` receives a `slot` value other than `None` or `False`
+- **THEN** the request is rejected as an invalid slot value

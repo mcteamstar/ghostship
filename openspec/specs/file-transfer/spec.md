@@ -7,7 +7,7 @@ Move files and directory trees between a crew's isolated workspace and the outsi
 ## Requirements
 
 ### Requirement: Extracting files and diffs via evac
-The system SHALL return a presigned download URL for a file, a tar archive, a git diff, or a git bundle in a crew's workspace, and SHALL reject any path that attempts to traverse outside the workspace. When a `ref` is supplied with `bundle` unset or `False` and `pack` unset or `False`, the system SHALL resolve the ref and the requested repository path against the seeded repository at `<workspace_root>/repo` rather than against the workspace root, exactly as today. When `bundle=True`, `path` SHALL instead name a directory containing a git repository (normally `repo`), and `ref` SHALL be treated as the ref, or a `<ref1>..<ref2>` range, to bundle rather than something to diff against. When `pack=True`, `path` SHALL name a directory in the workspace to tar up and return; the system SHALL stream the directory as a tar archive (application/x-tar) so the caller can extract it locally.
+`evac` SHALL return a presigned URL for a workspace file, tar archive, git diff, or git bundle, and reject paths that escape the workspace. Ordinary refs resolve against `<workspace_root>/repo`; `bundle=True` treats `path` as a repository directory and `ref` as a bundle ref or range. `pack=True` archives a workspace directory as `application/x-tar`.
 
 #### Scenario: Extract a plain file
 - **WHEN** `evac` is called with a `path` and no `ref` and `pack=False`
@@ -58,7 +58,7 @@ The system SHALL return a presigned download URL for a file, a tar archive, a gi
 - **THEN** the system returns an error and issues no presigned URL
 
 ### Requirement: Supplying files and archives via supply
-The system SHALL return a presigned upload URL for injecting a single file, or, with `unpack=True`, a tar/tar.gz archive, or, with `bundle=True`, a git bundle, into a crew's workspace. `unpack` and `bundle` SHALL NOT both be `True` in the same call. The `supply` tool SHALL accept an optional `force: bool = False` parameter; when `force=True` and `bundle=True`, the system SHALL remove the existing destination path inside the crew workspace before cloning, allowing a previously-seeded path to be replaced with an updated bundle. `force` SHALL have no effect when `bundle=False`.
+`supply` SHALL return a presigned URL to upload a file, an archive with `unpack=True`, or a git bundle with `bundle=True`; unpack and bundle SHALL be mutually exclusive. `force` defaults false and, when true for a bundle, SHALL remove the existing destination before cloning. It has no effect outside bundle mode.
 
 #### Scenario: Supply a single file
 - **WHEN** `supply` is called with a destination `path`, `unpack=False`, and `bundle=False`
@@ -105,7 +105,7 @@ The system SHALL return a presigned upload URL for injecting a single file, or, 
 - **THEN** the system returns an error and issues no presigned URL
 
 ### Requirement: Presigned URL expiry and integrity
-The system SHALL sign every `evac` URL with an HMAC-SHA256 over the crew, path, ref, whether `bundle` was requested, whether `pack` was requested, and expiry, truncated to **128 bits** (32 hex characters), and SHALL reject requests whose token is expired, missing, or does not match — including a request that replays a validly-signed URL with `bundle` or `pack` toggled from what was originally signed. `supply` presigned upload URLs SHALL include the `mode` field (`unpack`, `bundle`, and `force` flags) in the signed payload; `_verify_file_token` SHALL verify the mode field matches on upload requests. A token signed with `force=False` SHALL be rejected if presented in a context that would trigger `force=True` behaviour, and vice versa. A mismatched or replayed mode SHALL be rejected with 403 Forbidden.
+`evac` URLs SHALL HMAC-sign crew, path, ref, bundle, pack, and expiry with SHA-256 truncated to 128 bits; missing, expired, mismatched, or mode-replayed tokens SHALL be rejected. `supply` signatures SHALL include unpack, bundle, and force flags, which the verifier SHALL match; mismatches SHALL return 403.
 
 #### Scenario: Valid token within TTL
 - **WHEN** a file request arrives with a 128-bit signature and expiry that match what the system would generate for that crew/path/ref/bundle/pack combination, and the expiry has not passed

@@ -38,9 +38,7 @@ Dashboard routing SHALL remain port-based — each crew UI is served at a dedica
 
 ### Requirement: Per-crew dashboard routing when Portal enabled
 
-`ga-portal` (Caddy) SHALL route each crew's dashboard port traffic to the transport's cookie-injecting proxy endpoint (`/crews/{crew_id}/ui/`) rather than directly to the crew gateway (`gs-{crew_id}:5476`). The transport proxy endpoint SHALL inject the crew's `mc_token_5476` session cookie on every forwarded request and SHALL handle both HTTP and WebSocket connections.
-
-The crew gateway (`gs-{crew_id}:5476`) SHALL be reached exclusively from the transport. This satisfies the KiroCrew gateway's IP-binding constraint — the cookie is bound to the IP that performed the token exchange, which is `ga-transport`'s IP on `ga-starboard`.
+`ga-portal` SHALL route dashboard traffic through transport `/crews/{crew_id}/ui/`, which injects `mc_token_5476` and proxies HTTP and WebSocket. Only transport may connect to the crew gateway, preserving its IP-bound session cookie.
 
 #### Scenario: Dashboard request via Portal is authenticated
 
@@ -87,9 +85,7 @@ When registering a per-crew Caddy server via `_caddy_register_crew`, the transpo
 
 ### Requirement: `ga-portal` network topology
 
-`ga-portal` SHALL be on `ga-portside` only; `gs-*` crew containers SHALL be on `ga-starboard` only. The requirement that `ga-portal` and `ga-transport` share `ga-net` is superseded. The invariant that `ga-portal` SHALL NOT make direct connections to crew containers (`gs-*`) continues to hold and is now additionally enforced at the network layer: crew container hostnames are not resolvable from `ga-portside`.
-
-The routing path — browser → `ga-portal` → `ga-transport:/crews/{id}/ui/` → `gs-<crew_id>:5476` — continues to work because `ga-transport` bridges both networks: it is reachable by `ga-portal` over `ga-portside`, and can reach `gs-*` containers over `ga-starboard`.
+`ga-portal` SHALL use only `ga-portside`, and crews only `ga-starboard`; portal SHALL NOT connect directly to crews. Transport bridges both networks, preserving the browser → portal → transport UI proxy → crew gateway route.
 
 #### Scenario: ga-portal and ga-transport share ga-portside
 
@@ -112,7 +108,7 @@ The routing path — browser → `ga-portal` → `ga-transport:/crews/{id}/ui/` 
 
 ### Requirement: Authenticate dashboard WebSocket clients
 
-When dashboard API-key authentication is enabled, the transport SHALL validate the original client's unexpired and unrevoked dashboard session before connecting to the crew gateway. Browser-origin handshakes SHALL also require an origin matching the externally visible dashboard origin. The origin's host and dashboard port SHALL match portal metadata received with the portal transport secret; its scheme SHALL match trusted portal configuration (managed Caddy TLS mode, or the configured public URL scheme when Caddy TLS is off). Untrusted forwarded headers SHALL NOT establish the origin. Reject malformed or conflicting origins and do not forward upstream on rejection. Non-browser clients without an Origin MAY connect with a valid session. When API-key authentication is disabled, the existing open access behavior SHALL remain available.
+With API-key auth enabled, transport SHALL validate the client's unexpired, unrevoked session before upstream WebSocket connection. Browser origins SHALL match trusted portal host, port, and scheme metadata; forwarded headers cannot establish origin. Reject malformed/conflicting origins without forwarding. Non-browser clients may omit Origin with a valid session. With auth disabled, preserve open access.
 
 #### Scenario: Missing or invalid session
 - **WHEN** a client on a keyed installation opens a dashboard WebSocket with no, invalid, expired, or revoked session
