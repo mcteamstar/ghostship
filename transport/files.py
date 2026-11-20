@@ -260,13 +260,17 @@ def _cleanup_transfer_stage(
     podman: PodmanClient,
     container: str,
     stage_dir: str,
+    workspace: str,
 ) -> None:
     """Best-effort cleanup for a stage whose transfer script did not start."""
     try:
         podman.container_exec_checked(
             container,
             ["python3", f"{SCRIPTS_DIR}/transfer_cleanup.py"],
-            env={"GA_TRANSFER_STAGE": stage_dir},
+            env={
+                "GA_TRANSFER_STAGE": stage_dir,
+                "GA_TRANSFER_WORKSPACE": workspace,
+            },
         )
     except Exception:
         pass
@@ -287,59 +291,17 @@ def _transfer_upload(
     try:
         podman.container_archive_put(container, workspace, outer_tar)
     except Exception:
-        _cleanup_transfer_stage(podman, container, stage_dir)
+        _cleanup_transfer_stage(podman, container, stage_dir, workspace)
         raise
 
+    cmd = ["python3", f"{SCRIPTS_DIR}/transfer_raw.py"]
+    if unpack:
+        cmd.append("--unpack")
     if bundle:
-        try:
-            parent = os.path.dirname(destination.rstrip("/")) or workspace
-            podman.container_exec_checked(container, ["mkdir", "-p", parent])
-            # When force=True, remove the destination before cloning so an
-            # existing repo does not block the clone. This uses list-form to
-            # avoid shell injection via the destination path. The stage is
-            # already written at this point; we only delete the destination,
-            # not the stage.
-            if force:
-                podman.container_exec_checked(container, ["rm", "-rf", destination])
-            # Clone the bundle. If the bundle's HEAD ref contains a slash
-            # (e.g. release/0.2.4) git may fail to resolve it and leave the
-            # working tree empty. Detect that and check out explicitly.
-            result = podman.container_exec_checked(
-                container, ["git", "clone", staged_file, destination]
-            )
-            # Check if clone left an empty working tree (no HEAD commit).
-            try:
-                podman.container_exec_checked(
-                    container, ["git", "-C", destination, "rev-parse", "HEAD"]
-                )
-            except RuntimeError:
-                # HEAD unresolvable — check out the first available remote branch.
-                # Use list-form exec calls (no shell, no interpolation) to avoid
-                # shell injection via the destination path.
-                branches_output = podman.container_exec_checked(
-                    container, ["git", "-C", destination, "branch", "-r"]
-                )
-                # Parse remote branches in Python; skip the HEAD pointer line.
-                branch = ""
-                for line in branches_output.splitlines():
-                    stripped = line.strip()
-                    if stripped and "HEAD" not in stripped:
-                        # Strip "origin/" prefix to get the local branch name.
-                        branch = stripped.removeprefix("origin/").strip()
-                        break
-                if branch:
-                    podman.container_exec_checked(
-                        container,
-                        ["git", "-C", destination, "checkout", "-b", branch, f"origin/{branch}"],
-                    )
-            return result
-        finally:
-            _cleanup_transfer_stage(podman, container, stage_dir)
-
+        cmd.append("--bundle")
+    if force:
+        cmd.append("--force")
     try:
-        cmd = ["python3", f"{SCRIPTS_DIR}/transfer_raw.py"]
-        if unpack:
-            cmd.append("--unpack")
         return podman.container_exec_checked(
             container,
             cmd,
@@ -347,10 +309,11 @@ def _transfer_upload(
                 "GA_TRANSFER_SOURCE": staged_file,
                 "GA_TRANSFER_DEST": destination,
                 "GA_TRANSFER_STAGE": stage_dir,
+                "GA_TRANSFER_WORKSPACE": workspace,
             },
         )
     except Exception:
-        _cleanup_transfer_stage(podman, container, stage_dir)
+        _cleanup_transfer_stage(podman, container, stage_dir, workspace)
         raise
 
 

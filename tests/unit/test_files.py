@@ -290,6 +290,71 @@ def _valid_put_params(crew_id: str, path: str) -> dict:
     return dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
 
 
+class TestTransferUploadDispatch(unittest.TestCase):
+    """Every mutation mode is delegated to the crew-side containment script."""
+
+    def test_upload_modes_use_confined_transfer_script(self):
+        workspace = "/workspace"
+        destination = "/workspace/nested/destination"
+        stage = "/workspace/.kirocrew-transfer-test"
+        staged_file = f"{stage}/payload"
+        cases = [
+            (False, False, False, []),
+            (True, False, False, ["--unpack"]),
+            (False, True, True, ["--bundle", "--force"]),
+        ]
+        for unpack, bundle, force, flags in cases:
+            with self.subTest(unpack=unpack, bundle=bundle, force=force):
+                podman = MagicMock()
+                podman.container_exec_checked.return_value = "transfer complete"
+                with patch.object(
+                    _files,
+                    "_build_outer_transfer_tar",
+                    return_value=(stage, staged_file, b"outer tar"),
+                ):
+                    result = _files._transfer_upload(
+                        podman,
+                        "crew-container",
+                        workspace,
+                        destination,
+                        b"payload",
+                        unpack,
+                        bundle,
+                        force,
+                    )
+                self.assertEqual(result, "transfer complete")
+                podman.container_archive_put.assert_called_once_with(
+                    "crew-container", workspace, b"outer tar"
+                )
+                podman.container_exec_checked.assert_called_once_with(
+                    "crew-container",
+                    ["python3", f"{_files.SCRIPTS_DIR}/transfer_raw.py", *flags],
+                    env={
+                        "GA_TRANSFER_SOURCE": staged_file,
+                        "GA_TRANSFER_DEST": destination,
+                        "GA_TRANSFER_STAGE": stage,
+                        "GA_TRANSFER_WORKSPACE": workspace,
+                    },
+                )
+
+    def test_stage_fallback_cleanup_receives_workspace(self):
+        podman = MagicMock()
+        _files._cleanup_transfer_stage(
+            podman,
+            "crew-container",
+            "/workspace/.kirocrew-transfer-test",
+            "/workspace",
+        )
+        podman.container_exec_checked.assert_called_once_with(
+            "crew-container",
+            ["python3", f"{_files.SCRIPTS_DIR}/transfer_cleanup.py"],
+            env={
+                "GA_TRANSFER_STAGE": "/workspace/.kirocrew-transfer-test",
+                "GA_TRANSFER_WORKSPACE": "/workspace",
+            },
+        )
+
+
 class TestFileGetHandler(unittest.TestCase):
     """_handle_file_get: GET handler status-code contract (FG1–FG5)."""
 

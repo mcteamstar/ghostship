@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
-"""Remove a transfer staging directory.
-
-Runs inside a crew container via ``python3 /scripts/transfer_cleanup.py``,
-reading the staging path from the environment (as the inline
-``_CLEANUP_TRANSFER_SCRIPT`` did):
-
-    GA_TRANSFER_STAGE — the staging directory to remove
-
-Best-effort: a missing directory is not an error.
-"""
+"""Remove a staged upload without following paths outside its workspace."""
 from __future__ import annotations
 
 import os
-import pathlib
-import shutil
-import sys
+
+from transfer_paths import open_workspace, remove_tree
 
 
-def cleanup(stage: str) -> None:
-    """Recursively remove ``stage``, ignoring errors."""
-    shutil.rmtree(pathlib.Path(stage), ignore_errors=True)
+def cleanup(stage: str, workspace: str) -> None:
+    root_fd = open_workspace(workspace)
+    try:
+        remove_tree(root_fd, workspace, stage)
+    finally:
+        os.close(root_fd)
 
 
 def main() -> int:
-    cleanup(os.environ["GA_TRANSFER_STAGE"])
+    cleanup(os.environ["GA_TRANSFER_STAGE"], os.environ["GA_TRANSFER_WORKSPACE"])
     return 0
 
 
