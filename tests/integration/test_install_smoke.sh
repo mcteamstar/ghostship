@@ -138,12 +138,12 @@ cleanup_job() {
     kill "$PODMAN_SERVICE_PID" 2>/dev/null || true
     wait "$PODMAN_SERVICE_PID" 2>/dev/null || true
   fi
-  rm -rf -- "$SMOKE_ROOT"
+  podman --remote=false unshare rm -rf -- "$SMOKE_ROOT" || rm -rf -- "$SMOKE_ROOT"
   exit "$status"
 }
 trap cleanup_job EXIT
 
-podman system service --time=0 "unix://$PODMAN_SOCK" \
+podman --remote=false system service --time=0 "unix://$PODMAN_SOCK" \
   > "$SMOKE_ROOT/podman-service.log" 2>&1 &
 PODMAN_SERVICE_PID=$!
 for attempt in {1..30}; do

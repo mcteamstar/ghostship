@@ -92,7 +92,7 @@ jobs:
             trap - EXIT
             kill "$service_pid" 2>/dev/null || true
             wait "$service_pid" 2>/dev/null || true
-            rm -rf "$podman_dir"
+            podman --remote=false unshare rm -rf -- "$podman_dir" || rm -rf -- "$podman_dir"
             exit "$status"
           }
           trap cleanup EXIT
