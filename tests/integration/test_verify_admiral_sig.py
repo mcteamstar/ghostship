@@ -84,6 +84,8 @@ def main() -> None:
     ).decode("ascii").rstrip("=")
     valid = signed_message(subject, signature)
     tampered = signed_message("tampered signature fixture", signature)
+    malformed_signature = base64.urlsafe_b64encode(b"malformed").decode("ascii").rstrip("=")
+    malformed = signed_message(subject, malformed_signature)
     secret = f"admiral-signature-test-{uuid.uuid4().hex}"
 
     subprocess.run(
@@ -95,6 +97,7 @@ def main() -> None:
     try:
         expect_exit(run_verifier(podman, args.image, valid, secret), 0, "valid signature")
         expect_exit(run_verifier(podman, args.image, tampered, secret), 1, "tampered message")
+        expect_exit(run_verifier(podman, args.image, malformed, secret), 1, "malformed signature")
         expect_exit(run_verifier(podman, args.image, valid, None), 2, "missing public key")
     finally:
         subprocess.run(
