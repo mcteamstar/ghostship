@@ -11,6 +11,17 @@
 - Upgrade the crew base to KiroCrew 0.13.0 and name the recorded backend on
   Transport spawns. Recreate existing crews to adopt the new image.
 
+### OpenSpec and repository hygiene
+
+- Bundle OpenSpec 2.1.0 and its change verification skill in spec-ops crews.
+- Add the `sweepy` Captain order to check spec validity, contradictions, stale
+  changes, documentation drift, and sensitive data. Privacy checks remain part
+  of Indy and Sweepy, and the standalone privacy order is removed.
+- Move the dependency inventory to the repository root, improve strict OpenSpec
+  validation, and extend integration coverage.
+- Clarify member slot routing, credential recovery, Podman setup, and network
+  topology in the operator docs.
+
 ## v0.12.2
 
 ### Truthful nuke cleanup (TRN-330)
