@@ -153,7 +153,7 @@ jobs:
       - name: Install Podman and smoke dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman podman-compose curl
+          sudo apt-get install -y podman podman-compose curl slirp4netns
 
       - name: Install, start, probe, and clean up
         timeout-minutes: 15

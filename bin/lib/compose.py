@@ -212,15 +212,12 @@ def generate_compose(config: ComposeConfig) -> str:
         portal_secrets.append("ga-api-key")
 
     # --- Portal ports ---
+    dashboard_ports = config.dashboard_port_range_start
+    if dashboard_ports != config.dashboard_port_range_end:
+        dashboard_ports = f"{dashboard_ports}-{config.dashboard_port_range_end}"
     portal_ports = [
-        (
-            f"{config.portal_bind}:{config.port}:{config.port}"
-        ),
-        (
-            f"{config.portal_bind}:{config.dashboard_port_range_start}-"
-            f"{config.dashboard_port_range_end}:{config.dashboard_port_range_start}-"
-            f"{config.dashboard_port_range_end}"
-        ),
+        f"{config.portal_bind}:{config.port}:{config.port}",
+        f"{config.portal_bind}:{dashboard_ports}:{dashboard_ports}",
     ]
 
     # --- Top-level secrets ---
