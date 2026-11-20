@@ -112,3 +112,21 @@ def test_gs_csrf_is_redacted() -> None:
     message, _ = _run_with_gateway(400, body)
     assert "mycsrftoken456" not in message
     assert "gs_csrf=[redacted]" in message
+
+
+@pytest.mark.parametrize("backend", [None, "kiro", "claude", "codex"])
+def test_transport_spawn_names_backend_even_on_refusal(backend):
+    crew = _crew()
+    if backend is not None:
+        crew["acp_backend"] = backend
+    body = {"task": "hello", "parent_session": "dashboard:member-raven"}
+    refusal = _status_error(422, "Backend unavailable")
+    with patch.object(lc, "_crew_api", side_effect=refusal) as gateway:
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            lc._crew_api_with_recovery(crew, "x", "POST", "/api/spawn", json=body)
+
+    assert raised.value is refusal
+    gateway.assert_called_once_with(
+        crew, "POST", "/api/spawn", json={**body, "backend": backend or "kiro"}
+    )
+    assert "backend" not in body

@@ -1663,6 +1663,8 @@ def captain(
 ) -> dict:
     """Autopilot: hand the full SDD lifecycle to a recurring Raven check-in — manage the single Raven-backed standing-orders Captain for a crew.
 
+    Transport spawn requests explicitly name the crew’s recorded backend.
+
     Two paths: manual relay (you dispatch/pickup/steer each persona yourself),
     or Captain autopilot (a recurring Raven check-in drives the full cycle
     unattended). Captain is the autopilot path.
@@ -2103,6 +2105,8 @@ def dispatch(
     slot: bool | None = None,
 ) -> dict:
     """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
+
+    Transport spawn requests explicitly name the crew’s recorded backend.
 
     The agent has zero context beyond the ``task`` string — be specific and
     self-contained. Use pickup as the next step to check progress or collect

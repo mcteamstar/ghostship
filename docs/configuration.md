@@ -53,7 +53,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of host ports in the dashboard proxy port range. Config-file-only. |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
-| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e` — the pinned KiroCrew v0.12.2 multi-arch index digest; bundled Kiro CLI 2.27.1)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
+| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:f4c6c72656e60ed21fd02a86d2b631735660d58d9d0806f7b464acbd3ccb9a26` — the pinned KiroCrew v0.13.0 multi-arch index digest; bundled Kiro CLI 2.27.1)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path on the **host** to an operator-managed directory of additional standing-order template `.md` files. Must be an absolute path (error otherwise). When set and the path exists, it is bind-mounted read-only at `/mnt/orders` inside the container; the container receives `GA_ORDERS_DIR=/mnt/orders`. A warning is logged if the path is set but missing. Config-file-only. |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. See [portal.md](portal.md) for mode descriptions. Unrecognised values fall back to `off` with a WARNING. |
@@ -598,3 +598,7 @@ kiro-cli mcp add --name ghostship \
 - **Single-host only** — no HA. Running two transports against the same data directory corrupts the registry.
 - **File transfer** — presigned URLs travel in plaintext when `GA_PORTAL_TLS_MODE=off`; use a non-`off` TLS mode or an external reverse proxy for remote deployments.
 - **Podman socket security** — restrict access to `DATA_DIR` and the Podman socket to the service account running the transport on shared hosts.
+
+For a KiroCrew base image rollback, restore the previous image digest and its
+matching Kiro CLI database seed together, then rebuild Ghostship. Existing crews
+keep their original image. Verify authentication on a fresh crew.

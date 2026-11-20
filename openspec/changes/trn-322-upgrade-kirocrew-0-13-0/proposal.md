@@ -11,7 +11,7 @@ The 2026-11-17 KiroCrew v0.13 discovery, run by the `kc-discovery-claude` crew a
 - Advance the immutable `KC_BASE_IMAGE` pin to the verified KiroCrew `0.13.0` stable multi-architecture index digest in the admission build default and the matching `transport/config.py` default. The transport also uses this image for ephemeral login containers, so the pin moves the login's kiro-cli too.
 - Inspect the pinned image for its actual Kiro CLI version and its kiro-cli SQLite migration rows and table schema. Update `seed_kiro_db.py` if they differ from the v0.12.2 seed (11 rows, versions 0 to 10), and record the evidence.
 - Name the crew's backend on every transport-originated `POST /api/spawn` (single dispatch, batch dispatch, Captain check-in, scheduled immediate dispatch, and scheduled tick dispatch), mapped from the crew's recorded `acp_backend` to KiroCrew's request spelling (`kiro`, `claude`, `codex`). The in-crew `ghostship-spawn` helper is unchanged; its nested spawns inheriting their parent's harness is the intended behaviour.
-- Review the KiroCrew 0.13.0 changelog and the discovery report for other integration effects, and record findings and no-impact conclusions in a dated dependency review.
+- Review the KiroCrew 0.13.0 changelog and the discovery report for other integration effects, and record findings and no-impact conclusions on the TRN-322 Plane ticket.
 - Refresh dependency inventory, operator documentation and the changelog for the new pin.
 - Build the images and smoke-test fresh kiro and claude crews: gateway readiness, kiro Identity Center login with profile capture, auth injection, enrolment, dispatch, Captain check-in, and the `kiro_signin` check.
 
@@ -34,5 +34,5 @@ _(none)_
 - `crews/_base/graduation/seed_kiro_db.py`, `crews/_base/graduation/Containerfile`: seed verification annotation, and seed logic only if the schema differs.
 - `transport/tools.py` (single dispatch body), `transport/lifecycle.py` (`_dispatch_batch` body), `transport/captain_engine.py` (Raven check-in body): a `backend` field on `/api/spawn`.
 - `openspec/specs/crew-image-build/spec.md`, `openspec/specs/crew-acp-backend/spec.md`: requirement deltas.
-- `dependencies.yaml`, a new `docs/dependency-review-<date>.md`, `docs/configuration.md`, `docs/architecture.md`, `CHANGELOG.md`.
+- `dependencies.yaml`, `docs/configuration.md`, `docs/architecture.md`, `CHANGELOG.md`.
 - Rebuilt transport, login and crew images. Existing crews keep their current image until they are recreated.

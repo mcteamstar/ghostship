@@ -7,7 +7,10 @@ kiro-cli-chat-v2 migration sequence through 010_pinned_bin_versions. The chat
 sequence is the active task runtime and extends the shared data.sqlite3 schema:
 11 migration rows, versions 0 through 10, maximum version 10.
 
-Verified 2026-11-14 against KiroCrew v0.12.2 index
+On 2026-11-20, KiroCrew v0.13.0 arm64 initialized the same migration rows,
+tables and indexes with Kiro CLI 2.27.1.
+
+Previously verified 2026-11-14 against KiroCrew v0.12.2 index
 sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e,
 amd64 manifest sha256:6f177f87c3850b7dd1f4a81f55f835ca516be55564910ff0a769f6dc9013bc72,
 and CLI layer
@@ -22,7 +25,7 @@ The v0.12.0 baseline used the same CLI version and had migrations 000 through
 005 in /usr/local/bin/kiro-cli; its image did not include the chat executable
 migration sequence. The former seed therefore matched the main executable but
 did not pre-seed the active chat runtime schema. The complete comparison and
-release-note review are in docs/dependency-review-2026-11-14.md.
+release-note review are in https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-14.md.
 
 Inspection used the public GHCR manifest and image layer because Podman is not
 installed in this environment. The image database was not executed here. On a

@@ -8,8 +8,8 @@
   writes while retaining cross-site protections.
 - Wait for the Kiro Identity Center profile before storing credentials, and
   report crew sign-in state so dispatch can return `not_authenticated` clearly.
-- Propose the KiroCrew 0.13.0 integration upgrade; its image and backend-spawn
-  changes remain pending implementation and release validation.
+- Upgrade the crew base to KiroCrew 0.13.0 and name the recorded backend on
+  Transport spawns. Recreate existing crews to adopt the new image.
 
 ## v0.12.2
 
@@ -32,7 +32,7 @@
 - Update the pre-seeded CLI database to migrations 0–10, including the BLOB
   state schema and conversation/version tables found in the v0.12.2 chat runtime.
 - The release-note review and static image evidence are recorded in
-  `docs/dependency-review-2026-11-14.md`.
+  [the historical dependency review](https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-14.md).
 - Verified on arm64 (macOS): the local image build seeds the database, and a
   fresh kiro crew completed a task and continued its session with no schema
   errors. Headless ACP dispatch persists sessions under `~/.kiro/sessions`

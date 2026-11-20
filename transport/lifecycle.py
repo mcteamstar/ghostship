@@ -774,6 +774,14 @@ def _phase2_dead_gateway(
         )
 
 
+def _spawn_backend(crew: Crew | dict) -> str:
+    """Select the gateway backend from the crew record, including legacy crews."""
+    backend = (crew.acp_backend if isinstance(crew, Crew) else crew.get("acp_backend")) or "kiro"
+    if backend not in ("kiro", "claude", "codex"):
+        raise ValueError(f"Unsupported crew backend: {backend}")
+    return backend
+
+
 def _crew_api_with_recovery(
     crew: dict,
     crew_id: str,
@@ -813,6 +821,9 @@ def _crew_api_with_recovery(
     gateway calls through ``_crew_api``, not through recovery, so the lock is
     never re-entered. See design.md D1.
     """
+    if method == "POST" and path == "/api/spawn":
+        kw["json"] = {**kw["json"], "backend": _spawn_backend(crew)}
+
     lock = _get_recovery_lock(crew_id)
     with lock:
         # First attempt
