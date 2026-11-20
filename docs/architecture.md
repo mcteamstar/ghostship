@@ -100,14 +100,16 @@ Call `supply(path="repo", crew_id="<id>", bundle=True)` and POST a git bundle to
 
 `captain(crew_id, action="order", ...)` stores a recurring check-in in the transport registry. The Captain monitor wakes a stopped crew when that check-in is due, then continues or dispatches Raven using the existing task state. Future or disabled check-ins do not wake crews.
 
+Captain starts one task per check-in by default. An order may authorize several independent work items; Raven starts them sequentially and reconciles each work-item identity, intent, and returned task ID before starting the next. Accepted tasks may then run concurrently. A memory-pressure deferral or uncertain admission stops further starts for that check-in; the next check-in reconciles prior intents before retrying. SDD multi-change mode admits at most one lifecycle step per change, while Indy and Sweepy pace their explicitly named review tasks.
+
 Built-in templates:
 
 | Template | Alias | What Raven does |
 |:---------|:------|:----------------|
-| `spec-driven-development` | `sdd` | Full OpenSpec lifecycle: Spectre → Ghost → Banshee → Reaper. `change_name` accepts a comma-separated list for parallel multi-change execution. |
-| `independent-review` | `indy` | Seven concurrent reviewers (Banshee × 6 for security/quality/test-coverage-a/b/c/privacy, Wraith for docs). Dispatches up to 7 agents concurrently; memory-pressure backoff handles refused spawns. Consolidated summary mailed to Admiral. Omit `change_name` for whole-codebase review. |
-| `free-will` | `willy` | Open-ended: Raven executes `message=` with full autonomy. Self-cancels on completion. |
-| `repo-hygiene-sweep` | `sweepy` | Use for repository-maintenance passes; Indy remains the change-review workflow. Runs strict OpenSpec validation/lifecycle status, spec-content and contradiction review, spec/code and docs coherence, plus a repository-wide privacy/sensitive-data sweep. Pass the absolute repository path in `message`; optionally pass comma-separated change names in `change_name`. Self-cancels after reporting; no edits, sync, or archive. |
+| `spec-driven-development` | `sdd` | Full OpenSpec lifecycle: Spectre → Ghost → Banshee → Reaper. `change_name` accepts a comma-separated list; one step per change may be admitted in a check-in, with starts paced sequentially. |
+| `independent-review` | `indy` | Seven independent reviewers (Banshee × 6 for security/quality/test-coverage-a/b/c/privacy, Wraith for docs). Starts are paced; admitted reviewers may run concurrently. Memory pressure stops further starts for that check-in. Consolidated summary mailed to Admiral. Omit `change_name` for whole-codebase review. |
+| `free-will` | `willy` | Open-ended: Raven executes `message=` with full autonomy and starts one task per check-in by default. Multiple starts require explicitly named independent work items. Self-cancels on completion. |
+| `repo-hygiene-sweep` | `sweepy` | Use for repository-maintenance passes; Indy remains the change-review workflow. Runs strict OpenSpec validation/lifecycle status, spec-content and contradiction review, spec/code and docs coherence, plus a repository-wide privacy/sensitive-data sweep. Its four reviews start sequentially and may run concurrently after admission. Pass the absolute repository path in `message`; optionally pass comma-separated change names in `change_name`. Self-cancels after reporting; no edits, sync, or archive. |
 
 `action="status"` reports job state and mailbox counts. `action="stop"` pauses without clearing history.
 

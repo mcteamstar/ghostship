@@ -66,6 +66,12 @@ printf '%s\\n' "captain_id=$KIROCREW_CREW_ID" "completed_at=$(date -u +%Y-%m-%dT
 
 Once the file is written, hold — the transport will pause the schedule on its next tick. Do not attempt to call any transport endpoint, do not ask the Admiral to stop it, and do not report done without confirming the file was written successfully."""
 
+_RAVEN_DISPATCH_PACING = """## Paced dispatch and reconciliation
+
+Prefer one task start per check-in. A standing order may authorize multiple starts only when it names several independent work items. Start them sequentially. For each work item, use its logical identity (scope or change plus role, review track, and shard when relevant), reconcile its pending or confirmed intent against the task descriptions and returned gateway task ID, and record that ID against the identity before starting the next. A task for the same persona but a different change, review track, or shard is a separate work item. If the available evidence cannot distinguish the work item, or the helper or listing result is uncertain, stop new starts and reconcile before retrying. Accepted tasks may continue running in parallel.
+
+If any attempted start is deferred or refused for memory pressure (`memory_pressure:`), write no confirmation for it, retain its pending intent, leave remaining work pending, and start no further tasks in this check-in. On a later check-in, reconcile prior intents and task IDs before retrying. Preserve the order-specific pressure escalation. Do not add a fixed delay or memory threshold; pace successive calls and confirm each accepted task is visible before starting the next."""
+
 # ── Academy order template loading ───────────────────────────────────────────
 
 _ORDERS_DIR = Path(os.environ.get("ACADEMY_PATH", str(Path(__file__).resolve().parent.parent / "academy"))) / "orders"
@@ -253,6 +259,7 @@ def _parse_order_front_matter(content: str) -> tuple[str, list[str], str]:
 def _substitute_placeholders(body: str) -> str:
     """Replace {{PLACEHOLDER}} tokens with corresponding module-level constants."""
     result = body.replace("{{RAVEN_GATEWAY_ORIENTATION}}", _RAVEN_GATEWAY_ORIENTATION)
+    result = result.replace("{{RAVEN_DISPATCH_PACING}}", _RAVEN_DISPATCH_PACING)
     result = result.replace("{{RAVEN_STORE_RESOLUTION}}", _RAVEN_STORE_RESOLUTION)
     result = result.replace("{{RAVEN_SELF_CANCEL}}", _RAVEN_SELF_CANCEL)
     # Warn about residual placeholders
@@ -271,6 +278,8 @@ First read /var/mail/captain and identify orders that are new since your prior c
 
 {_RAVEN_GATEWAY_ORIENTATION}
 
+Dispatch policy: one new task start per check-in is the default. Follow only the explicit work items in the active standing order. If the order authorizes multiple independent tasks, start them sequentially and reconcile each logical work identity, pending intent, and returned task ID before starting the next. A memory-pressure deferral or uncertain admission ends new starts for this check-in; already accepted tasks may continue in parallel.
+
 When new standing orders arrive while a previously-dispatched persona task is still in flight, steer it with the new context rather than waiting for it to finish.
 
 If a standing order gives more specific target-repository or OpenSpec-store rules than the generic guidance below, follow the standing order's rules for that target.
@@ -279,8 +288,8 @@ If a standing order gives more specific target-repository or OpenSpec-store rule
 
 {_RAVEN_SELF_CANCEL}
 
-Take exactly one of these actions this cycle:
-1. If a clear next atomic step is needed and within your authority, dispatch that step to exactly one of ghost, spectre, banshee, wraith, or reaper.
+Take one action category this cycle:
+1. If a clear next atomic step is needed and within your authority, dispatch it to one of ghost, spectre, banshee, wraith, or reaper. When the standing order explicitly authorizes several independent tasks, start them sequentially under the paced-dispatch policy, with a separate reconciled intent and task ID for each.
 2. If there is no outstanding action, or a safe retry is not yet warranted, hold and let the existing schedule continue.
 3. If the next decision needs permission or judgment outside your authority, escalate to the Admiral at admiral@localhost instead of guessing or proceeding unilaterally, then hold that point until a later check-in receives direction.
 
