@@ -39,12 +39,14 @@ export XDG_DATA_HOME="$SMOKE_DATA"
 export XDG_RUNTIME_DIR="$SMOKE_RUNTIME"
 export PODMAN_SOCK="$SMOKE_RUNTIME/podman.sock"
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-  # systemd-run --user --scope connects via XDG_RUNTIME_DIR/systemd/private.
-  # Expose the runner's user manager to Netavark inside the isolated runtime.
-  runner_systemd="/run/user/$(id -u)/systemd"
-  test -S "$runner_systemd/private"
-  ln -s "$runner_systemd" "$SMOKE_RUNTIME/systemd"
+  # Podman mounts XDG_RUNTIME_DIR back into its rootless network namespace
+  # after replacing /run. Netavark needs the real user manager socket there.
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  test -S "$XDG_RUNTIME_DIR/systemd/private"
   systemd-run --user --scope --quiet /usr/bin/true
+  export CONTAINERS_STORAGE_CONF="$SMOKE_ROOT/storage.conf"
+  printf '[storage]\ndriver = "overlay"\nrunroot = "%s"\ngraphroot = "%s"\n' \
+    "$SMOKE_RUNTIME/storage" "$SMOKE_DATA/containers/storage" > "$CONTAINERS_STORAGE_CONF"
 fi
 unset CONTAINER_HOST CONTAINER_CONNECTION
 mkdir -p "$XDG_CONFIG_HOME/containers"
