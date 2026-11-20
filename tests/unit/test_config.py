@@ -141,7 +141,7 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(self.cfg.port, 64057)
 
     def test_ga_max_crews_default(self):
-        self.assertEqual(self.cfg.ga_max_crews, 20)
+        self.assertEqual(self.cfg.ga_max_crews, 100)
 
     def test_ga_max_active_crews_default(self):
         self.assertEqual(self.cfg.ga_max_active_crews, 3)

@@ -639,6 +639,18 @@ class CrewLauncher:
             except Exception:
                 podman.container_stop(c.container)
                 raise
+            if backend == "kiro":
+                # Re-check the woken crew's sign-in once its gateway is up;
+                # the previous record may predate a credential change.
+                try:
+                    try:
+                        import kiro_signin as _kiro_signin  # container: flat /app/
+                    except ModuleNotFoundError:
+                        from transport import kiro_signin as _kiro_signin  # local dev
+                    _kiro_signin.clear(crew_id)
+                    _kiro_signin.check_in_background(crew_id)
+                except Exception:
+                    logger.debug("kiro sign-in re-check not scheduled for %s", crew_id, exc_info=True)
 
             # TRN-259: re-patch from the crew's recorded backend, not the
             # current transport default. Pass the crew's own comp so its

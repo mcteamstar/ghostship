@@ -6,86 +6,56 @@ Let an MCP client dispatch tasks to agent personas inside a crew, check on or co
 
 ## Requirements
 
-### Requirement: Task dispatch
+### Requirement: Task dispatch and member-slot routing
 
-The system SHALL dispatch a task to a named agent persona within a specified crew and return a task ID for later tracking. Every dispatched task SHALL be a dedicated (retained) run at the crew gateway, not a default shared run, so that a later forceful stop of that task cannot destroy session data shared with another task.
-
-The system SHALL accept an optional `slot` parameter on `dispatch()`:
-
-- `slot=None` (default, no dashboard active) — no `parent_session` is set on `/api/spawn`. Task is invisible in the dashboard. Zero regression.
-- `slot="bridge"` (default, dashboard active) — before dispatching, the system SHALL call `POST /api/chat/slots {"name": "bridge"}` on the crew gateway (treating 409 as success), then pass `parent_session="dashboard:bridge"` on `/api/spawn`. All tasks using this default share the crew's `"bridge"` session.
-- `slot=True` — before dispatching, the system SHALL generate a unique slot name (`uuid4().hex[:8]` suffix), call `POST /api/chat/slots {"name": "<suffix>"}`, then pass `parent_session="dashboard:<suffix>"` on `/api/spawn`. Each task gets its own dedicated visible session.
-- `slot="<name>"` — before dispatching, the system SHALL call `POST /api/chat/slots {"name": "<name>"}` (treating 409 as success), then pass `parent_session="dashboard:<name>"`. Multiple dispatches with the same slot name share one session.
-
-When `slot` is not explicitly provided, the system SHALL derive the default at dispatch time from the crew's current `dashboard_port` registry field: `"bridge"` if `dashboard_port` is set, `None` otherwise.
-
-The resolved slot name (or null when headless) SHALL be echoed back in the `dispatch()` response as `"slot"`.
-
-The `mode` parameter is removed. Callers previously passing `mode="headless"` should pass `slot=None`; `mode="anchored"` → `slot="bridge"`; `mode="free"` → `slot=True`.
+The system SHALL dispatch a task to a named persona in a specified crew as a dedicated retained run and return a task ID. `slot=None` routes enrolled personas to their pre-created member DM slot and leaves unenrolled personas headless. `slot=False` forces headless dispatch.
 
 #### Scenario: Dispatch to an existing crew
-
-- **WHEN** `dispatch` is called with a `task`, an `agent` (defaulting to `ghost`), and a `crew_id` that exists
-- **THEN** the system ensures the crew container is running, forwards the task to the crew's `/api/spawn` endpoint with a dedicated-run request, and returns a `task_id` with status `dispatched`, `created_at` as an ISO 8601 UTC timestamp, and `slot` echoing the resolved slot name (or null)
+- **WHEN** dispatch is called with a task, an agent, and an existing `crew_id`
+- **THEN** the system ensures the crew is running, sends a dedicated-run request to `/api/spawn`, and returns a task ID, dispatched status, creation timestamp, and resolved slot
 
 #### Scenario: Dispatch without crew_id when crews exist
-
-- **WHEN** `dispatch` is called without `crew_id` and one or more crews are registered
-- **THEN** the system returns an error listing the live crew IDs instead of guessing which crew to use
+- **WHEN** dispatch is called without `crew_id` and one or more crews are registered
+- **THEN** the system returns an error listing live crew IDs instead of guessing
 
 #### Scenario: Dispatch when no crews exist
+- **WHEN** dispatch is called without `crew_id` and no crews are registered
+- **THEN** the system returns an error instructing the caller to launch a crew first
 
-- **WHEN** `dispatch` is called without `crew_id` and no crews are registered
-- **THEN** the system returns an error instructing the caller to call `launch` first
+#### Scenario: Enrolled persona uses its member slot by default
+- **WHEN** dispatch is called without `slot` for an enrolled persona
+- **THEN** `/api/spawn` uses `parent_session="dashboard:member-<slug>"` and the response identifies that member slot
 
-#### Scenario: slot=None sends no parent_session
+#### Scenario: Unenrolled persona is headless by default
+- **WHEN** dispatch is called without `slot` for an unenrolled persona
+- **THEN** `/api/spawn` has no `parent_session` and the response has `slot: null`
 
-- **WHEN** `dispatch` is called with `slot=None` (or no slot and no dashboard active)
-- **THEN** the `/api/spawn` body does NOT include a `parent_session` field, and the response includes `"slot": null`
+#### Scenario: Explicit false forces headless dispatch
+- **WHEN** dispatch is called with `slot=False` for an enrolled persona
+- **THEN** `/api/spawn` has no `parent_session` and the response has `slot: null`
 
-#### Scenario: slot="bridge" creates shared session and attaches task
+#### Scenario: Dashboard allocation does not choose a bridge slot
+- **WHEN** a crew has a dashboard port and an enrolled persona is dispatched without a `slot` argument
+- **THEN** the task uses the persona's member DM slot, not a shared bridge slot
 
-- **WHEN** `dispatch` is called with `slot="bridge"` (or defaulted to bridge via dashboard_port)
-- **THEN** the system calls `POST /api/chat/slots {"name": "bridge"}` (409 treated as success), sends `/api/spawn` with `parent_session="dashboard:bridge"`, and the response includes `"slot": "bridge"`
+#### Scenario: No dashboard port does not change enrollment-based routing
+- **WHEN** a crew has no dashboard port and an enrolled persona is dispatched without a `slot` argument
+- **THEN** the task uses its pre-created member DM slot
 
-#### Scenario: slot=True creates a dedicated session per task
+### Requirement: Legacy slot values do not create legacy sessions
 
-- **WHEN** `dispatch` is called with `slot=True`
-- **THEN** the system generates a unique 8-hex suffix, calls `POST /api/chat/slots {"name": "<suffix>"}`, sends `/api/spawn` with `parent_session="dashboard:<suffix>"`, and the response includes `"slot": "<suffix>"`
+`slot=True` SHALL NOT create a per-task slot; the current resolver warns and applies the `slot=None` routing. String-valued `slot` inputs are invalid under the MCP tool's boolean-or-null input schema and SHALL NOT create named sessions.
 
-#### Scenario: slot="<name>" creates or reuses a named session
+#### Scenario: True does not create a per-task slot
+- **WHEN** dispatch is called with `slot=True`
+- **THEN** the resolver logs a warning, applies the `slot=None` enrollment-based routing, and creates no per-task slot
 
-- **WHEN** `dispatch` is called with `slot="my-review"`
-- **THEN** the system calls `POST /api/chat/slots {"name": "my-review"}` (409 treated as success), sends `/api/spawn` with `parent_session="dashboard:my-review"`, and the response includes `"slot": "my-review"`
-
-#### Scenario: Two dispatches with the same slot name share one session
-
-- **WHEN** two `dispatch` calls are made with `slot="review-trn-147"`
-- **THEN** both tasks have `parent_session="dashboard:review-trn-147"` on `/api/spawn`, and both completions appear in the same dashboard session
-
-#### Scenario: Crew default inferred from dashboard_port at dispatch time
-
-- **WHEN** a crew has `dashboard_port` set and `dispatch` is called with no explicit `slot`
-- **THEN** the effective slot is `"bridge"` (self-corrects when dashboard is toggled)
-
-#### Scenario: Crew default is null when no dashboard
-
-- **WHEN** a crew has no `dashboard_port` and `dispatch` is called with no explicit `slot`
-- **THEN** the effective slot is null (headless)
+#### Scenario: String-valued slots are invalid tool inputs
+- **WHEN** an MCP dispatch request supplies a string value for `slot`
+- **THEN** the boolean-or-null tool input contract rejects the request and no named session is created
 
 ### Requirement: Task status and collection
-The system SHALL report a task's progress and result when polled, and SHALL list all tasks in a crew when no specific task is named. The system SHALL always include mail state in the pickup response without requiring any flag or option. The system SHALL support an optional `timeout_secs` parameter that, when greater than zero, polls until the task completes, the timeout elapses, or new Admiral mail arrives.
-
-The system SHALL cap the internal poll window at `GA_PICKUP_MAX_POLL_SECS` (default 30s) regardless of the caller-supplied `timeout_secs` value. When the internal cap fires before the caller's `timeout_secs` has elapsed (i.e. the task is still running), the system SHALL return the current task state as a normal (non-error) JSON response with `"reason": "timeout"`. The MCP transport error path SHALL NOT be used for a clean timeout expiry.
-
-The system SHALL read all crew mailboxes on every `pickup` call (all six persona mailboxes, `/var/mail/captain`, and `/var/mail/admiral`) and include subject lines and counts in the response. Only subject lines are returned — message bodies are not read. Reading mailboxes never modifies them.
-
-What is reported back is tuned to how `pickup` was called:
-
-- When `pickup` is called with a `task_id`: report the task's agent mailbox, captain, and admiral — subjects and counts for those three.
-- When `pickup` is called without a `task_id` (crew-wide): report all persona mailboxes, captain, and admiral.
-
-In both cases all 8 mailboxes are read; only the reported set differs.
+Polling SHALL report task progress and result; omitting the task ID SHALL list all crew tasks. `pickup` SHALL wait only when `timeout_secs > 0`, ending on completion, timeout, or new Admiral mail. Its cap is `GA_PICKUP_MAX_POLL_SECS` (default 30s); cap expiry SHALL return normal JSON with `reason: timeout`. Each call reads all eight mailboxes without modifying them and returns subjects/counts only: task-specific calls report that agent, Captain, and Admiral; crew-wide calls report all eight.
 
 #### Scenario: Poll a specific task
 - **WHEN** `pickup` is called with a `task_id` and `crew_id`
@@ -186,7 +156,7 @@ The system SHALL redirect a still-running task in place, and SHALL resume a comp
 - **THEN** `steer` cannot be used, since the job has a `job_id`, not a `task_id` — a new `schedule` call, or for a standing-orders Captain check-in a `captain(action="order", ...)` call, is the only path
 
 ### Requirement: Recurring task scheduling
-The system SHALL schedule a recurring task on a crew using either a cron expression or a fixed interval in seconds (parameter named `interval`), and SHALL reject a request that supplies both or neither. The system SHALL default `agent` to `ghost` when not specified, matching `dispatch`'s default; a Captain check-in that should run as Raven SHALL set `agent` explicitly. The system SHALL accept a `fire_immediately` boolean parameter that controls whether the job's task is dispatched once immediately upon creation, before the first scheduled interval or cron tick fires.
+The system SHALL schedule by either cron or `interval` seconds and reject requests supplying both or neither. It SHALL default `agent` to `ghost`; Raven check-ins SHALL name Raven explicitly. `fire_immediately` SHALL control whether a task runs once at creation before the first scheduled tick.
 
 #### Scenario: Schedule by cron
 - **WHEN** `schedule` is called with a `cron` expression and no `interval`
@@ -381,14 +351,7 @@ parameter — `dispatch` is always immediate. `dispatch` SHALL always return a
 
 ### Requirement: Idempotent one-shot job deletion
 
-When the schedule monitor fires a one-shot (delay) job, the system SHALL make the job permanently non-repeating before issuing the gateway DELETE. Specifically, the transport SHALL:
-
-1. Mark the registry entry for the one-shot job as `enabled: false` and set its `next_fire_at` to `_NEVER_FIRE_AT` **atomically under `_registry_lock`** before attempting the gateway DELETE.
-2. Then issue `DELETE /api/crons/{job_id}` to the gateway.
-
-If the DELETE succeeds, the registry entry MAY be removed. If the DELETE fails (any exception or non-success response), the job SHALL NOT be re-fired by the schedule monitor in any subsequent cycle, because the registry marks it disabled with `next_fire_at = _NEVER_FIRE_AT`. The DELETE failure SHALL be logged at WARNING level.
-
-This requirement applies whether or not the task dispatch that preceded the DELETE succeeded. The registry update and the gateway DELETE are separate steps: the registry update is the durable safety gate; the DELETE is a best-effort cleanup.
+Before deleting a fired one-shot job, the transport SHALL atomically set its registry entry to `enabled: false` and `next_fire_at: _NEVER_FIRE_AT` under `_registry_lock`, then issue the gateway DELETE. This safety gate applies regardless of dispatch outcome. Successful deletion MAY remove the entry; failure SHALL be logged at WARNING and the monitor SHALL never refire the job.
 
 #### Scenario: One-shot job fires successfully, DELETE succeeds
 
@@ -419,7 +382,7 @@ The transport schedule registry SHALL contain schedule entries only for crews th
 
 ### Requirement: Dispatch tool supports per-task model override
 
-The `dispatch` tool SHALL accept an optional `model` string parameter. When provided, it SHALL be forwarded as `model` in the `/api/spawn` request body, pinning that one task's model regardless of the dispatched persona's configured `model` in its agent JSON. When omitted, the request body SHALL NOT include a `model` field and existing precedence (`KC_MODEL_OVERRIDE` > per-agent `model` > `KC_MODEL_DEFAULT` > KiroCrew built-in) is unaffected. The system SHALL validate `model` before forwarding it: reject a non-string value, and reject a value exceeding the crew gateway's own model-name length/format bounds, returning a clear transport-level error without contacting the crew API.
+`dispatch` SHALL accept an optional `model` string and forward it for that task. Before contacting the crew API, it SHALL reject non-strings and values outside gateway model-name bounds. When omitted, it SHALL omit `model` and preserve precedence: `KC_MODEL_OVERRIDE`, agent model, `KC_MODEL_DEFAULT`, then gateway default.
 
 #### Scenario: Dispatch with a model override
 - **WHEN** `dispatch(task="...", agent="ghost", crew_id="my-crew", model="claude-opus-5")` is called
@@ -439,7 +402,7 @@ The `dispatch` tool SHALL accept an optional `model` string parameter. When prov
 
 ### Requirement: Schedule tool supports per-job model override
 
-The `schedule` tool SHALL accept an optional `model` string parameter, for `cron`, `interval`, and `delay` (one-shot) job creation alike. When provided, it SHALL be forwarded as `model` in the `/api/crons` request body, pinning that one recurring or one-shot job's model. The transport SHALL retain the pin with the scheduled job and SHALL include it when re-registering a missing job after a crew or transport restart and when firing a due job through the transport-owned schedule monitor. If `fire_immediately` causes an immediate `/api/spawn`, that first run SHALL receive the same `model` when one was provided. The same validation and precedence rules as the `dispatch` tool's `model` parameter apply.
+`schedule` SHALL accept an optional `model` for cron, interval, and one-shot delay jobs. It SHALL retain and forward the pin on immediate, monitor-fired, and restart-reseeded runs. Validation and precedence SHALL match the `dispatch` model parameter.
 
 #### Scenario: Schedule with a model override
 - **WHEN** `schedule(interval=300, message="...", agent="ghost", crew_id="my-crew", model="claude-sonnet-5")` is called
@@ -459,7 +422,7 @@ The `schedule` tool SHALL accept an optional `model` string parameter, for `cron
 
 ### Requirement: Captain standing-orders check-in supports model override
 
-The `captain(action="order")` call SHALL accept an optional `model` string parameter, forwarded as `model` in the `/api/crons` request body when a new standing-orders check-in job is created. When a new job is configured to `fire_immediately`, the immediate Raven `/api/spawn` SHALL receive the same model. The transport SHALL retain the pin for restart re-seeding and transport-owned schedule-monitor ticks. The parameter's format SHALL be validated on every call regardless of action, and an invalid value SHALL return an error even when resuming. A syntactically valid value SHALL have no effect when resuming a previously paused check-in, since no new job is created in that path; an existing pin SHALL remain unchanged.
+`captain(action="order")` SHALL accept an optional model for new check-in jobs and propagate it to immediate, monitor-fired, and restart-reseeded runs. It SHALL validate the value on every call, including resume; invalid values fail, while a valid value on resume leaves the existing pin unchanged.
 
 #### Scenario: Captain order with a model override on a new check-in
 - **WHEN** `captain(crew_id="my-crew", action="order", template="sdd", change_name="...", interval=300, model="claude-opus-5")` creates a new check-in job
@@ -479,11 +442,7 @@ The `captain(action="order")` call SHALL accept an optional `model` string param
 
 ### Requirement: dispatch accepts tasks list as an alternative overload
 
-The `dispatch` tool SHALL accept `tasks: list[str]` as an alternative to `task: str`. The two parameters SHALL be mutually exclusive. When `tasks` is provided, all dispatch semantics apply identically to each task in the list. All tasks in one batch share the same `agent`, `model`, `slot`, and `crew_id`.
-
-The `slot` parameter SHALL apply uniformly across all tasks in a batch. For `slot=True`, each task in the batch receives its own unique slot name. For a string slot, all tasks in the batch share the same slot.
-
-See `specs/batch-dispatch/spec.md` for the full batch dispatch contract.
+`dispatch` SHALL accept either `task: str` or mutually exclusive `tasks: list[str]`. Each batch task uses the same agent, model, slot, crew, and dispatch semantics; slot routing is resolved once (`None` and legacy `True` share the resolved default, while `False` is headless). Strings are invalid slots and SHALL be rejected. See `batch-dispatch` for the full contract.
 
 #### Scenario: Batch dispatch uses same validation as single dispatch
 
@@ -495,15 +454,25 @@ See `specs/batch-dispatch/spec.md` for the full batch dispatch contract.
 - **WHEN** `dispatch` is called with `tasks=[...]` and all `/api/spawn` calls succeed
 - **THEN** the transport updates `last_task_at` in the crew registry for each successfully dispatched task
 
-#### Scenario: Batch dispatch with slot=True gives each task its own slot
+#### Scenario: Enrolled batch uses one member slot by default
+- **WHEN** `dispatch` is called with `tasks=[...]` and no `slot` for an enrolled persona
+- **THEN** every `/api/spawn` request uses the same `parent_session="dashboard:member-<slug>"` and the response identifies that member slot
 
-- **WHEN** `dispatch` is called with `tasks=[...]` and `slot=True`
-- **THEN** each task is sent with a distinct `parent_session="dashboard:<unique-suffix>"`
+#### Scenario: Unenrolled batch is headless by default
+- **WHEN** `dispatch` is called with `tasks=[...]` and no `slot` for an unenrolled persona
+- **THEN** no `/api/spawn` request has a `parent_session` and the response has `slot: null`
+
+#### Scenario: False forces every batch task headless
+- **WHEN** `dispatch` is called with `tasks=[...]` and `slot=False` for an enrolled persona
+- **THEN** no `/api/spawn` request has a `parent_session` and the response has `slot: null`
+
+#### Scenario: Batch dispatch with slot=True gives each task its own slot
+- **WHEN** `dispatch` is called with `tasks=[...]` and `slot=True` for an enrolled persona
+- **THEN** the resolver logs a warning, every task uses the same member slot as `slot=None`, and no per-task slots are created
 
 #### Scenario: Batch dispatch with named slot shares one session for all tasks
-
 - **WHEN** `dispatch` is called with `tasks=[...]` and `slot="my-batch"`
-- **THEN** every task is sent with `parent_session="dashboard:my-batch"`
+- **THEN** the boolean-or-null tool input contract rejects the request and no named session is created
 
 ### Requirement: pickup accepts task_ids list for batch collection
 

@@ -19,7 +19,7 @@
 
 - [x] 3.1 Update front-matter description to: `"Drive one or more named OpenSpec changes through the standard Spectre → Ghost → Banshee → Reaper lifecycle. Pass a comma-separated list for parallel multi-change execution with automatic worktree isolation."`
 - [x] 3.2 Add a **Multi-change mode** section after the existing preamble: on first check-in, detect if `<change>` contains a comma; if so, parse the list and create a git worktree per change (`git -C repo worktree add ../repo-<change-name> -b <change-name> HEAD`)
-- [x] 3.3 Add per-change dispatch coordination: task descriptions embed the worktree path (`cd /home/kirocrew/workplace/kirocrew-workspace/repo-<change-name> && SDD dispatch ...`); all three dispatch-coordination signals include the change name for namespace safety
+- [x] 3.3 Add per-change dispatch coordination: task descriptions embed the worktree path (`cd <worktree-path> && SDD dispatch ...`); all three dispatch-coordination signals include the change name for namespace safety
 - [x] 3.4 Add **Reconciliation phase**: when all changes are archived, for each change: `git -C repo merge --no-ff <change-name> -m "merge: <change-name>"`. Run `bash tests/run.sh --unit`. On success, remove worktrees and mail Admiral `sdd complete — all changes merged, tests green`. On conflict or test failure, mail Admiral `sdd merge failed — manual intervention needed` with the error output. Then self-cancel.
 - [x] 3.5 Delete `academy/orders/sdd-parallel.md`
 

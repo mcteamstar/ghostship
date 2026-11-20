@@ -22,11 +22,7 @@ The system SHALL provide an executable `ghostship` script at the repository root
 - **THEN** the version string from the `VERSION` file in the repo root is printed and the process exits 0
 
 ### Requirement: Transport lifecycle subcommands
-The system SHALL provide subcommands that delegate to the shell scripts under `scripts/`. Each subcommand SHALL forward unrecognised flags to the underlying script unchanged. `ghostship install --client-only [flags]` SHALL forward all flags including `--client-only`, `--url`, and `--api-key` to `bin/install.sh`.
-
-`ghostship stop` SHALL stop the `ga-transport` container, the `ga-portal` container, and the underlying Podman machine or dedicated service, in that order. On macOS with a dedicated machine (`GA_DEDICATED_MACHINE` not `false`), stopping the machine is `podman machine stop <GA_MACHINE_NAME>`. On Linux with a dedicated service, stopping is `systemctl --user stop podman-<GA_MACHINE_NAME>.service` (or the equivalent socket unit). On Linux without a dedicated service, the default Podman socket service is stopped. All crew containers and volumes are preserved across the stop; `ghostship start` restores the machine and transport, and crews restart transparently on next use via `_ensure_crew_running`. If the machine is already stopped or not found, `ghostship stop` SHALL exit 0 with a diagnostic message rather than failing.
-
-`ghostship upgrade` SHALL accept a `--skills` flag. When `--skills` is given, after the transport rebuild completes successfully, `ghostship upgrade` SHALL invoke `ghostship setup` to refresh skill symlinks and re-register the MCP server for all detected agent clients. When `--skills` is omitted, behaviour is unchanged.
+CLI lifecycle subcommands SHALL delegate to scripts and forward unrecognized flags; client-only install SHALL forward all options. `stop` SHALL stop transport, portal, then the platform's Podman service while preserving crews and volumes; `start` restores service, and stopping an absent machine succeeds with a diagnostic. `upgrade --skills` SHALL run setup after a successful rebuild; without the flag behavior is unchanged.
 
 #### Scenario: ghostship install
 - **WHEN** `ghostship install [flags]` is invoked
@@ -151,11 +147,7 @@ The system SHALL provide `ghostship init` that registers the ghostship MCP serve
 
 ### Requirement: Auth subcommand group
 
-The system SHALL provide a `ghostship auth` subcommand group of the form `ghostship auth <verb> [backend]`, where the verb is `login`, `logout` or `status` and the backend is `kiro`, `claude` or `codex`. It is the operator-facing command for supplying, replacing and clearing backend credentials; logins started by `launch` store into the same place. Running `ghostship auth` with no verb SHALL print usage help for the group and exit 0. `login` and `logout` SHALL require a backend; an unknown verb or backend SHALL print usage and exit non-zero.
-
-All verbs SHALL accept:
-- `--url <transport-url>` — override the transport base URL
-- `--api-key <key>` — Bearer token for transports that require auth
+`ghostship auth` SHALL support `login`, `logout`, and `status` for `kiro`, `claude`, or `codex`, sharing credentials with launch. No verb prints help and exits 0; login/logout require a backend, and invalid verbs or backends fail with usage. Every verb SHALL accept `--url` and `--api-key` overrides.
 
 #### Scenario: ghostship auth — no sub-subcommand
 - **WHEN** `ghostship auth` is invoked with no verb

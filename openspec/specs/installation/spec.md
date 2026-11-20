@@ -52,13 +52,7 @@ The system SHALL accept a `--port` flag controlling the MCP listener port (defau
 - **THEN** `GA_HOST_URL` defaults to `http://localhost:{PORT}`
 
 ### Requirement: Config file resolution
-The system SHALL resolve configuration by deep-merging three layers in order: built-in
-defaults, then `config/ghostship.yaml` in the ghostship directory (if present), then
-the XDG override file (if present). When `--config <path>` is passed, it replaces
-layers 2 and 3 entirely. The system SHALL resolve `KIRO_IDENTITY_PROVIDER`
-and `KIRO_REGION` from the merged config under `backends.kiro.identity_center.*`
-before falling back to individual CLI flags, then an interactive prompt if still
-unset and running in a terminal.
+Configuration SHALL deep-merge built-in defaults, repo `config/ghostship.yaml`, then XDG override; `--config <path>` replaces the latter two layers. Resolve Kiro identity provider and region from merged config, then CLI flags, then an interactive prompt when available.
 
 #### Scenario: Repo config sets identity provider
 - **WHEN** `config/ghostship.yaml` sets `backends.kiro.identity_provider` and `backends.kiro.region`
@@ -89,11 +83,7 @@ before proceeding with the install.
 - **THEN** install.sh continues with the migrated `config/ghostship.yaml` and completes normally
 
 ### Requirement: Wizard generates ghostship.yaml
-The install wizard (run on first install or with `--wizard`) SHALL generate
-`config/ghostship.yaml` with operator-supplied values and inline comments from an
-internal template. It SHALL NOT generate `ghostship.conf`.
-
-After the transport has passed its health check, the wizard SHALL unconditionally run `ghostship setup` to wire skill symlinks and register the MCP server for all detected agent clients. No confirmation prompt is shown for this step — the wizard always wires harnesses on a successful first install.
+The first-install or `--wizard` flow SHALL write operator values and template comments to `config/ghostship.yaml`, never `ghostship.conf`. After health succeeds, it SHALL run `ghostship setup` without prompting to wire skills and register MCP for detected clients.
 
 #### Scenario: Wizard writes YAML config
 - **WHEN** the wizard completes
@@ -112,11 +102,12 @@ After the transport has passed its health check, the wizard SHALL unconditionall
 - **THEN** a warning is printed but the overall install exits 0; `ghostship setup` can be re-run manually
 
 ### Requirement: Idempotent, repeatable install
-The system SHALL be safe to re-run: existing images are rebuilt, the existing `ga-transport` container is replaced, and an already-existing `ga-net` network is left untouched rather than erroring. Crew workspace/home volumes are out of scope for `install.sh` — they are created per-crew by `launch`, not by installation.
+
+The system SHALL be safe to re-run: existing images are rebuilt, the existing ga-transport container is replaced, and already-existing ga-portside and ga-starboard networks are left untouched rather than erroring. Crew workspace/home volumes are out of scope for install.sh — they are created per-crew by launch, not by installation.
 
 #### Scenario: Re-running install.sh
-- **WHEN** `install.sh` is run again on a machine that already has Podman, `ga-net`, and a running `ga-transport` container
-- **THEN** the script removes and recreates only the `ga-transport` container with freshly built images, without erroring on the already-existing network
+- **WHEN** install.sh is run again on a machine that already has Podman, ga-portside, ga-starboard, and a running ga-transport container
+- **THEN** the script removes and recreates only the ga-transport container with freshly built images, without erroring on the existing networks
 
 ### Requirement: File-based transport auth persistence
 The installation SHALL persist backend credentials only as plain files under `DATA_DIR`, mode `0600`, written by the transport's credential store. They SHALL NOT be stored as Podman secrets. No dedicated bind mount, migration step, or file-driver access is needed: `DATA_DIR` is already bind-mounted read/write into the transport container as `/data`, so the transport reads and writes the files directly.
@@ -202,9 +193,7 @@ The `source "$CONFIG_FILE"` invocation in `install.sh` SHALL have an adjacent co
 - **THEN** a comment immediately above or beside it explains the arbitrary-code-execution trust model
 
 ### Requirement: GA_API_KEY is delivered to the transport container via Podman secret
-The installation SHALL create a Podman secret named `ga-api-key` (via `podman secret create`) containing the operator-supplied API key. The transport container SHALL receive the secret via `--secret ga-api-key` and read it from `/run/secrets/ga-api-key` at startup. The `-e GA_API_KEY=...` environment variable SHALL NOT be passed to the container.
-
-When `--api-key` is not provided and no persisted key file exists, the secret SHALL NOT be created and the container SHALL start without `--secret ga-api-key` (authentication disabled).
+When an API key is configured, install SHALL create Podman secret `ga-api-key`; transport receives it as a mounted secret and reads `/run/secrets/ga-api-key`. It SHALL NOT pass `GA_API_KEY` as a container environment variable. Without a flag or persisted key, create no secret and start unauthenticated.
 
 #### Scenario: Fresh install with --api-key flag
 - **WHEN** `install.sh` is run with `--api-key <value>`
@@ -239,47 +228,43 @@ The transport server process SHALL read the API key from `/run/secrets/ga-api-ke
 
 ### Requirement: Dedicated Podman machine by default
 
-`install.sh` SHALL provision a dedicated Podman machine (macOS) or dedicated systemd socket-activated Podman instance (Linux) exclusively for Ghost Academy unless `GA_DEDICATED_MACHINE=false` is explicitly set. This is the default because a dedicated machine/instance is exclusive to Ghost Academy — only `ga-transport`, `ga-net`, crew containers, and their images ever run on it — which isolates GA fully from the host's default Podman runtime (avoiding contention or interference from IDE plugins or other tooling) with no ongoing cost beyond the one-time VM/instance provisioning.
-
-The dedicated instance is controlled by `GA_MACHINE_NAME` (default `ghost-academy`), `GA_MACHINE_CPUS` (default 8), `GA_MACHINE_MEMORY` (default 8192 MB), and `GA_MACHINE_DISK` (default 100 GB). All three resource variables are ceilings, not upfront host reservations: `GA_MACHINE_CPUS` caps concurrent vCPU threads that the host scheduler time-shares across real cores (bounded by Apple's Virtualization.framework `maximumAllowedCPUCount`, physical cores minus one, on macOS); `GA_MACHINE_MEMORY` is backed by demand-paged host memory (Apple's Virtualization.framework), so idle host usage stays far below the configured value; `GA_MACHINE_DISK` is backed by a sparse file, so actual disk blocks are only consumed as data is written. All five variables SHALL be documented in `docs/configuration.md` and included as commented-out entries in `config/ghostship.conf.example`, with the example's commented value showing how to opt out (`GA_DEDICATED_MACHINE=false`) rather than the (now-default) enabled value. None of the five has a corresponding command-line flag; they are config-file-only, per the `config-file` capability's resolution order (built-in default → config file → flag), with no ambient-environment-variable fallback.
+By default, install SHALL provision a Ghostship-only Podman machine on macOS or systemd socket instance on Linux; `GA_DEDICATED_MACHINE=false` opts out. `GA_MACHINE_NAME` (default `ghost-academy`), `GA_MACHINE_CPUS` (8), `GA_MACHINE_MEMORY` (8192 MB), and `GA_MACHINE_DISK` (100 GB) are config-only settings documented with the opt-out in the example. Resources are ceilings: CPUs are platform-limited, RAM demand-paged, and disk sparse.
 
 #### Scenario: Default — dedicated machine
-- **WHEN** `GA_DEDICATED_MACHINE` is unset
-- **THEN** `install.sh` provisions/uses the dedicated machine/instance named `GA_MACHINE_NAME`
+- **WHEN** GA_DEDICATED_MACHINE is unset
+- **THEN** install.sh provisions or uses the dedicated machine/instance named by GA_MACHINE_NAME
 
 #### Scenario: Opt-out — default Podman socket
-- **WHEN** `GA_DEDICATED_MACHINE=false`
-- **THEN** `install.sh` uses the default Podman socket, unchanged from pre-dedicated-machine behaviour
+- **WHEN** GA_DEDICATED_MACHINE=false
+- **THEN** install.sh uses the default Podman socket
 
 #### Scenario: macOS — first install with dedicated machine
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is macOS and no machine named `GA_MACHINE_NAME` exists
-- **THEN** `install.sh` runs `podman machine init <name> --cpus <GA_MACHINE_CPUS> --memory <GA_MACHINE_MEMORY> --disk-size <GA_MACHINE_DISK>`, starts the machine, enables `podman-restart.service` inside the guest, and uses that machine's in-guest socket for the transport
+- **WHEN** GA_DEDICATED_MACHINE is not false, the OS is macOS, and no machine named by GA_MACHINE_NAME exists
+- **THEN** install.sh runs podman machine init with the configured CPU, memory, and disk limits, starts the machine, enables podman-restart.service in the guest, and uses that machine's in-guest socket for Transport
 
 #### Scenario: macOS — subsequent install with existing dedicated machine
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is macOS and the named machine already exists
-- **THEN** `install.sh` starts the machine if not running (no re-init) and uses its socket
+- **WHEN** GA_DEDICATED_MACHINE is not false, the OS is macOS, and the named machine already exists
+- **THEN** install.sh starts it if not running, does not re-initialize it, and uses its socket
 
 #### Scenario: Linux — first install with dedicated instance
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is Linux
-- **THEN** `install.sh` writes `podman-<GA_MACHINE_NAME>.socket` and `podman-<GA_MACHINE_NAME>.service` systemd unit files under `~/.config/systemd/user/`, reloads the daemon, enables and starts the socket, and uses the resulting socket at `$XDG_RUNTIME_DIR/podman/<GA_MACHINE_NAME>.sock`
+- **WHEN** GA_DEDICATED_MACHINE is not false and the OS is Linux
+- **THEN** install.sh writes podman-GA_MACHINE_NAME.socket and service units under the user's systemd directory, reloads systemd, enables and starts the socket, and uses the resulting runtime socket for Transport
 
 #### Scenario: Linux — storage isolation
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false` and OS is Linux
-- **THEN** the dedicated Podman service uses `--root ~/.local/share/<GA_MACHINE_NAME>/containers/storage` so its containers are invisible to `podman ps` on the default instance
+- **WHEN** GA_DEDICATED_MACHINE is not false and the OS is Linux
+- **THEN** the dedicated Podman service uses a storage root under the GA_MACHINE_NAME data directory, separate from default Podman storage, so its containers are not shown by podman ps on the default instance
 
 #### Scenario: Transport binds to dedicated socket
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false`
-- **THEN** the transport container is started with the dedicated socket bind-mounted and `PODMAN_SOCKET` pointing to it
+- **WHEN** GA_DEDICATED_MACHINE is not false
+- **THEN** the Transport container receives the dedicated socket mount and PODMAN_SOCKET points to it
 
 #### Scenario: Every Podman command targets the dedicated instance
-- **WHEN** `GA_DEDICATED_MACHINE` is not `false`
-- **THEN** the image pull, every `podman build`, the network create, the secret create, the transport `run`, and the failure-path `logs` tail SHALL all target the same resolved dedicated-instance connection — none SHALL fall back to the default Podman socket
+- **WHEN** GA_DEDICATED_MACHINE is not false
+- **THEN** image pulls, every podman build, network and secret creation, Transport startup, and failure-path logs all target the same resolved dedicated-instance connection and none falls back to the default Podman socket
 
 ### Requirement: Dedicated machine uninstall
 
-`uninstall.sh` SHALL remove the dedicated machine or instance unless `GA_DEDICATED_MACHINE=false` is resolved (mirroring `install.sh`'s default-on behaviour). A `--keep-machine` flag SHALL preserve the machine/instance while still removing Ghost Academy containers and volumes. `uninstall.sh` SHALL accept the same `--config <path>` flag as `install.sh` and resolve `GA_MACHINE_NAME` (and `GA_DEDICATED_MACHINE`) using the identical built-in-default → config-file resolution order, with no ambient-environment-variable fallback — so a dedicated machine created under a name customised via config file is correctly found and torn down rather than left behind.
-
-On Linux, the machine teardown SHALL remove only the dedicated `containers/` storage subdirectory, not the entire `~/.local/share/${GA_MACHINE_NAME}` tree. The `data/` subdirectory (which contains `ga-kiro-auth`) is handled separately by the data-dir cleanup step, which respects `--purge-auth`.
+`uninstall.sh` SHALL remove the dedicated machine unless config opts out; `--keep-machine` preserves it while removing Ghostship containers and volumes. It SHALL accept `--config` and resolve the machine name like install, without environment fallback. On Linux remove only its `containers/` directory; data cleanup separately honors `--purge-auth`.
 
 #### Scenario: Uninstall on macOS with dedicated machine
 - **WHEN** `uninstall.sh` runs, `GA_DEDICATED_MACHINE` is not `false`, and OS is macOS
@@ -332,13 +317,7 @@ The system SHALL expose `transport://comps` as the canonical MCP resource for li
 - **THEN** the response is identical to `transport://comps` and lists the same available comps
 
 ### Requirement: Transport service definition generated as a Compose file
-`install.sh` SHALL generate a `compose.yml` in `${DATA_DIR}` after building images, containing the complete `ga-transport` service definition: image, ports, volumes, environment variables, network, restart policy, and security options. The Podman socket path and all machine-specific values SHALL be baked in at generation time so the file is self-contained and usable without re-running `install.sh`.
-
-`install.sh` SHALL copy the contents of `academy/` (subdirectories `agents`, `skills`, `steering`, `policies`, `orders`, `mcp`) and `crews/` from the ghostship repo into `${DATA_DIR}/academy/` and `${DATA_DIR}/crews/` respectively before writing `compose.yml`. These copies become the source of truth for the running transport container.
-
-The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DIR}/academy/mcp:/mcp:ro` alongside the existing academy and crews entries. The transport container's internal mount point for the catalogue SHALL be `/mcp`. The transport container's internal mount points (`/agents`, `/skills`, `/steering`, `/policies`, `/orders`, `/crews`) SHALL remain unchanged.
-
-`install.sh`, `start.sh`, and `uninstall.sh` SHALL all use `podman compose -f "${DATA_DIR}/compose.yml"` to manage the `ga-transport` container lifecycle, replacing raw `podman run`, `podman stop`, and `podman rm` calls.
+`install.sh` SHALL copy `academy/` and `crews/` into `DATA_DIR`, then generate a self-contained `compose.yml` for transport with image, ports, volumes, environment, network, restart, security, and baked socket settings. It SHALL mount the MCP catalogue read-only at `/mcp` and preserve other mount points. Install, start, and uninstall SHALL manage transport through `podman compose -f DATA_DIR/compose.yml`.
 
 #### Scenario: install.sh generates compose.yml
 - **WHEN** `install.sh` completes the image build phase
@@ -397,13 +376,7 @@ The seven volume entries in the generated `compose.yml` SHALL include `${DATA_DI
 
 ### Requirement: PyYAML vendored — python3 is the only YAML config prerequisite
 
-The ghostship repository SHALL include a vendored copy of the PyYAML pure-Python
-package at `bin/lib/vendor/yaml/`. `bin/install.sh`, `bin/start.sh`, and
-`bin/uninstall.sh` SHALL invoke `yaml_config.py` with
-`PYTHONPATH="${GHOSTSHIP_DIR}/bin/lib/vendor" python3` so that `import yaml`
-always resolves to the vendored copy without requiring PyYAML to be installed
-on the system Python, and without creating a virtual environment. The only
-prerequisite for YAML config parsing SHALL be a working `python3` binary.
+The repo SHALL vendor PyYAML at `bin/lib/vendor/yaml/`. Install, start, and uninstall SHALL invoke `yaml_config.py` with that vendor path on `PYTHONPATH`, requiring only `python3` and no system PyYAML or virtual environment.
 
 #### Scenario: Install succeeds with only python3 — no PyYAML installed
 - **WHEN** `bin/install.sh --client-only` is invoked on a host where PyYAML is not installed in the system Python
@@ -425,11 +398,7 @@ prerequisite for YAML config parsing SHALL be a working `python3` binary.
 - **THEN** `bin/install.sh` prints a clear one-line message instructing the user to add `~/.local/bin` to their `PATH`
 
 ### Requirement: podman-compose required as a prerequisite
-The system SHALL require `podman-compose` to be installed before `install.sh` runs. `install.sh` SHALL check for `podman-compose` specifically and exit with a clear error and install instructions if it is not found. `docker-compose` and `docker compose` are NOT acceptable alternatives because Ghostship's generated `compose.yml` uses external Podman secrets that Docker Compose does not support.
-
-`install.sh`, `start.sh`, and `uninstall.sh` SHALL set `PODMAN_COMPOSE_PROVIDER` to the resolved path of `podman-compose` before every `podman compose` invocation, so that Podman's provider-selection logic cannot pick Docker Compose when both are installed.
-
-`install.sh` SHALL inject `GA_PORTAL_SESSION_TTL_SECS` into the generated `compose.yml` transport environment block, so that the session TTL configured in `ghostship.conf` takes effect at runtime.
+Install SHALL require `podman-compose` and fail with instructions if absent; Docker Compose is unsupported because it lacks Podman secrets. Install, start, and uninstall SHALL set `PODMAN_COMPOSE_PROVIDER` to its resolved path before each `podman compose` call. Generated Compose SHALL pass `GA_PORTAL_SESSION_TTL_SECS` to transport.
 
 #### Scenario: compose provider present
 - **WHEN** `install.sh` runs and `podman-compose` is on `PATH`
@@ -489,9 +458,7 @@ format (or `true`/`false` for the master switch). Comments SHALL explain the for
 
 ### Requirement: spec-ops image conditionally includes Claude Code toolchain
 
-The spec-ops image SHALL include `claude-agent-acp` (npm package) and the `claude` CLI when `claude` is a member of the enabled backend set. They SHALL be installed by the toolchain script `crews/spec-ops/toolchains/claude.sh`, which the image build runs only when `claude` appears in the `AGENT_TOOLCHAINS` build arg. The toolchain SHALL NOT be installed by default, to keep the baseline image lean.
-
-The installed versions SHALL be pinned (exact version tags, not floating) in the Claude toolchain script.
+When `claude` is in `AGENT_TOOLCHAINS`, the spec-ops image SHALL install pinned `claude-agent-acp` and `claude` CLI versions via `crews/spec-ops/toolchains/claude.sh`. The toolchain SHALL be absent by default.
 
 #### Scenario: Default image build does not include Claude toolchain
 - **WHEN** `install.sh` runs and `GA_AGENT_BACKENDS` does not list `claude`
@@ -507,9 +474,7 @@ The installed versions SHALL be pinned (exact version tags, not floating) in the
 
 ### Requirement: spec-ops image conditionally includes Codex toolchain
 
-The spec-ops image SHALL include the `codex-acp` adapter (npm package `@agentclientprotocol/codex-acp`) when `codex` is a member of the enabled backend set. It SHALL be installed by the toolchain script `crews/spec-ops/toolchains/codex.sh`, which the image build runs only when `codex` appears in the `AGENT_TOOLCHAINS` build arg. This is ONE component, not two: the adapter ships its own compatible Codex binary, so no separate `codex` CLI is installed. The toolchain SHALL NOT be installed by default, to keep the baseline image lean.
-
-The installed version SHALL be pinned (an exact version tag, not a floating range) in the Codex toolchain script.
+When `codex` is in `AGENT_TOOLCHAINS`, the spec-ops image SHALL install a pinned `@agentclientprotocol/codex-acp` adapter via `crews/spec-ops/toolchains/codex.sh`. The adapter includes its Codex binary; no separate CLI is installed. The toolchain SHALL be absent by default.
 
 #### Scenario: Default image build does not include Codex toolchain
 - **WHEN** `install.sh` runs and `GA_AGENT_BACKENDS` does not list `codex`
@@ -658,21 +623,7 @@ The spec-ops image SHALL record its toolchain list in the `org.ghostship.toolcha
 
 ### Requirement: Nine internal vars hardcoded as constants
 
-The following environment variables SHALL be removed from `Config.from_env()` and from
-the `compose.yml` template. Their values SHALL be hardcoded as Python literals or
-module-level constants:
-
-| Variable | Hardcoded value |
-|----------|----------------|
-| `GA_CREW_AGENT` (KiroCrew internal agent name) | `"kiro"` constant |
-| `TRANSPORT_DATA_DIR` | `"/data"` literal |
-| `GA_ENABLE_SECURITY_HEADERS` | always `True` |
-| `GA_TLS_MIN_VERSION` | `"1.2"` constant |
-| `GA_PREWARM_ENABLED` | removed; prewarm always runs when triggered |
-| `GA_PREWARM_TTL_SECS` | `300` module-level constant |
-| `GA_SUBAGENT_MAX_TURNS` | `200` module-level constant |
-| `GA_COMPOSE_RETRY_ATTEMPTS` | `3` constant in install.sh |
-| `GA_COMPOSE_RETRY_DELAY_SECS` | `2` constant in install.sh |
+`Config.from_env()` and Compose SHALL omit these variables and use constants: `GA_CREW_AGENT=kiro`, `TRANSPORT_DATA_DIR=/data`, security headers enabled, TLS minimum 1.2, prewarm always enabled with 300s TTL, subagent turns 200, and install retries 3 times with 2s delay.
 
 #### Scenario: Removed vars have no effect when set in environment
 - **WHEN** any of the nine removed vars is set in the environment or `ghostship.conf`
@@ -681,18 +632,7 @@ module-level constants:
 
 ### Requirement: GA_CREW_AGENT replaces GA_CREW_ACP_BACKEND and GA_AGENT_BACKENDS
 
-`GA_CREW_AGENT` SHALL be the single variable controlling which ACP backend is built into
-the crew image and used at runtime. It replaces both `GA_CREW_ACP_BACKEND` (runtime
-default) and `GA_AGENT_BACKENDS` (build-time list).
-
-Valid values: `kiro` (default), `claude`, `codex`, `opencode`. A comma-separated list
-(e.g. `GA_CREW_AGENT=claude,codex`) builds multiple toolchains; the first entry is the
-runtime default.
-
-`install.sh` SHALL derive `AGENT_TOOLCHAINS` (the set of toolchain scripts to install
-into the crew image) from `GA_CREW_AGENT`. `GA_CREW_ACP_BACKEND` and `GA_AGENT_BACKENDS`
-SHALL be accepted as deprecated aliases for one release cycle, with a printed warning
-directing operators to use `GA_CREW_AGENT` instead.
+`GA_CREW_AGENT` SHALL select the runtime ACP backend and image toolchains, replacing `GA_CREW_ACP_BACKEND` and `GA_AGENT_BACKENDS`. Values are `kiro` (default), `claude`, `codex`, or `opencode`; comma-separated values build multiple toolchains, with the first as runtime default. Install SHALL derive `AGENT_TOOLCHAINS`; legacy variables warn for one release cycle.
 
 #### Scenario: GA_CREW_AGENT=claude builds and runs Claude backend
 - **WHEN** `GA_CREW_AGENT=claude` is set in `ghostship.conf` and `install.sh` runs
@@ -712,21 +652,7 @@ directing operators to use `GA_CREW_AGENT` instead.
 
 ### Requirement: compose.yml adds volume mounts for host-path vars when set
 
-When an operator-configurable variable contains a host filesystem path that the transport
-reads at runtime, `install.sh` SHALL add a corresponding volume mount to the `ga-transport`
-service so the path is reachable inside the container.
-
-**GA_ORDERS_DIR:** When `GA_ORDERS_DIR` is non-empty, `install.sh` SHALL:
-1. Require it to be an absolute path (error and abort if relative).
-2. Warn (but continue) if the directory does not exist.
-3. Add a read-only volume mount `<host_path>:/mnt/orders` to the compose `ga-transport` volumes.
-4. Write `GA_ORDERS_DIR: "/mnt/orders"` (the fixed container path) into the compose environment block.
-
-**GA_TLS_CERTFILE / GA_TLS_KEYFILE:** When both are non-empty, `install.sh` SHALL:
-1. Error and abort if only one is set.
-2. Error and abort if they do not share the same parent directory (same-directory requirement).
-3. Add a read-only volume mount `<shared_parent_dir>:/mnt/tls` to the compose `ga-transport` volumes.
-4. Write `GA_TLS_CERTFILE: "/mnt/tls/<cert_basename>"` and `GA_TLS_KEYFILE: "/mnt/tls/<key_basename>"` into the compose environment block.
+For host paths read at runtime, install SHALL add read-only transport mounts. `GA_ORDERS_DIR` must be absolute; a missing directory warns, and the container path becomes `/mnt/orders`. TLS cert and key must both be set and share a parent or install fails; mount that parent at `/mnt/tls` and rewrite both paths to their basenames.
 
 #### Scenario: GA_ORDERS_DIR produces a volume mount and rewritten path
 - **WHEN** `GA_ORDERS_DIR=/home/user/my-orders` is set and `install.sh` regenerates `compose.yml`
@@ -806,7 +732,7 @@ When `install.sh` is run and no `ghostship.conf` exists in the current directory
 - **THEN** the installer proceeds non-interactively as before, without any prompts
 
 ### Requirement: Interactive setup collects backend and non-secret config
-The interactive setup SHALL prompt the operator to choose a default agent backend (`kiro` default, `claude`, `codex`) and optional additional backends, then collect only the non-secret config for the selected backends (`KIRO_IDENTITY_PROVIDER`/`KIRO_REGION` for kiro; nothing for claude; `OPENAI_BASE_URL` for codex). Collected values SHALL be written to a new `ghostship.conf` (mode `600`, non-empty vars only, no secrets) before the build proceeds. All credentials SHALL be left to `ghostship auth login <backend>`.
+Interactive setup SHALL choose a default (`kiro`, `claude`, or `codex`) and optional backends, collecting only non-secret config: Kiro identity/region and Codex base URL. Before build, write non-empty values to mode-600 `ghostship.conf`; credentials remain in `ghostship auth login <backend>`.
 
 #### Scenario: Selecting kiro backend prompts for identity provider
 - **WHEN** the operator selects `kiro` as the backend
@@ -970,12 +896,12 @@ The transport SHALL re-check the API-key requirement at startup against the port
 - **WHEN** the transport starts listening on `0.0.0.0` in its container, the portal's published address is `127.0.0.1`, and no API key is present
 - **THEN** the transport starts normally without the API-key error
 
-### Requirement: API-key opt-out and GA_TRUSTED_PROXY documented in configuration docs
+### Requirement: API-key opt-out and trusted proxy CIDRs documented in configuration docs
 `docs/configuration.md` SHALL document `network.api_key` (string to enable,
 unset to require one on non-loopback installs, `false` to opt out explicitly)
 and the deprecation of `network.require_api_key`/`GA_REQUIRE_API_KEY`, together
-with `GA_TRUSTED_PROXY` (what it does, the default, and how to set it for
-Caddy-fronted installs).
+with `GA_TRUSTED_PROXY_CIDR` (trusted proxy CIDRs, its default, and how to set
+it for Caddy-fronted installs).
 
 `config/ghostship.yaml.example` SHALL show `network.api_key` with a comment
 describing all three states, and SHALL NOT include `network.require_api_key`.
@@ -984,8 +910,8 @@ describing all three states, and SHALL NOT include `network.require_api_key`.
 - **WHEN** an operator reads `docs/configuration.md`
 - **THEN** they find `network.api_key` documented with its three states and
   the abort behaviour, a deprecation note for `network.require_api_key`, and
-  `GA_TRUSTED_PROXY` documented with its effect on rate-limit source-IP
-  extraction
+  `GA_TRUSTED_PROXY_CIDR` documented with its effect on rate-limit source-IP
+  extraction for peers within configured CIDRs
 
 #### Scenario: Example config shows the opt-out
 - **WHEN** an operator opens `config/ghostship.yaml.example`
@@ -1010,6 +936,26 @@ The project SHALL provide operator-facing documentation that explains the `ghost
 
 - **WHEN** `ghostship upgrade --skills` is unavailable or the combined command fails mid-way
 - **THEN** the documentation lists the equivalent manual steps (`ghostship upgrade` then `ghostship setup`) so the operator can recover without reading source code
+
+### Requirement: Legacy ga-net cleanup
+
+After the current networks are provisioned and Transport passes its health check, `install.sh` SHALL remove the legacy `ga-net` only when no containers remain attached. If containers remain, installation SHALL leave `ga-net` in place and SHALL NOT migrate those containers during Transport startup. `uninstall.sh` SHALL attempt to remove `ga-net` after removing Ghost Academy crew and Transport containers; a failed network removal SHALL NOT stop the remaining uninstall cleanup.
+
+#### Scenario: Empty legacy network is removed after installation
+
+- **WHEN** installation succeeds and `ga-net` exists with no attached containers
+- **THEN** `install.sh` removes `ga-net`
+
+#### Scenario: Non-empty legacy network is preserved without crew migration
+
+- **WHEN** installation succeeds and one or more containers remain attached to `ga-net`
+- **THEN** `install.sh` leaves `ga-net` in place
+- **THEN** installation does not migrate those containers during Transport startup
+
+#### Scenario: Uninstall attempts legacy network removal after container cleanup
+
+- **WHEN** `uninstall.sh` removes Ghost Academy crew and Transport containers
+- **THEN** it attempts to remove `ga-net` and continues the remaining cleanup if Podman refuses the removal
 
 ## Interactive Setup Mode
 

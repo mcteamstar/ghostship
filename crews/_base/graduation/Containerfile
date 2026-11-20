@@ -17,8 +17,8 @@ FROM ${MID_IMAGE}
 #
 # ⚠️  FRAGILITY WARNING — read before updating KiroCrew:
 # This schema and migration count (11 rows, versions 0–10) were extracted from
-# the KiroCrew v0.12.2 image (kiro-cli 2.27.1, verified 2026-11-14 by static
-# image-layer inspection — see seed_kiro_db.py). The active kiro-cli-chat runtime
+# KiroCrew v0.12.2 and verified unchanged in the stable v0.13.0 arm64
+# image on 2026-11-20 (kiro-cli 2.27.1 — see seed_kiro_db.py). The active kiro-cli-chat runtime
 # includes migrations through 010_pinned_bin_versions, including a BLOB state
 # value and conversation tables. Re-verify both CLI and chat migrations when the
 # base image changes.

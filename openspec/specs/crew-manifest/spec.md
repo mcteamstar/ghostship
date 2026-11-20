@@ -7,7 +7,8 @@ Defines which agents, skills, and steering docs a given crew type includes from 
 ## Requirements
 
 ### Requirement: Per-crew-type manifest file
-The system SHALL define crew composition via a JSON manifest file at `crews/<crew-type>/manifest.json`, with `agents`, `skills`, and `steering` keys. The manifest path SHALL be resolved dynamically from the crew-type registry entry's `dir` field rather than from a hardcoded constant. Each key's value SHALL be either the literal string `"*"` or a JSON array of exact names to include from the corresponding Academy pool: agent `.json` filenames, skill directory names, and steering doc `.md` filenames, respectively.
+
+Each crew type SHALL define `agents`, `skills`, and `steering` in `crews/<type>/manifest.json`, resolved from its registry `dir`. Each value SHALL be `"*"` or exact Academy pool names (agent JSON files, skill directories, or steering Markdown files).
 
 #### Scenario: kirocrew's manifest selects everything
 - **WHEN** the `kirocrew` crew type's `manifest.json` is read
@@ -16,7 +17,6 @@ The system SHALL define crew composition via a JSON manifest file at `crews/<cre
 #### Scenario: A different crew type restricts composition
 - **WHEN** a `worker` crew type's `manifest.json` specifies `["ghost.json"]` for agents and `["radio", "openspec-apply-change"]` for skills
 - **THEN** only those named items are copied into crews launched with `crew_type="worker"`
-
 ### Requirement: Manifest-driven copy filtering
 The system SHALL filter the set of agent, skill, and steering files copied into a crew during `launch` against that crew type's manifest: copying only the files whose name is listed in an explicit array, or every file in the pool when the manifest specifies `"*"`. The manifest path SHALL be resolved from the crew-type registry entry rather than a global constant.
 
@@ -29,7 +29,8 @@ The system SHALL filter the set of agent, skill, and steering files copied into 
 - **THEN** every file in that section's Academy pool is copied into the crew, with no filtering applied
 
 ### Requirement: Missing or malformed manifest defaults to "*"
-The system SHALL treat a missing manifest file, a missing key within an existing manifest, or a manifest that fails to parse as JSON, as equivalent to `"*"` for the affected section(s). The system SHALL log a warning when this happens and SHALL NOT fail crew setup because of it. Additionally, at transport startup the system SHALL validate all manifests present in the loaded crew-type registry and log a startup warning for any manifest that references an agent, skill, or steering name that does not exist in the corresponding Academy pool; the warning SHALL identify the crew type, the missing name, and the pool it was expected to be in.
+
+A missing manifest, missing section, or invalid JSON SHALL default the affected section to `"*"`, log a warning, and not fail crew setup.
 
 #### Scenario: No manifest file present
 - **WHEN** a crew type's resolved manifest path does not point to an existing file
@@ -39,6 +40,10 @@ The system SHALL treat a missing manifest file, a missing key within an existing
 - **WHEN** a crew type's `manifest.json` exists but is not valid JSON
 - **THEN** `launch` proceeds as if the manifest specified `"*"` for every section, and a warning is logged, rather than failing crew setup
 
+### Requirement: Transport validates manifest references at startup
+
+At startup, the transport SHALL warn when a registered manifest names an agent, skill, or steering file absent from its Academy pool; the warning SHALL identify the crew type, name, and expected pool.
+
 #### Scenario: Startup validation warns on unknown agent name
 - **WHEN** the transport starts and a manifest lists an agent name that has no corresponding `.json` file in the Academy agents pool
 - **THEN** a startup warning is logged identifying the crew type and the unknown name; crew setup for that crew type is not prevented
@@ -46,9 +51,9 @@ The system SHALL treat a missing manifest file, a missing key within an existing
 #### Scenario: Startup validation passes for valid manifests
 - **WHEN** the transport starts and all manifests reference only names that exist in their respective Academy pools
 - **THEN** no validation warning is logged for manifests
-
 ### Requirement: Selected skills are delivered whole
-For every skill the crew manifest selects, `launch` SHALL copy every regular file in that skill's academy directory (symlinks and other special files are skipped) into the crew, keeping the relative layout under the skill's directory, not only its `SKILL.md`. Python bytecode caches SHALL NOT be delivered: any `__pycache__/` directory and any `*.pyc` file under the skill directory are skipped. Files that are executable in the academy SHALL be executable in the crew. Other files SHALL be readable and not executable.
+
+For each selected skill, `launch` SHALL copy every regular file with its relative layout, skipping symlinks, special files, and Python bytecode. Academy executable bits SHALL be preserved; other delivered files SHALL be readable and non-executable.
 
 #### Scenario: Skill with a script
 - **WHEN** a crew is launched and its manifest selects a skill whose directory holds `SKILL.md` and `scripts/<name>` (executable)

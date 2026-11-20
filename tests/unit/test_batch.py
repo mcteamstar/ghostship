@@ -61,6 +61,7 @@ class TestBatchDispatch(unittest.TestCase):
         crew_api_side_effect=None,
         crew_api_return_values=None,
         write_batch_mock=None,
+        slot=None,
     ):
         """
         Drive _dispatch_batch with patched collaborators.
@@ -99,6 +100,7 @@ class TestBatchDispatch(unittest.TestCase):
                 agent=agent,
                 crew_id=crew_id,
                 model=model,
+                slot=slot,
             )
         return result, wb_mock, api_mock
 
@@ -144,6 +146,64 @@ class TestBatchDispatch(unittest.TestCase):
         batch_id = result.get("batch_id", "")
         self.assertIsInstance(batch_id, str)
         self.assertTrue(batch_id, "batch_id should be a non-empty string")
+
+    def test_batch_enrolled_default_shares_one_member_slot(self):
+        crew = _fake_crew()
+        crew["enrolled_agents"] = ["ghost"]
+        result, _, api = self._dispatch(
+            ["task A", "task B"],
+            require_crew_return=crew,
+            ensure_crew_return=crew,
+        )
+
+        self.assertEqual(result["slot"], "ghost")
+        self.assertEqual(
+            [call.kwargs["json"]["parent_session"] for call in api.call_args_list],
+            ["dashboard:member-ghost", "dashboard:member-ghost"],
+        )
+
+    def test_batch_unenrolled_default_is_headless(self):
+        result, _, api = self._dispatch(["task A", "task B"])
+
+        self.assertIsNone(result["slot"])
+        self.assertTrue(
+            all("parent_session" not in call.kwargs["json"] for call in api.call_args_list)
+        )
+
+    def test_batch_false_forces_headless(self):
+        crew = _fake_crew()
+        crew["enrolled_agents"] = ["ghost"]
+        result, _, api = self._dispatch(
+            ["task A", "task B"],
+            require_crew_return=crew,
+            ensure_crew_return=crew,
+            slot=False,
+        )
+
+        self.assertIsNone(result["slot"])
+        self.assertTrue(
+            all("parent_session" not in call.kwargs["json"] for call in api.call_args_list)
+        )
+
+    def test_batch_true_warns_and_shares_default_member_slot(self):
+        crew = _fake_crew()
+        crew["enrolled_agents"] = ["ghost"]
+
+        with self.assertLogs("transport.lifecycle", level="WARNING") as logs:
+            result, _, api = self._dispatch(
+                ["task A", "task B"],
+                require_crew_return=crew,
+                ensure_crew_return=crew,
+                slot=True,
+            )
+
+        self.assertEqual(result["slot"], "ghost")
+        self.assertEqual(
+            [call.kwargs["json"]["parent_session"] for call in api.call_args_list],
+            ["dashboard:member-ghost", "dashboard:member-ghost"],
+        )
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("slot=True", logs.output[0])
 
     # ── D2 — partial batch (second spawn raises CrewUnresponsiveError) ─────
 

@@ -100,6 +100,31 @@ class TestBindDocumentation:
         assert "Caddy is published on loopback (`127.0.0.1`) by default" in readme
         assert "Caddy is published on all interfaces by default" not in readme
 
+    def test_configuration_documents_trusted_proxy_cidrs(self) -> None:
+        docs = CONFIGURATION_DOC.read_text(encoding="utf-8")
+        proxy_row = next(
+            line for line in docs.splitlines()
+            if "`GA_TRUSTED_PROXY_CIDR`" in line
+        )
+        assert "trusted immediate proxy peers" in proxy_row
+        assert "ASGI peer address falls within one of these ranges" in proxy_row
+        assert "first address in the header is used" in proxy_row
+        assert "When unset or empty" in proxy_row
+        rate_limiting = docs.split("## Rate limiting", 1)[1]
+        assert "Only for a trusted peer" in rate_limiting
+        assert "Configure only proxies that sanitize or overwrite" in rate_limiting
+
+    def test_example_config_documents_api_key_states(self) -> None:
+        example = (REPO_ROOT / "config" / "ghostship.yaml.example").read_text(
+            encoding="utf-8"
+        )
+        network = example.split("network:\n", 1)[1].split("\n# ──", 1)[0]
+        assert 'api_key: ""' in network
+        assert '"<key>"' in network
+        assert "false" in network
+        assert "require_api_key is deprecated" in network
+        assert "network.require_api_key:" not in network
+
     def test_configuration_distinguishes_transport_guard_from_api_key_check(self) -> None:
         docs = CONFIGURATION_DOC.read_text(encoding="utf-8")
         row = next(

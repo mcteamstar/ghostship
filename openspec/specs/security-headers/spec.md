@@ -8,7 +8,7 @@ Defines transport-level HTTP security behaviors enforced by `SecurityHeadersMidd
 
 ### Requirement: Plaintext HTTP redirects to HTTPS with a sanitised query string
 
-When `GA_ENFORCE_HTTPS_REDIRECT` is enabled and a request arrives over plaintext HTTP (not `/health`), the transport SHALL respond with a 301 redirect to the HTTPS equivalent of the request. The redirect target's query string SHALL be built using the same sanitisation applied to the crew reverse-proxy handlers: raw ASCII control bytes (`0x00`–`0x1F` and `0x7F`) SHALL be removed before the query string is appended to the `Location` header, preventing CRLF injection into the redirect response. Percent-encoded query text SHALL NOT be decoded or altered by this sanitisation.
+When `GA_ENFORCE_HTTPS_REDIRECT` is enabled, plaintext requests other than `/health` SHALL receive a 301 to HTTPS. Before adding the query to `Location`, raw ASCII control bytes SHALL be removed without decoding or altering percent-encoded text.
 
 #### Scenario: Redirect strips raw control bytes from the query string
 - **WHEN** a plaintext HTTP request with `GA_ENFORCE_HTTPS_REDIRECT` enabled contains raw query-string bytes `q=hello\r\nworld\x00&limit=10`
@@ -21,7 +21,6 @@ When `GA_ENFORCE_HTTPS_REDIRECT` is enabled and a request arrives over plaintext
 #### Scenario: Health probe is exempt from the redirect
 - **WHEN** a plaintext HTTP request to `/health` arrives with `GA_ENFORCE_HTTPS_REDIRECT` enabled
 - **THEN** the transport does not redirect and serves the health check directly
-
 ### Requirement: CSP carries a per-request nonce for first-party inline code
 `SecurityHeadersMiddleware` SHALL generate a fresh cryptographically-random nonce for every HTTP request and emit a Content-Security-Policy whose `script-src` and `style-src` directives name both `'self'` and that request's nonce (`'nonce-<value>'`). The nonce SHALL be derived from a CSPRNG with at least 128 bits of entropy and SHALL be unique per response — never reused across requests and never persisted. The nonce value SHALL NOT be written to any log.
 

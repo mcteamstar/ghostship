@@ -87,7 +87,7 @@ run_unit() {
 
 run_integration() {
   local category_exit=0
-  local script script_exit
+  local script script_exit python_suite
   for script in \
     "$REPO_DIR/tests/integration/test_install_config.sh" \
     "$REPO_DIR/tests/integration/test_install_cache_detection.sh" \
@@ -102,6 +102,20 @@ run_integration() {
       script_exit=$?
       printf 'Integration script result: FAIL (%s, exit %d)\n' \
         "$(basename "$script")" "$script_exit"
+      category_exit=1
+    fi
+  done
+
+  for python_suite in \
+    "$REPO_DIR/tests/integration/test_profile_launch_flow.py" \
+    "$REPO_DIR/tests/integration/test_on_demand_recovery.py"; do
+    printf '\n--- Integration: %s ---\n' "$(basename "$python_suite")"
+    if python3 -m pytest "$python_suite"; then
+      printf 'Integration Python suite result: PASS (%s)\n' "$(basename "$python_suite")"
+    else
+      script_exit=$?
+      printf 'Integration Python suite result: FAIL (%s, exit %d)\n' \
+        "$(basename "$python_suite")" "$script_exit"
       category_exit=1
     fi
   done

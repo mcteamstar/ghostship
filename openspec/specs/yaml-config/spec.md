@@ -48,32 +48,7 @@ backend, defaulting to Kiro when omitted; it SHALL not be a list of enabled back
 - **THEN** install.sh SHALL fail with migration guidance
 
 ### Requirement: Per-backend model control
-Each backend SHALL support two model knobs under `backends.<b>.model`:
-
-- `override` — forces all agents running on this backend to use the specified model,
-  regardless of per-agent persona config. Use when a backend only supports certain
-  models (e.g. kiro-cli's available model set).
-- `default` — fallback model for agents on this backend that have no per-agent model
-  set. More specific than the global `model.default`.
-
-The global `model.override` key SHALL NOT exist. A global override is a footgun
-because no single model is accessible across all backends (kiro, claude, and codex
-use different model namespaces). Per-backend overrides provide the same capability
-without the cross-backend breakage risk.
-
-The full model precedence chain (highest to lowest) SHALL be:
-
-```
-dispatch(model=...)            # caller-supplied, highest precedence
-backends.<b>.model.override    # per-backend lock
-per-agent model                # persona file
-backends.<b>.model.default     # per-backend fallback
-model.default                  # global fallback
-built-in default               # KiroCrew's own default
-```
-
-This chain SHALL be documented in `docs/configuration.md` with an explanation of
-when to use each level.
+Each `backends.<b>.model` SHALL support `override` (force that backend's model) and `default` (fallback when persona model is unset); global `model.override` SHALL NOT exist. Precedence SHALL be dispatch override, backend override, persona model, backend default, global default, then built-in. `docs/configuration.md` SHALL explain each level's use.
 
 #### Scenario: Per-backend override beats per-agent model
 - **WHEN** `backends.kiro.model.override: "claude-sonnet-4-5"` is set and a kiro agent persona specifies a different model
@@ -99,6 +74,10 @@ when to use each level.
 When install.sh reads a `config/ghostship.yaml` that uses any of the old key paths
 from before TRN-257, it SHALL warn the operator naming the old and new path and
 continue using the value. It SHALL NOT silently ignore the old path.
+
+#### Scenario: Migrate a supported deprecated path
+- **WHEN** the installer reads a deprecated key from the table below
+- **THEN** it applies the indicated mapping or removal.
 
 The deprecated path mappings are:
 
@@ -135,10 +114,7 @@ The deprecated path mappings are:
 - **THEN** `backends.default` wins and no deprecation warning is printed for `backends.agent`
 
 ### Requirement: Three-layer deep merge
-Config is resolved by deep-merging three layers in order: (1) built-in defaults,
-(2) repo-level `config/ghostship.yaml`, (3) XDG override
-`~/.config/ghost-academy/ghostship.yaml`. Later layers override earlier ones at the
-individual key level. Unspecified keys fall through to the layer below.
+Config SHALL deep-merge built-in defaults, repo `config/ghostship.yaml`, then XDG `~/.config/ghost-academy/ghostship.yaml`. Later layers override earlier values by key; unspecified keys inherit from lower layers.
 
 #### Scenario: XDG overrides repo key
 - **WHEN** `config/ghostship.yaml` sets `crew.max_active: 3` and `~/.config/ghost-academy/ghostship.yaml` sets `crew.max_active: 6`
@@ -167,9 +143,7 @@ The XDG override config file SHALL be resolved from
 - **THEN** the XDG override is read from `~/.config/ghost-academy/ghostship.yaml`
 
 ### Requirement: --config flag replaces implicit file resolution
-When `--config <path>` is passed to install.sh, it replaces layers 2 and 3 of the
-merge entirely. The specified file deep-merges on top of built-in defaults only.
-No XDG override is applied when `--config` is used.
+When `install.sh --config <path>` is used, the system SHALL deep-merge that file over built-in defaults only, ignoring repo and XDG config layers.
 
 #### Scenario: --config skips repo and XDG layers
 - **WHEN** `--config /path/to/custom.yaml` is passed and both `config/ghostship.yaml` and the XDG file exist

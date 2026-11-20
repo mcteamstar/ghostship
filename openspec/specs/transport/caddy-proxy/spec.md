@@ -8,7 +8,7 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 
 ### Requirement: `ga-portal` is always present
 
-`ga-portal` SHALL always be included in the generated `compose.yml` and started by `install.sh`. There is no opt-out flag. The `GA_PORTAL_ENABLED` environment variable is removed and SHALL NOT be read or honoured. The service SHALL bind `GA_PORTAL_PORT` (default 64057) AND the dashboard port range (default 64058–64107) — Caddy owns those port bindings, not the transport. The Caddy admin API (port 2019) SHALL be bound to the internal `ga-portside` network only and SHALL NOT be published to the host. The `ga-transport` service SHALL NOT bind the dashboard port range. `ga-portal` SHALL be attached to `ga-portside` only and SHALL NOT be attached to `ga-starboard`.
+`install.sh` SHALL always include and start `ga-portal`; `GA_PORTAL_ENABLED` is removed and ignored. Caddy binds the portal and dashboard port ranges, while transport binds no dashboard ports. The admin API stays internal on port 2019. `ga-portal` uses only `ga-portside`, never `ga-starboard`.
 
 #### Scenario: Install always starts ga-portal
 - **WHEN** `install.sh` runs
@@ -22,22 +22,7 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 
 ### Requirement: Initial Caddy JSON configuration
 
-`install.sh` SHALL write an `initial-config.json` under `DATA_DIR` that bootstraps
-Caddy with a main HTTP server (default port 443) carrying: MCP routes (`/mcp*`),
-file-transfer routes (`/files/*`), health (`/health`), the login/logout endpoints
-(`/login`, `/login*`, `/logout`), the dashboard-auth endpoints (`/dashboard/auth`,
-`/dashboard/login`), **a `ga-radar` route that session-gates `/`,
-`/api/crews*`, and `/crews/*/api/*` via `forward_auth` → `reverse_proxy`**. The
-initial config SHALL contain no per-crew dashboard servers — those are added at
-runtime. The config SHALL be loaded via
-`caddy run --config /config/initial-config.json --resume`.
-
-The `ga-radar` route SHALL use the same `forward_auth` handler as the per-crew
-dashboard port servers: it calls `GET /dashboard/auth` on the transport to validate
-the `gs_session` cookie. On session validation success, Caddy proxies the request to
-`ga-transport:64057`. When `GA_API_KEY` is unset, the `forward_auth` check SHALL be
-omitted and requests proxy directly (matching the no-key passthrough behaviour
-applied to `/mcp*`).
+`install.sh` SHALL write `DATA_DIR/initial-config.json` and run Caddy with it using `--resume`. The default HTTP server routes MCP, files, health, login/logout, dashboard auth, and Radar. Radar `/`, `/api/crews*`, and `/crews/*/api/*` use `forward_auth` to validate `gs_session` before proxying to transport; omit auth when `GA_API_KEY` is unset. Per-crew servers are added at runtime.
 
 #### Scenario: Caddy starts with initial config
 - **WHEN** the `ga-portal` container starts for the first time
@@ -81,7 +66,7 @@ When `GA_API_KEY` is set, the main-server `/mcp*` and `/files/*` routes SHALL re
 - **THEN** the request does not reach the transport process
 
 ### Requirement: Per-crew dashboard server registration
-When a crew is successfully launched, the transport SHALL call the Caddy admin API to add an HTTP server bound to the crew's allocated dashboard port that reverse-proxies to `ga-transport:64057` with a URI rewrite to `/crews/{crew_id}/ui/{path}`, gated by a `forward_auth` handler (see the dashboard-auth capability). The server object SHALL carry `"@id": "crew-{crew_id}"` so it can be addressed directly for removal. `launch(dashboard=True)` SHALL allocate a port and register with `ga-portal` without checking a `GA_PORTAL_ENABLED` flag. The dashboard is always available on deployments where `ga-portal` is healthy.
+After a successful launch with `dashboard=True`, transport SHALL register a Caddy server on the allocated port, identified as `crew-{crew_id}`, with `forward_auth` and a proxy to `ga-transport:64057` rewriting to `/crews/{crew_id}/ui/{path}`. Dashboard registration is unconditional when the portal is healthy.
 
 #### Scenario: Crew launch registers Caddy dashboard server
 - **WHEN** `launch(crew_id="alpha", dashboard=True)` completes successfully
@@ -116,9 +101,7 @@ On startup, the transport SHALL re-register a Caddy dashboard server for every c
 
 ### Requirement: `X-Transport-Token` header injection
 
-Caddy's JSON config SHALL add `header_up X-Transport-Token {env.GA_TRANSPORT_SECRET}` on every `reverse_proxy` directive targeting `ga-transport`. This applies to ALL upstream routes — MCP, files, dashboard, health — without exception. The header value is the `GA_TRANSPORT_SECRET` environment variable, which is mounted into `ga-portal` from the `ga-transport-secret` Podman secret at install time.
-
-No Caddy route SHALL forward a request to `ga-transport` without this header. The transport middleware rejects any request that arrives without it.
+Every Caddy reverse proxy to `ga-transport` SHALL inject `X-Transport-Token` from `GA_TRANSPORT_SECRET`, sourced from the Podman secret. No route may omit the header; transport rejects requests without it.
 
 #### Scenario: X-Transport-Token injection applies to every route
 
@@ -127,25 +110,7 @@ No Caddy route SHALL forward a request to `ga-transport` without this header. Th
 - **THEN** per-crew dashboard servers registered via `_caddy_register_crew` also include this header
 
 ### Requirement: WebSocket upgrades bypass forward_auth on the dashboard port
-The per-crew Caddy dashboard server registered via `_caddy_register_crew` SHALL
-expose two routes: a WebSocket-upgrade route and an HTTP catch-all route, in that
-order. The WebSocket route SHALL be matched by the `Connection: Upgrade` request
-header and SHALL proxy directly to the transport UI proxy WITHOUT the `forward_auth`
-handler, so the upgrade handshake is preserved. The HTTP catch-all route (no matcher)
-SHALL retain the existing `forward_auth`-then-`reverse_proxy` behaviour (or
-`reverse_proxy` only when no API key is configured). Both routes SHALL inject the
-`X-Transport-Token` header and dial `ga-transport:{PORT}` with the
-`/crews/{crew_id}/ui/{path}` rewrite. Ordering the WebSocket route first guarantees
-upgrade requests never fall through to the `forward_auth` path.
-
-The transport SHALL additionally enforce session validation on WebSocket upgrade
-requests that arrive on a crew dashboard port path prefix. Before completing a
-WebSocket upgrade to `/crews/{crew_id}/ui/...`, the transport SHALL check that
-the request carries a valid `gs_session` cookie via `SessionStore.validate()`.
-If the session is absent or invalid, the transport SHALL complete the ASGI
-handshake with HTTP 401 (not a WebSocket upgrade). This closes the gap left by
-the Caddy-layer bypass: even though the WebSocket route skips `forward_auth`, a
-transport-layer check ensures unauthenticated WebSocket connections are refused.
+Each per-crew Caddy server SHALL order a `Connection: Upgrade` route before its HTTP catch-all. WebSockets proxy directly without `forward_auth`; transport SHALL validate `gs_session` before upgrade and return HTTP 401 when invalid. HTTP retains `forward_auth` when enabled, or proxies directly without an API key. Both routes inject `X-Transport-Token`, dial `ga-transport:{PORT}`, and rewrite to `/crews/{crew_id}/ui/{path}`.
 
 #### Scenario: SPA WebSocket connection bypasses forward_auth and is upgraded
 - **WHEN** the KiroCrew SPA opens a WebSocket connection (`Connection: Upgrade`)
@@ -169,15 +134,7 @@ transport-layer check ensures unauthenticated WebSocket connections are refused.
   connection is proxied to the crew gateway as a WebSocket
 
 ### Requirement: Caddy admin API restricted to transport-origin requests
-The Caddy `initial-config.json` written by `install.sh` SHALL include an
-`"origins"` list in the `"admin"` object restricting which HTTP `Origin`
-headers the admin API accepts. The list SHALL include only `http://ga-transport`
-(the DNS name of the transport container on `ga-portside`). Requests from any
-other origin SHALL be rejected by Caddy's built-in admin API enforcement.
-
-The admin API bind address (`0.0.0.0:2019`) SHALL remain unchanged: it is
-required for Caddy's own internal routing and the port is not published to the
-host in `compose.yml`. The `origins` field is the enforcement mechanism.
+`initial-config.json` SHALL restrict Caddy admin API origins to `http://ga-transport` and reject others. Keep the bind at `0.0.0.0:2019` for internal routing; Compose SHALL NOT publish that port.
 
 #### Scenario: Transport can register a crew dashboard server
 - **WHEN** the transport calls `PUT /config/apps/http/servers/crew-{crew_id}`

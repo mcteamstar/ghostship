@@ -16,7 +16,7 @@ policy templates.
 
 ### Requirement: Transport injects per-crew security policy at setup
 
-The transport SHALL inject a `security_policy.json` into `~/.kiro/crew/security_policy.json` inside each crew container after the gateway is ready and the `admiral_secret` has been written. The policy SHALL be selected by the resolved crew `comp`, falling back to the `default` template when no comp-specific template exists. The legacy `composition` launch argument remains an alias: when both are supplied, `comp` is authoritative and selects the policy template. Policy templates live in `academy/policies/` and are available to the transport from `/policies/`.
+After the gateway is ready and the Admiral secret is written, the transport SHALL inject `security_policy.json` at `~/.kiro/crew/security_policy.json` from templates under `academy/policies/` (available at `/policies/`).
 
 #### Scenario: Policy injected for new crew with known comp
 - **WHEN** `launch(crew_id, composition="kirocrew")` completes setup using the legacy alias
@@ -30,6 +30,10 @@ The transport SHALL inject a `security_policy.json` into `~/.kiro/crew/security_
 - **WHEN** the policy file write inside the container fails (e.g. permissions)
 - **THEN** the failure is logged as a warning and `launch()` continues; `policy_version` is omitted from the response
 
+### Requirement: Security policy selection uses resolved crew composition
+
+The resolved `comp` SHALL select the policy, falling back to `default`; the legacy `composition` argument SHALL remain an alias, with `comp` authoritative when both are supplied.
+
 #### Scenario: Matching comp and composition select the same template
 - **WHEN** `launch(crew_id, comp="kirocrew", composition="kirocrew")` completes setup
 - **THEN** the `kirocrew` policy template is selected and injected
@@ -37,20 +41,9 @@ The transport SHALL inject a `security_policy.json` into `~/.kiro/crew/security_
 #### Scenario: Conflicting comp and composition select policy by comp
 - **WHEN** `launch(crew_id, comp="kirocrew", composition="spec-ops")` is called
 - **THEN** the `kirocrew` policy template is selected and a warning naming both values is logged
-
 ### Requirement: Security policy is signed by the Admiral using the 0.3.x governance API
 
-The transport SHALL embed the HMAC-SHA256 signature as `identity.signature` inside
-`security_policy.json` (with `identity.issuer: "ghostship"`), and SHALL write
-`admission_policy.json` with `require_policy_signature: true` and
-`trust_keys: {"ghostship": <policy_signing_key>}`.
-
-The key placed in `trust_keys` SHALL be a dedicated `policy_signing_key` — a separate
-secret generated at crew creation that is distinct from `admiral_secret`. The
-`admiral_secret` SHALL NOT appear in `admission_policy.json` or in any file readable
-by processes running inside the crew container.
-
-The old flat `trust_keys` list approach SHALL NOT be used.
+The transport SHALL place the HMAC-SHA256 signature in `security_policy.json` as `identity.signature` with issuer `ghostship`; `admission_policy.json` SHALL require signatures and trust `policy_signing_key`. That key SHALL be distinct from `admiral_secret`, and the old flat trust-key list SHALL NOT be used.
 
 #### Scenario: Admission policy written alongside security policy
 
@@ -89,30 +82,23 @@ The old flat `trust_keys` list approach SHALL NOT be used.
   inside the container
 - **THEN** the failure is logged as a warning, `launch()` continues without `policy_version`
   in the response, and the crew boots ungoverned rather than failing to launch
+### Requirement: Default policy blocks platform escape paths
 
-### Requirement: Default policy enforces platform integrity not access restriction
-
-The default security policy (`academy/policies/default.json`) SHALL focus
-exclusively on platform integrity — preventing agents from subverting the
-control plane. The container is the security boundary; the default policy does
-not restrict filesystem writes, sandbox level, or network egress.
-
-The default policy SHALL deny:
-- `commands.deny` patterns that escape the container or inject code:
-  `git push`, `git remote add`, `gh`, pipe-to-shell curl/wget patterns
-- `channels.deny` for all messaging integrations (Slack, Discord, Telegram,
-  Teams, Webex, WeCom, WeChat) — agents should not connect to external
-  messaging platforms independently
-
-Operators who need tighter controls SHALL supply a custom comp policy
-(e.g. `kirocrew-strict`) adding `sandbox.min_level`, `filesystem.write`
-bounds, or additional `commands.deny` patterns.
+The default policy SHALL deny control-plane escape and code-injection commands and SHALL deny external messaging integrations.
 
 #### Scenario: Default policy blocks control-plane escape paths
 - **WHEN** an agent executes a command matching `commands.deny`
   (e.g. `git push origin main`)
 - **THEN** the gateway denies the command regardless of the agent's own
   `deniedCommands` config — the policy ceiling is unforgeable
+
+#### Scenario: Default policy denial lists are specific
+- **WHEN** the default policy is loaded
+- **THEN** `commands.deny` includes `git push`, `git remote add`, `gh`, and pipe-to-shell curl/wget patterns, while `channels.deny` covers Slack, Discord, Telegram, Teams, Webex, WeCom, and WeChat
+
+### Requirement: Default policy does not impose operator access restrictions
+
+The default policy SHALL NOT restrict filesystem writes, sandbox level, or network egress; operators needing tighter controls SHALL supply a custom `comp` policy.
 
 #### Scenario: Default policy does not restrict filesystem or network
 - **WHEN** an agent writes to any path inside the container or makes an
@@ -125,7 +111,6 @@ bounds, or additional `commands.deny` patterns.
   `strict.json` policy template exists in `academy/policies/`
 - **THEN** the strict policy (with sandbox floor, filesystem bounds, etc) is
   injected instead of the default
-
 ### Requirement: Comp-specific policy variants
 
 The comp registry MAY declare a `security_policy` key naming a policy
@@ -150,26 +135,12 @@ setup. Crews launched before this change have no `policy_version` field.
 
 ### Requirement: Numeric config fields are bounds-enforced in KiroCrew 0.4.0
 
-The `_patch_crew_config` function SHALL only write numeric config fields that
-fall within KiroCrew 0.5.0's enforced bounds. Any field value outside the
-allowed range is rejected with a 4xx response instead of being silently
-clamped. The transport SHALL audit each numeric field it writes and ensure its
-default and operator-settable range stays within the gateway-enforced bounds.
-
-Fields that carry enforced bounds in 0.5.0 include `spawn_min_memory_gb`,
-`resource_pressure_gb`, `resource_critical_gb`, `subagent_timeout_secs`, and
-`subagent_max_turns`. A value of `0` for `spawn_min_memory_gb` SHALL remain
-a valid disable sentinel and SHALL NOT be rejected by the gateway.
+`_patch_crew_config` SHALL write the five bounded numeric fields (`spawn_min_memory_gb`, `resource_pressure_gb`, `resource_critical_gb`, `subagent_timeout_secs`, `subagent_max_turns`) only within KiroCrew 0.5.0 limits; invalid values SHALL return 4xx instead of being clamped, and configured ranges SHALL be audited.
 
 #### Scenario: Numeric field within bounds is accepted
 - **WHEN** `_patch_crew_config` writes a numeric field whose value falls within
   KiroCrew 0.5.0's allowed range
 - **THEN** the gateway accepts the config and the crew starts normally
-
-#### Scenario: spawn_min_memory_gb=0 is not rejected
-- **WHEN** `GA_SPAWN_MIN_MEMORY_GB` is set to `0` and the gateway enforces bounds
-- **THEN** the gateway accepts `spawn_min_memory_gb: 0` as a valid disable
-  sentinel and does not return a 4xx
 
 #### Scenario: Out-of-bounds value surfaces a clear error
 - **WHEN** `_patch_crew_config` attempts to write a numeric field value outside
@@ -177,6 +148,14 @@ a valid disable sentinel and SHALL NOT be rejected by the gateway.
 - **THEN** the gateway rejects the request with a 4xx response, and the
   transport logs the rejection before proceeding with crew teardown
 
+### Requirement: Zero disables the minimum spawn memory gate
+
+A value of `0` for `spawn_min_memory_gb` SHALL remain a valid disable sentinel.
+
+#### Scenario: spawn_min_memory_gb=0 is not rejected
+- **WHEN** `GA_SPAWN_MIN_MEMORY_GB` is set to `0` and the gateway enforces bounds
+- **THEN** the gateway accepts `spawn_min_memory_gb: 0` as a valid disable
+  sentinel and does not return a 4xx
 ### Requirement: Config fields with unexpanded shell variable references are rejected
 
 KiroCrew 0.4.0 rejects any config field value that contains a literal `$`
@@ -313,17 +292,17 @@ confirmed well-formed against the 0.5.0 schema before the image pin is bumped.
 - **THEN** the 0.5.0 gateway rejects the policy and the crew fails to start,
   rather than ignoring the misspelling as 0.4.0 did
 
-### Requirement: Claude backend tool approval gap is documented and mitigated
+### Requirement: Claude crews suppress interactive approval prompts
 
-When `GA_CREW_ACP_BACKEND=claude`, KiroCrew's tool approval gate is bypassed (Claude Code sessions pass `dangerously_skip_permissions=True` to the ACP backend). However, Claude Code has its own internal tool approval layer that is separate from KiroCrew's gate. In a headless container context, Claude Code's internal approval prompts will stall the session indefinitely if they fire.
-
-The transport SHALL configure Claude Code sessions to suppress interactive approval prompts when launching crew containers in Claude backend mode. This SHALL be achieved by injecting `CLAUDE_SKIP_TOOL_APPROVAL=true` (or the equivalent env var or CLI flag supported by `claude-agent-acp` for headless operation) into the crew container environment.
-
-The `crew-governance` spec and `docs/architecture.md` SHALL document this gap: KiroCrew's governance ceiling (policy-enforced command denials) still applies to Claude Code crews, but KiroCrew's per-call tool approval gate does not.
+For Claude backend launches, the transport SHALL suppress Claude Code's interactive approval prompts so headless sessions do not stall.
 
 #### Scenario: Claude crew does not stall on tool approval prompts
 - **WHEN** a crew is launched with `GA_CREW_ACP_BACKEND=claude` and an agent task calls a tool
 - **THEN** the tool executes without waiting for interactive approval; no stall occurs in a headless container
+
+### Requirement: Claude governance limits are documented
+
+The spec and `docs/architecture.md` SHALL state that the command-deny policy still applies to Claude crews but KiroCrew's per-call approval gate does not.
 
 #### Scenario: KiroCrew governance ceiling still enforced for Claude crews
 - **WHEN** an agent running on the Claude backend attempts a command matching `commands.deny` in the crew's `security_policy.json`
@@ -332,39 +311,40 @@ The `crew-governance` spec and `docs/architecture.md` SHALL document this gap: K
 #### Scenario: Governance gap documented in architecture docs
 - **WHEN** an operator reads `docs/architecture.md`
 - **THEN** they find a note explaining that Claude Code crews bypass KiroCrew's per-call tool approval gate but remain subject to the signed security policy ceiling
+### Requirement: Codex sessions require verified read-only ACP mode
 
-### Requirement: Codex backend tool approval model is documented and enforced
-
-When `GA_CREW_ACP_BACKEND=codex`, ghostship's per-call kiro approval gate does not apply — the `codex-acp` adapter drives its own session. KiroCrew's ACP tool gate SHALL verify that the Codex session advertised `mode=read-only` at `session/new` and apply it before the first prompt, refusing the session otherwise, so the PreToolUse gate is armed for the calls the adapter makes. The signed security policy ceiling (`commands.deny` in `security_policy.json`) SHALL remain enforced at the gateway level regardless of backend.
-
-Because ACP v1 offers no way for an adapter to declare a passive READ, the sensitive-path read block cannot observe reads the Codex adapter performs. The compensating control is an OS-boundary credential mask: the adapter's own credential home (`~/.codex/auth.json`) and equivalent env-override roots SHALL be hidden from the adapter's child process, so a read the gate cannot see still cannot reach the fleet's other credentials.
-
-The `crew-governance` spec and `docs/architecture.md` SHALL document this model: Codex crews bypass the per-call approval gate, run under a verified read-only ACP mode, remain subject to the signed policy ceiling, and rely on the credential-dir OS mask as the compensating control for the ACP-v1 read-visibility gap.
+The ACP gate SHALL verify `mode=read-only` at `session/new` and apply it before the first prompt; otherwise it SHALL refuse the session.
 
 #### Scenario: Codex session refused when not read-only
 - **WHEN** a Codex-backend crew's `session/new` does not advertise `mode=read-only`
 - **THEN** the ACP tool gate refuses the session before the first prompt rather than proceeding with an unverified mode
 
+### Requirement: Codex crews retain the signed governance ceiling
+
+The signed `commands.deny` policy SHALL remain enforced by the gateway regardless of backend.
+
 #### Scenario: KiroCrew governance ceiling still enforced for Codex crews
 - **WHEN** an agent running on the Codex backend attempts a command matching `commands.deny` in the crew's `security_policy.json`
 - **THEN** the KiroCrew gateway rejects the command regardless of backend — the policy ceiling is enforced at the gateway level, not the ACP client level
+
+### Requirement: Codex adapter credential homes are masked
+
+The adapter's credential home (`~/.codex/auth.json`) and equivalent env-override roots SHALL be hidden from its child process to compensate for ACP-v1 read-visibility gaps.
 
 #### Scenario: Codex adapter cannot reach other credential homes
 - **WHEN** a Codex-backend crew session runs
 - **THEN** the adapter's child process cannot read `~/.codex/auth.json` (its own token store) nor the standard-tier credential homes; those directories are masked at the OS boundary
 
+### Requirement: Codex governance model is documented
+
+The spec and `docs/architecture.md` SHALL describe the read-only ACP mode, signed policy ceiling, per-call approval bypass, and credential-home mask.
+
 #### Scenario: Governance model documented in architecture docs
 - **WHEN** an operator reads `docs/architecture.md`
 - **THEN** they find a note explaining that Codex crews bypass ghostship's per-call approval gate, run under a verified read-only ACP mode, remain subject to the signed policy ceiling, and that the credential-dir OS mask compensates for the ACP-v1 read-visibility gap
-
 ### Requirement: SEL signing key is resolved from the KiroCrew trust root
-Any ghostship code that reads or references the KiroCrew Security Event Log (SEL) signing key SHALL resolve it under `$KIROCREW_HOME/trust/`. No ghostship code SHALL hardcode a pre-0.9.0 SEL key path or a bare relative path to the SEL key. This requirement applies to any future feature that consumes SEL audit material; it is a forward-looking contract, not a description of existing behaviour (no ghostship code reads the SEL key today).
 
-The SEL signing key is a KiroCrew gateway-internal credential. It is distinct from the following ghostship-managed keys and SHALL NOT be confused with them:
-
-- `.local_secret` — the gateway's internal-API secret, used only by `transport/lifecycle.py` for dashboard-cookie writes.
-- `policy_signing_key` — ghostship's own HMAC key for `security_policy.json` and `admission_policy.json`, managed by `transport/container_scripts/inject_policy.py`.
-- `admiral_secret` — the per-crew admiral authentication secret.
+Any future SEL consumer SHALL resolve the key under `$KIROCREW_HOME/trust/` and SHALL NOT hardcode legacy or bare relative paths. No current ghostship code reads the SEL key; it is distinct from `.local_secret`, `policy_signing_key`, and `admiral_secret`.
 
 #### Scenario: Future SEL-reading code uses the trust root path
 - **WHEN** any ghostship module is written or modified to read, verify, or reference the KiroCrew SEL signing key

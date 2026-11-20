@@ -10,16 +10,7 @@ captain state without requiring an active MCP agent session.
 
 ### Requirement: `GET /` serves the Radar fleet dashboard
 
-The transport SHALL handle `GET /` and return an HTML response containing the
-Radar SPA. The route SHALL be session-gated via the existing `DashboardGate`
-mechanism — the same `gs_session` cookie used to access the per-crew KC dashboards.
-Caddy's `forward_auth` handler validates the session before proxying to the
-transport. An unauthenticated request SHALL be redirected to
-`/dashboard/login?next=/`.
-
-In `BearerAuthMiddleware`, `GET /` SHALL be listed in `public_routes` — session
-enforcement is at the Caddy layer via `forward_auth`, not at the transport bearer
-layer, exactly as for `/crews/*/ui`.
+`GET /` SHALL serve the Radar SPA behind Caddy `forward_auth`; unauthenticated users SHALL be redirected to `/dashboard/login?next=/`. The transport bearer middleware SHALL keep `/` public, with session enforcement at Caddy as for `/crews/*/ui`.
 
 #### Scenario: Authenticated request returns Radar HTML
 - **WHEN** `GET /` is requested with a valid `gs_session` cookie
@@ -52,16 +43,7 @@ in JavaScript.
 
 ### Requirement: Per-crew detail fetched from the crew API proxy
 
-The SPA MAY fetch per-crew detail by calling `GET /crews/{crew_id}/api/{path}` on
-the same origin. Useful paths include `/api/spawn` (tasks), `/api/crons`
-(schedule/captain state), and `/api/mailboxes` (mail summary). These paths are
-proxied by the existing crew API proxy — no new proxy routes are needed.
-
-Active agent data is sourced from the fleet payload (`agents` array per crew) to
-avoid an extra fetch per row. Per-crew cron/schedule data is fetched from
-`/crews/{crew_id}/api/crons` only when the operator expands a row and the crew is
-running. For stopped crews, a message is shown explaining that live schedule data
-is unavailable.
+The SPA SHALL use each crew's fleet-payload `agents` array for active agents. On row expansion it SHALL fetch `/crews/{crew_id}/api/crons` only for running crews and append scheduled jobs. For stopped crews, it SHALL show registry task and captain state and explain that live schedule data is unavailable. Per-crew detail requests SHALL use the existing same-origin crew API proxy.
 
 #### Scenario: Expanding a crew row shows agent and captain state
 - **WHEN** the operator expands a crew row in the Radar UI
@@ -93,15 +75,7 @@ browser tab.
 
 ### Requirement: Fleet table shows crew busyness at a glance
 
-The Radar SPA SHALL surface per-crew activity state in the fleet table without
-requiring row expansion. The crew name cell SHALL show:
-- An "N active" badge (cyan) when the crew has active (not-done) agent tasks
-- A captain state badge ("⚑ captain" in purple when active, "⚑ paused" in muted
-  when paused) when the crew has a captain schedule entry
-
-Stopped crews SHALL be visually de-emphasised (reduced opacity). The `running`
-status badge SHALL use a subtle green glow to distinguish live crews. Uptime SHALL
-show `—` for stopped crews.
+The fleet table SHALL show an `N active` cyan badge and a purple `⚑ captain` or muted `⚑ paused` badge without row expansion. Stopped crews SHALL be dimmed and show `—` uptime; running status SHALL have a subtle green glow.
 
 #### Scenario: Active crew shows task count and captain badge
 - **WHEN** a crew has active (not-done) agent tasks and an active captain

@@ -321,6 +321,12 @@ def _dispatch_captain_checkin(
     # _phase0_transient_503 (lifecycle.py), which is outside this change's
     # declared footprint; tracked as a follow-on for lifecycle.py.
     try:
+        import kiro_signin as _kiro_signin  # container (flat /app layout)
+    except ModuleNotFoundError:
+        from transport import kiro_signin as _kiro_signin  # local dev
+    if (denied := _kiro_signin.dispatch_guard(crew_id, crew)) is not None:
+        raise RuntimeError(denied["message"])
+    try:
         result = _lc()._crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
     except httpx.HTTPStatusError as exc:
         if _is_memory_pressure_refusal(exc.response):

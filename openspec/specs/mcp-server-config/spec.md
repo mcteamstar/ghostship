@@ -52,7 +52,7 @@ Any `${VAR}` reference in a catalogue entry's field values SHALL be substituted 
 - **THEN** `_copy_agents()` logs a warning, writes the literal `${MISSING_VAR}` string into the crew's `mcp.json`, and crew setup continues
 
 ### Requirement: Agent-level mcpServers in agent JSON
-Individual agent JSON files in `academy/agents/` MAY include a `mcpServers` map. These servers are written directly into the agent's own JSON in the crew container and are available to that agent regardless of the composition's `mcp.json`. An agent MAY set `includeMcpJson: false` to opt out of the composition-level `mcp.json` entirely.
+The agent loader SHALL preserve any agent-level `mcpServers` map in the agent JSON, independent of composition-level `mcp.json`. An agent MAY set `includeMcpJson: false` to opt out of that composition file.
 
 #### Scenario: Agent declares its own mcpServers
 - **WHEN** `academy/agents/ghost.json` contains a `mcpServers` map

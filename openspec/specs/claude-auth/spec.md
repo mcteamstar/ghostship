@@ -6,32 +6,37 @@ Defines the Claude Code OAuth device-code login flow, credential storage, inject
 
 ## Requirements
 
-### Requirement: Claude login uses PTY to handle interactive prompts
+### Requirement: Claude login runs through an interactive PTY
 
-The `claude auth login` command may present interactive prompts (consent confirmation, URL display) in a terminal context. The transport SHALL run it via a PTY exec (same `container_exec_pty_stdin` mechanism used for kiro-cli login), reading output and answering any prompts automatically. Before extracting the authorisation URL and code from the output stream, the transport SHALL remove terminal control sequences (ANSI CSI, OSC including OSC-8 hyperlinks, and BEL), so the returned URL is exactly the URL the CLI printed.
-
-Before the PTY output loop begins, any bytes received in the same network chunk as the HTTP 101 upgrade response headers SHALL be prepended to the accumulated PTY output, so no authorisation URL printed in that initial burst is discarded. The raw socket SHALL have a socket timeout applied before the first read so that a hung Podman socket does not block the transport indefinitely.
+The transport SHALL run `claude auth login` through `container_exec_pty_stdin`, answer interactive prompts, and set a socket timeout before the first read.
 
 #### Scenario: Login URL extracted from PTY output
 - **WHEN** `claude auth login` is run via PTY inside the login container and outputs an authorisation URL
 - **THEN** the transport captures the URL from the PTY output stream and returns it to the caller within the 45-second deadline
 
-#### Scenario: Terminal control sequences removed from the URL
-- **WHEN** the CLI wraps the authorisation URL in colour codes or OSC-8 hyperlink sequences
-- **THEN** the returned `login_url` contains only the URL characters, with no escape bytes, BEL characters, or trailing sequence fragments
-
 #### Scenario: PTY timeout returns error
 - **WHEN** `claude auth login` does not produce an authorisation URL within 45 seconds
 - **THEN** the login container is cleaned up and `POST /login/claude` returns an error
+
+#### Scenario: Raw socket timeout is set before the first read
+- **WHEN** the Podman socket stops responding before PTY output arrives
+- **THEN** the transport returns a timeout error instead of blocking indefinitely
+
+### Requirement: Claude login preserves and sanitizes PTY output
+
+Before extracting the authorization URL and code, the transport SHALL include bytes received with the HTTP 101 headers and remove ANSI CSI, OSC (including OSC-8), and BEL sequences.
+
+#### Scenario: Terminal control sequences removed from the URL
+- **WHEN** the CLI wraps the authorisation URL in colour codes or OSC-8 hyperlink sequences
+- **THEN** the returned `login_url` contains only the URL characters, with no escape bytes, BEL characters, or trailing sequence fragments
 
 #### Scenario: Login URL present in the same chunk as the 101 headers is not lost
 - **GIVEN** the PTY exec socket for a Claude login
 - **WHEN** the Podman daemon sends the HTTP 101 upgrade headers and the first PTY bytes (including the authorisation URL) in a single TCP segment
 - **THEN** the transport returns the authorisation URL correctly — it is not silently discarded
-
 ### Requirement: Claude login abandonment expires without polling
 
-An in-progress Claude login flow that has been in the `awaiting_code` state for more than 900 seconds SHALL be expired by the periodic maintenance sweep, independent of `GET /login/claude` being polled. An in-progress Claude login flow that has been in the `code_submitted` state for more than 120 seconds SHALL likewise be expired by the sweep. On expiry the transport SHALL remove the login container (best-effort), clear `_claude_login_pending`, and record `action=login outcome=failure` in the audit log.
+The maintenance sweep SHALL expire unpolled `awaiting_code` flows after 900 seconds and `code_submitted` flows after 120 seconds; expiry SHALL remove the login container best-effort, clear pending state, and audit failure.
 
 #### Scenario: Unpolled awaiting-code flow expires via sweep
 - **GIVEN** a Claude login flow has been in `awaiting_code` state for more than 900 seconds and `GET /login/claude` has never been called
@@ -42,7 +47,6 @@ An in-progress Claude login flow that has been in the `awaiting_code` state for 
 - **GIVEN** a Claude login flow has been in `code_submitted` state for more than 120 seconds and `GET /login/claude` has not been called since the code was submitted
 - **WHEN** the periodic maintenance sweep runs
 - **THEN** the `ga-claude-login-<token>` container is removed and `_claude_login_pending` is set to None
-
 ### Requirement: Claude credential injected into crew containers at launch
 
 When claude's active method is `oauth`, the transport SHALL inject the stored Claude credential into each new Claude-backend crew container's `~/.claude/` directory during setup, so `claude-agent-acp` can authenticate without an API key or token.
@@ -109,9 +113,7 @@ The transport SHALL treat a Claude login as complete only when the credential fi
 
 ### Requirement: Claude backend is opt-in
 
-The Claude backend SHALL be available only when `claude` is an enabled backend, as defined by the `agent-backends` capability (`GA_AGENT_BACKENDS`). Kiro remains the default. Claude login SHALL be available whenever claude is enabled, including when it is not the default backend. When claude is not enabled, `POST /login/claude` SHALL return HTTP 400 naming `GA_AGENT_BACKENDS`, and the transport SHALL refuse to start with claude as the default backend.
-
-The operator documentation (`docs/auth.md`) SHALL document `CLAUDE_CODE_OAUTH_TOKEN` (generated with `claude setup-token`) as the recommended Claude auth path for headless and server deployments, and SHALL document the OAuth device-code flow (`POST /login/claude` + `POST /login/claude/code`) as the alternative for interactive use. The known-limitation note about OAuth token expiry causing cross-crew invalidation SHALL be scoped to the OAuth path only and SHALL NOT apply to the token path.
+Claude SHALL be available only when `claude` is enabled in `GA_AGENT_BACKENDS`; Kiro remains the default, and Claude login SHALL work when enabled even if it is not the default. Disabled login SHALL return HTTP 400 and disabled Claude default selection SHALL fail at startup.
 
 #### Scenario: Login refused when the image lacks the Claude CLI
 - **WHEN** claude is not an enabled backend and `POST /login/claude` is called
@@ -137,6 +139,13 @@ The operator documentation (`docs/auth.md`) SHALL document `CLAUDE_CODE_OAUTH_TO
 - **WHEN** claude is an enabled backend, `GA_CREW_ACP_BACKEND` is unset, and `POST /login/claude/setup-token` is called
 - **THEN** the transport returns HTTP 404 because the route no longer exists; headless Claude auth is configured through `CLAUDE_CODE_OAUTH_TOKEN` instead
 
+### Requirement: Claude authentication guidance distinguishes supported paths
+
+`docs/auth.md` SHALL recommend the setup-token path for headless/server deployments, document OAuth device-code login as the interactive alternative, and limit the OAuth-expiry warning to OAuth credentials.
+
+#### Scenario: Claude auth documentation distinguishes setup-token and OAuth
+- **WHEN** an operator reads `docs/auth.md`
+- **THEN** it recommends `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` for headless/server use, documents `POST /login/claude` and `POST /login/claude/code` as the interactive OAuth device-code flow, and scopes OAuth-expiry cross-crew invalidation to OAuth only
 ### Requirement: Claude authorisation-code flow states
 The Claude authorisation-code flow SHALL have three states: idle, pending and complete. `POST /login/claude/oauth` moves idle to pending. `GET /login/claude` moves pending to complete once a code has been submitted through `POST /login/claude/oauth/code`, storing the result as claude's active credential (method `oauth`). The transport MUST NOT make any other transition. Clearing is done with `POST /logout/claude`, which also cancels a pending flow and leaves running crews untouched.
 

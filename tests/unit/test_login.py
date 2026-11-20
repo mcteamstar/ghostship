@@ -1079,3 +1079,103 @@ class TestCodexDeviceLoginOutput(unittest.TestCase):
             self._parse([b"https://auth.openai.com/codex/device\n"], require_code=False),
             ("https://auth.openai.com/codex/device", None),
         )
+
+
+class TestKiroPostUrlProfileSelector(unittest.TestCase):
+    """kiro-cli's Identity Center profile selector, shown after the device
+    grant, is answered with Enter (the default profile) by the PTY drain."""
+
+    def test_identity_center_answers_profile_selector_with_enter(self):
+        from transport.login import KiroLoginFlow
+        flow = KiroLoginFlow()
+        flow._pending = {
+            "method": "identity-center",
+            "provider": {"start_url": "https://d-123.awsapps.com/start/", "region": "ap-southeast-2"},
+        }
+        answers = {p.pattern: a for p, a in flow._post_url_prompt_patterns()}
+        self.assertEqual(answers, {"Select an IAM Identity Center profile": b"\n"})
+        # Not answered pre-URL: it would never appear before the grant.
+        self.assertNotIn(
+            "Select an IAM Identity Center profile",
+            [p.pattern for p, _ in flow._prompt_patterns()],
+        )
+
+    def test_builder_id_has_no_post_url_prompts(self):
+        from transport.login import KiroLoginFlow
+        flow = KiroLoginFlow()
+        flow._pending = {"method": "builder-id", "provider": None}
+        self.assertEqual(flow._post_url_prompt_patterns(), [])
+
+    def test_other_backends_default_to_none(self):
+        from transport.login import ClaudeLoginFlow, CodexLoginFlow
+        self.assertEqual(ClaudeLoginFlow()._post_url_prompt_patterns(), [])
+        self.assertEqual(CodexLoginFlow()._post_url_prompt_patterns(), [])
+
+
+class TestPtyDrainAnswersPostUrlPrompts(unittest.TestCase):
+    """_run_pty_login_flow's background drain answers post-URL prompts once."""
+
+    def test_selector_after_url_answered_once_even_if_split(self):
+        import re
+        import socket
+        from transport.lifecycle import _run_pty_login_flow
+        reader, writer = socket.socketpair()
+        reader.setblocking(False)
+        received = bytearray()
+        got_answer = threading.Event()
+
+        def cli():
+            # The URL first; later, after "approval", the selector split
+            # across two writes, then redrawn (must not be answered twice).
+            writer.sendall(b"Open this URL: https://device.example/?user_code=ABCD-EFGH\r\n")
+            time.sleep(0.2)
+            writer.sendall(b"\x1b[1m? Select an IAM Identity ")
+            time.sleep(0.05)
+            writer.sendall(b"Center profile\x1b[0m\r\n> KiroProfile-us-east-1\r\n")
+            writer.settimeout(2)
+            try:
+                received.extend(writer.recv(16))
+                got_answer.set()
+            except socket.timeout:
+                pass
+            writer.sendall(b"? Select an IAM Identity Center profile\r\n")  # redraw
+            time.sleep(0.2)
+            writer.setblocking(False)
+            try:
+                received.extend(writer.recv(16))
+            except BlockingIOError:
+                pass
+            writer.close()
+
+        t = threading.Thread(target=cli)
+        t.start()
+        url, _ = _run_pty_login_flow(
+            reader,
+            [],
+            [re.compile(r"Open this URL[:\s]+(https?://\S+)")],
+            None,
+            deadline_secs=2,
+            post_url_prompts=[(re.compile(r"Select an IAM Identity Center profile"), b"\n")],
+        )
+        t.join(timeout=5)
+        self.assertEqual(url, "https://device.example/?user_code=ABCD-EFGH")
+        self.assertTrue(got_answer.is_set(), "selector was not answered after the URL")
+        self.assertEqual(bytes(received), b"\n")
+
+    def test_no_post_url_prompts_still_drains(self):
+        import re
+        import socket
+        from transport.lifecycle import _run_pty_login_flow
+        reader, writer = socket.socketpair()
+        reader.setblocking(False)
+        writer.sendall(b"Open this URL: https://device.example/x\r\n")
+        url, _ = _run_pty_login_flow(
+            reader, [], [re.compile(r"Open this URL[:\s]+(https?://\S+)")], None, deadline_secs=1,
+        )
+        writer.sendall(b"? Select an IAM Identity Center profile\r\n")
+        writer.settimeout(0.3)
+        import socket as _s
+        with self.assertRaises(_s.timeout):
+            writer.recv(16)
+        writer.close()
+        self.assertEqual(url, "https://device.example/x")

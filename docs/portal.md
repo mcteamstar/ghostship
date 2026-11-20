@@ -13,6 +13,7 @@ Ghostship runs a Caddy container (`ga-portal`) as its TLS terminator, edge auth 
        ├── /api/crews*    ──── forward_auth ──▶ ga-radar
        ├── /mcp*          ──── Bearer check ──▶ ga-transport
        ├── /files/*       ──── Bearer check ──▶ ga-transport
+       ├── /crews/*/dashboard (POST/DELETE) ── Bearer check ──▶ ga-transport
        ├── /health        ──────────────────▶ ga-transport
        ├── /dashboard/*   ──────────────────▶ ga-transport
        │
@@ -48,15 +49,21 @@ Key properties: Portal owns all port bindings. Caddy only talks to `ga-transport
 
 ### Managing dashboard allocation after launch
 
+Portal routes `POST`/`DELETE /crews/{crew_id}/dashboard` to the transport behind the same Bearer check as `/mcp`. Omit the `Authorization` header when `GA_API_KEY` is unset.
+
 ```bash
 # Allocate a port and register with Portal
-curl -sX POST http://localhost:64057/crews/my-crew/dashboard | jq
+curl -sX POST -H "Authorization: Bearer $GHOSTSHIP_API_KEY" \
+  http://localhost:64057/crews/my-crew/dashboard | jq
 # → {"dashboard_url": "https://..."}
 
 # Release the port
-curl -sX DELETE http://localhost:64057/crews/my-crew/dashboard | jq
+curl -sX DELETE -H "Authorization: Bearer $GHOSTSHIP_API_KEY" \
+  http://localhost:64057/crews/my-crew/dashboard | jq
 # → {"dashboard_url": null}
 ```
+
+Portal installs predating this route need `ghostship install` re-run to regenerate `initial-config.json`.
 
 ## TLS modes
 
@@ -81,7 +88,11 @@ caddy trust --ca /path/to/ga-portal-data/_data/caddy/pki/authorities/local/root.
 
 When `GA_API_KEY` is set, dashboard HTTP requests and WebSocket handshakes require one valid, unexpired `gs_session` cookie. Caddy's WebSocket route bypasses its HTTP `forward_auth` subrequest so the upgrade can pass through; the transport validates the session before looking up or connecting to the crew. Browser handshakes must also have an `Origin` matching the external scheme, configured dashboard hostname, and dashboard port. Caddy overwrites private portal host metadata and sends it with the portal transport secret. The expected scheme comes from the configured portal TLS mode or, when TLS mode is `off`, the scheme in `GA_HOST_URL` (HTTP by default). Client-supplied forwarding headers do not establish the origin. Configure `GA_HOST_URL` with the external scheme and hostname when TLS is terminated before Caddy; configure `GA_HOST_URL` or `GA_PORTAL_DOMAIN` when the hostname differs from the portal's published host.
 
-Authenticated non-browser WebSocket clients may omit `Origin`, but they still need the session cookie. When `GA_API_KEY` is unset, dashboard HTTP and WebSocket access remains open without a dashboard session or Origin check. The portal-to-transport shared secret remains an internal gate when configured.
+Authenticated non-browser WebSocket clients may omit `Origin`, but they still need the session cookie. When `GA_API_KEY` is unset, dashboard HTTP and WebSocket access needs no dashboard session, but a browser `Origin` is still checked: a WebSocket handshake whose `Origin` is not the dashboard itself is refused, so other web pages cannot hijack a crew's live session. The portal-to-transport shared secret remains an internal gate when configured.
+
+KiroCrew's own CSRF check only accepts the crew gateway's loopback origin. The transport rewrites `Origin` to that value on dashboard HTTP requests only when it is verifiably the dashboard (same scheme, an allowed host, a dashboard-range port, and matching portal host metadata); any other `Origin` is forwarded unchanged and KiroCrew rejects it. For a loopback install, `localhost` and `127.0.0.1` are both accepted as dashboard hosts.
+
+`POST`/`DELETE /crews/{crew_id}/dashboard` are operator endpoints and refuse any request carrying an `Origin` header (a browser), so a web page cannot allocate or release dashboards cross-site.
 
 When `GA_API_KEY` is set, `/mcp*` and `/files/*` require `Authorization: Bearer <key>`. Caddy rejects invalid tokens before they reach the transport.
 

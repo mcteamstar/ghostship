@@ -10,14 +10,7 @@ container's overlay filesystem via the Podman archive API.
 
 ### Requirement: Captain status returns live mail subjects without waking the crew
 
-`captain(action="status")` SHALL return subject lines from the captain and admiral
-mailboxes without starting a stopped crew container. The response SHALL include
-`captain_subjects` and `admiral_subjects` arrays alongside the existing mail counts.
-Each subject entry SHALL be a structured object `{"subject": str, "received_at": str | None}`
-where `received_at` is the ISO 8601 UTC timestamp parsed from the message's `Date` header
-(see `mail-timestamps` spec). The response SHALL also include `last_checkin_at`
-(ISO 8601 UTC) — the wall-clock time the most recent Raven check-in fired for this crew.
-`last_checkin_at` SHALL be `null` if no check-in has fired yet.
+`captain(action="status")` SHALL return Captain and Admiral subjects, timestamps, and `last_checkin_at` without starting a stopped crew. Subject entries include `subject` and ISO 8601 UTC `received_at` parsed from `Date`; `last_checkin_at` is the latest Raven check-in time or `null` if none has fired.
 
 #### Scenario: Captain status on stopped crew returns subjects
 - **WHEN** `captain(action="status")` is called on a crew whose container is stopped
@@ -58,21 +51,7 @@ container is used only for git operations (bundle, diff) on stopped crews.
 
 ### Requirement: `pickup` surfaces mail subjects for full situational awareness
 
-The system SHALL skim subject lines from relevant mailboxes on every `pickup` call
-and include them in the response. This gives the Admiral a mail picture without
-needing a separate dispatch.
-
-- When `pickup` is called with a `task_id`: skim the agent's mailbox, raven, captain,
-  and admiral mailboxes. Captain and admiral are read via the archive API (live, works
-  on stopped containers).
-- When `pickup` is called without a `task_id` (crew-wide list): skim all persona
-  mailboxes plus captain and admiral, returned as `agent_subjects`.
-- When `pickup` is called without a `task_id` and with an `agent` parameter naming one
-  of the six personas, return only that agent's mailbox subjects and count. The task
-  list and other mailbox data SHALL NOT be included in this filtered response.
-- Only subject lines are returned — bodies are not read by `pickup`.
-- Only unread messages contribute to counts and subject lists. Reading never modifies
-  the mailbox files.
+Every `pickup` SHALL return unread subjects and counts only. Task-specific calls include the agent, Raven, Captain, and Admiral mailboxes; crew-wide calls include all personas, Captain, and Admiral. A crew-wide call filtered by `agent` SHALL return only that persona's mailbox data. Captain and Admiral reads use the archive API, including for stopped crews; reads do not modify mailboxes.
 
 #### Scenario: pickup on a specific task returns agent, raven, captain, and admiral subjects
 - **WHEN** `pickup` is called with a `task_id` for a Ghost task and all mailboxes have unread mail

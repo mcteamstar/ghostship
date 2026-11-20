@@ -328,10 +328,26 @@ class TestRateLimitMiddleware(unittest.TestCase):
         from transport import security as _security
         return _security.RateLimiter(max_requests=max_requests, window_secs=float(window_secs))
 
-    def _make_middleware(self, limiters, api_key=""):
+    def _make_middleware(self, limiters, api_key="", trusted_proxy_networks=None):
         from transport.auth import RateLimitMiddleware
         app = _RecordingApp()
-        return RateLimitMiddleware(app, limiters, api_key=api_key), app
+        return RateLimitMiddleware(
+            app,
+            limiters,
+            api_key=api_key,
+            trusted_proxy_networks=trusted_proxy_networks,
+        ), app
+
+    def _caller_key(self, peer_ip, forwarded_for=None, trusted_cidrs=None):
+        import ipaddress
+
+        networks = [ipaddress.ip_network(cidr) for cidr in (trusted_cidrs or [])]
+        headers = {}
+        if forwarded_for is not None:
+            headers["x-forwarded-for"] = forwarded_for
+        mw, _ = self._make_middleware({}, trusted_proxy_networks=networks)
+        scope = _make_scope("POST", "/login", client=(peer_ip, 1), headers=headers)
+        return mw._caller_key(scope, None)
 
     def test_health_exempt(self):
         limiter = self._limiter(max_requests=1)
@@ -413,6 +429,73 @@ class TestRateLimitMiddleware(unittest.TestCase):
         _run(mw(scope2, _receive, send2))
         self.assertTrue(app.called)  # different token key → not at limit
         self.assertNotEqual(_status_of(messages2), 429)
+
+    def test_caller_key_uses_sha256_prefix_and_source_ip(self):
+        import hashlib
+
+        token = "tokenAAAA"
+        mw, _ = self._make_middleware({})
+        scope = _make_scope("POST", "/login", client=("3.3.3.3", 1))
+
+        key = mw._caller_key(scope, token)
+
+        self.assertEqual(key, f"{hashlib.sha256(token.encode()).hexdigest()[:8]}:3.3.3.3")
+        self.assertNotIn(token, key)
+
+    def test_same_bearer_and_ip_share_rate_limit_bucket(self):
+        limiter = self._limiter(max_requests=1, window_secs=60)
+        mw, app = self._make_middleware({"login_post": limiter})
+        scope = _make_scope(
+            "POST",
+            "/login",
+            client=("3.3.3.3", 1),
+            headers={"authorization": "Bearer tokenAAAA"},
+        )
+
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        self.assertTrue(app.called)
+        self.assertNotEqual(_status_of(messages), 429)
+
+        app.called = False
+        messages, send = _collect_send()
+        _run(mw(scope, _receive, send))
+        self.assertFalse(app.called)
+        self.assertEqual(_status_of(messages), 429)
+
+    def test_trusted_peer_uses_forwarded_address(self):
+        self.assertEqual(
+            self._caller_key("10.4.0.8", "198.51.100.23", ["10.4.0.0/16"]),
+            "198.51.100.23",
+        )
+
+    def test_untrusted_peer_ignores_forwarded_address(self):
+        self.assertEqual(
+            self._caller_key("192.0.2.25", "198.51.100.23", ["10.4.0.0/16"]),
+            "192.0.2.25",
+        )
+
+    def test_trusted_peer_without_forwarded_header_falls_back_to_peer(self):
+        self.assertEqual(
+            self._caller_key("10.4.0.8", trusted_cidrs=["10.4.0.0/16"]),
+            "10.4.0.8",
+        )
+
+    def test_trusted_peer_uses_first_of_multiple_forwarded_hops(self):
+        self.assertEqual(
+            self._caller_key(
+                "10.4.0.8",
+                "198.51.100.23, 192.0.2.10",
+                ["10.4.0.0/16"],
+            ),
+            "198.51.100.23",
+        )
+
+    def test_empty_trusted_proxy_list_ignores_forwarded_address(self):
+        self.assertEqual(
+            self._caller_key("10.4.0.8", "198.51.100.23"),
+            "10.4.0.8",
+        )
 
     def test_unmatched_path_passthrough(self):
         limiter = self._limiter(max_requests=1)

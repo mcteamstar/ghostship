@@ -5,29 +5,9 @@ Define the contract for atomic multi-task dispatch and blocking multi-task picku
 
 ## Requirements
 
-### Requirement: Batch dispatch returns a batch_id and per-task IDs
+### Requirement: Batch dispatch accepts bounded task lists
 
-The system SHALL accept `tasks: list[str]` as an alternative to `task: str` on
-the `dispatch` tool. When `tasks` is provided, the system SHALL dispatch each
-task sequentially against the named `crew_id`, collect the resulting `task_id`
-per task, record the batch in the transport registry, and return a `batch_id`
-and `task_ids` list. The `task` and `tasks` parameters SHALL be mutually
-exclusive; the system SHALL return an error if both are supplied. The minimum
-batch size SHALL be 2; the maximum SHALL be capped by `GA_BATCH_MAX_TASKS`
-(default 20). Each task in the batch uses the same `agent`, optional `model`
-override, and `slot` (either `None` or `False`) as a single-task dispatch. The
-response SHALL NOT include a `task_slots` field; per-task UUID slot names are
-not generated for batch dispatch.
-
-#### Scenario: Batch dispatch — all tasks start
-
-- **WHEN** `dispatch` is called with `tasks=["task A", "task B", "task C"]`, a valid `crew_id`, and valid `agent`
-- **THEN** the system dispatches each task to `/api/spawn`, records a batch entry with `batch_id`, `task_ids`, `status: "pending"`, and `created_at`, and returns `{"batch_id": "<id>", "task_ids": ["<id1>", "<id2>", "<id3>"], "crew_id": "<crew_id>", "status": "dispatched", "agent": "<agent>", "created_at": "<ts>"}`
-
-#### Scenario: Batch dispatch — crew dies mid-batch
-
-- **WHEN** `dispatch` is called with `tasks=[...]` and the crew container becomes unreachable after some but not all `/api/spawn` calls have returned
-- **THEN** the system records a `partial` batch entry for the tasks that succeeded and returns a partial result with `status: "partial"`, the `task_ids` that were assigned, and an `error` field naming the failure point — the tasks that never received a `task_id` are the lost members
+The `dispatch` tool SHALL accept `tasks: list[str]` instead of `task: str`; the parameters SHALL be mutually exclusive, the list SHALL contain 2 through `GA_BATCH_MAX_TASKS` items (default 20), and the agent SHALL be valid.
 
 #### Scenario: Batch dispatch — task and tasks both supplied
 
@@ -49,6 +29,23 @@ not generated for batch dispatch.
 - **WHEN** `dispatch` is called with `tasks=[...]` and an agent name outside the six-persona roster
 - **THEN** the system returns a validation error without dispatching any task
 
+### Requirement: Batch dispatch returns per-task results
+
+The system SHALL dispatch each task sequentially to the named crew with the same agent, model, and slot options, record the batch, and return its `batch_id` and `task_ids`. Partial success SHALL be reported with the assigned task IDs; the response SHALL omit `task_slots`.
+
+#### Scenario: Batch dispatch — all tasks start
+
+- **WHEN** `dispatch` is called with `tasks=["task A", "task B", "task C"]`, a valid `crew_id`, and valid `agent`
+- **THEN** the system dispatches each task to `/api/spawn`, records a batch entry with `batch_id`, `task_ids`, `status: "pending"`, and `created_at`, and returns `{"batch_id": "<id>", "task_ids": ["<id1>", "<id2>", "<id3>"], "crew_id": "<crew_id>", "status": "dispatched", "agent": "<agent>", "created_at": "<ts>"}`
+
+#### Scenario: Batch dispatch — crew dies mid-batch
+
+- **WHEN** `dispatch` is called with `tasks=[...]` and the crew container becomes unreachable after some but not all `/api/spawn` calls have returned
+- **THEN** the system records a `partial` batch entry for the tasks that succeeded and returns a partial result with `status: "partial"`, the `task_ids` that were assigned, and an `error` field naming the failure point — the tasks that never received a `task_id` are the lost members
+
+#### Scenario: Batch dispatch reuses single-task options
+- **WHEN** `dispatch` is called with a valid batch, an optional model override, and `slot` set to `None` or `False`
+- **THEN** every task uses the same agent, model, and slot option, and the response contains no `task_slots` field
 ### Requirement: Batch registry record tracks member status
 
 The transport registry SHALL maintain a `batches` list per crew entry in `crews.json`. Each batch entry SHALL include `batch_id` (UUID), `task_ids` (list of string), `created_at` (ISO 8601 UTC), and `status` (`pending` | `partial` | `complete`). When all batch tasks complete, the batch status SHALL be updated to `complete`. Batch records SHALL be removed atomically when the associated crew is nuked.
@@ -63,9 +60,9 @@ The transport registry SHALL maintain a `batches` list per crew entry in `crews.
 - **WHEN** `nuke(confirm=True)` is called for a crew
 - **THEN** the crew's `batches` list is removed as part of the same atomic registry write that removes the crew entry
 
-### Requirement: Blocking batch pickup collects results for a task_ids list
+### Requirement: Blocking batch pickup returns per-task results
 
-The system SHALL accept `task_ids: list[str]` as an alternative to `task_id: str` on the `pickup` tool. When `task_ids` is provided with `timeout_secs > 0`, the system SHALL poll all listed tasks concurrently (using sequential calls to `_pickup_single` per round) until every task is `done`, the timeout elapses, or new Admiral mail arrives. The response SHALL be a dict keyed by `task_id` with each task's result as the value. When `timeout_secs == 0` and `task_ids` is provided, the system SHALL return a snapshot of each task's current state without blocking. The `task_id` and `task_ids` parameters SHALL be mutually exclusive. `_find_batch_by_task_ids` SHALL match a batch when **all** provided `task_ids` are members of that batch's recorded task list (subset match), not only when the sets are identical. A superset of task IDs (caller passes more than the batch recorded) SHALL NOT match — the intent is to find the batch a subset belongs to, not to accept arbitrary over-specification.
+With `task_ids`, `pickup` SHALL return one result per task. Positive timeouts SHALL poll until every task completes, the timeout elapses, or Admiral mail arrives; `timeout_secs=0` SHALL return a snapshot. `task_id` and `task_ids` SHALL be mutually exclusive.
 
 #### Scenario: Blocking batch pickup — all tasks complete before timeout
 
@@ -97,6 +94,10 @@ The system SHALL accept `task_ids: list[str]` as an alternative to `task_id: str
 - **WHEN** `pickup` is called with `task_ids=[]`
 - **THEN** the system returns `{"error": "task_ids must not be empty"}`
 
+### Requirement: Batch lookup matches task ID subsets
+
+`_find_batch_by_task_ids` SHALL match when every provided ID belongs to a recorded batch; a strict superset or disjoint set SHALL NOT match.
+
 #### Scenario: Batch lookup — subset match
 
 - **WHEN** `pickup(task_ids=[id1, id2])` is called and a registered batch contains `[id1, id2, id3]`
@@ -116,7 +117,6 @@ The system SHALL accept `task_ids: list[str]` as an alternative to `task_id: str
 
 - **WHEN** `pickup(task_ids=[id_x, id_y])` is called and no batch contains either ID
 - **THEN** no batch is returned
-
 ### Requirement: Lost-member detection
 
 When `pickup` is called with `task_ids` and one or more of the listed IDs has no record in the gateway (i.e. `/api/spawn/<id>` returns 404), the system SHALL mark that task as `lost` in the response rather than raising an error for the whole batch. A `lost` task result SHALL include `{"task_id": "<id>", "done": false, "lost": true, "error": "task not found in gateway"}`. The overall batch result SHALL still be returned; the `done` field for the batch SHALL be `false` when any member is lost.

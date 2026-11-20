@@ -6,20 +6,9 @@ Allow operators to set install.sh defaults in a YAML config file rather than pas
 
 ## Requirements
 
-### Requirement: Config file sourcing with correct precedence
-The system SHALL accept a `--config <path>` flag pointing to a YAML file that
-provides configuration overrides. The `--config` file SHALL be merged on top of
-built-in defaults only, replacing the implicit repo-level and XDG override layers
-entirely. Resolution order for every setting: built-in default → `--config` file
-(when passed), OR built-in default → `config/ghostship.yaml` → XDG override
-(when `--config` is not passed). Command-line flags (e.g. `--port`, `--public-url`)
-take precedence over all config file layers. The system SHALL NOT treat an environment
-variable exported in the invoking shell as a configuration input — the built-in
-default applies when no config file or flag provides a value.
+### Requirement: Config file sourcing follows explicit precedence
 
-Before reading the config, install.sh SHALL check whether `config/ghostship.conf`
-exists with no `config/ghostship.yaml`. If found, it SHALL auto-migrate the conf
-file to YAML (see `yaml-config` capability) and print a migration notice.
+The system SHALL resolve `--config` values from built-in defaults then that file, replacing repo and XDG layers; without it, values resolve from built-in defaults, repo config, then XDG override. CLI flags take precedence, and ambient shell variables are not configuration inputs.
 
 #### Scenario: Config file sets defaults, no flags override
 - **WHEN** `install.sh` runs with `--config ./my.yaml` and `my.yaml` sets `network.port: 9000`
@@ -43,30 +32,20 @@ file to YAML (see `yaml-config` capability) and print a migration notice.
 - **WHEN** the invoking shell has `GA_MACHINE_NAME=from-env` exported, no `--config` file is passed, and no corresponding flag is passed
 - **THEN** `install.sh` SHALL use the built-in default (`ghost-academy`), not the ambient value `from-env`
 
-### Requirement: Config file format documentation
-`docs/configuration.md` SHALL document the YAML config file format, the three-layer
-merge resolution order (built-in defaults → repo config → XDG override, or built-in
-defaults → `--config`), all supported YAML keys organised by section, and the
-location of both the repo-level and XDG override files. It SHALL document that config
-files are override files — operators only specify keys they want to change. It SHALL
-state the migration path from `ghostship.conf` and that `ghostship.conf` is no longer
-read. The model precedence chain SHALL be documented:
-`dispatch(model=...)` > `model.override` > per-agent model field > `model.default` > KiroCrew built-in.
+#### Scenario: Repository and XDG layers apply without --config
+- **WHEN** `--config` is absent and repo-level or XDG configuration files provide overrides
+- **THEN** values resolve as built-in defaults, then `config/ghostship.yaml`, then the XDG override
 
-The documentation SHALL include a "Knowledge auto-ingest" note stating that:
-- ghostship does not enable knowledge auto-ingest;
-- under KiroCrew 0.9.0+ (PR #2448) knowledge auto-ingest (artifact watcher, agent
-  auto-add-documents path, folder ingestion) is opt-in rather than default-on;
-- the disabled posture relies on the verified upstream default and is NOT pinned in the
-  crew config, because verification against the pinned base image (`kiro_crew` 0.9.0rc4,
-  `ghcr.io/kirodotdev/kirocrew:0.9.0-insider.4`) found no single `knowledge.auto_ingest`
-  boolean to pin — the real toggles (`knowledge.auto_ingest_artifacts`,
-  `knowledge.auto_add_documents`) each already default to `false`;
-- the open item (a future upstream default flip could silently enable ingest) is guarded by
-  a CI regression test (`tests/unit/test_trn223_knowledge_autoingest.py`) rather than a
-  config pin;
-- an operator who wants knowledge built from commits in the mounted worktree must opt in
-  explicitly.
+### Requirement: Install migrates legacy config
+
+Before reading config, `install.sh` SHALL migrate `config/ghostship.conf` when no YAML counterpart exists and print a migration notice.
+
+#### Scenario: Legacy ghostship.conf is migrated during install
+- **WHEN** `install.sh` finds `config/ghostship.conf` and no `config/ghostship.yaml`
+- **THEN** it migrates the conf file to YAML and prints a migration notice
+### Requirement: Configuration documentation covers YAML settings
+
+`docs/configuration.md` SHALL document the YAML format, supported keys by section, merge order, repo and XDG locations, override-only usage, and the migration from `ghostship.conf`, which is no longer read.
 
 #### Scenario: Config file section present in docs
 - **WHEN** reading `docs/configuration.md`
@@ -80,13 +59,25 @@ The documentation SHALL include a "Knowledge auto-ingest" note stating that:
 - **WHEN** reading `docs/configuration.md`
 - **THEN** it SHALL NOT describe exporting a shell variable as a supported configuration method
 
+#### Scenario: Removed vars absent from docs
+- **WHEN** reading `docs/configuration.md`
+- **THEN** the removed variables SHALL NOT appear as supported operator-configurable inputs
+
+#### Scenario: Documentation lists config paths and override behavior
+- **WHEN** reading `docs/configuration.md`
+- **THEN** it identifies the repo-level and XDG files and explains that config files contain only keys the operator wants to change
+
+### Requirement: Configuration documentation records model precedence
+
+The docs SHALL state the model precedence chain: `dispatch(model=...)` > `model.override` > per-agent model > `model.default` > KiroCrew built-in.
+
 #### Scenario: Model precedence table present in docs
 - **WHEN** reading `docs/configuration.md`
 - **THEN** it SHALL include a model precedence table or section documenting: `dispatch(model=...)` > `model.override` > per-agent model > `model.default` > KiroCrew built-in
 
-#### Scenario: Removed vars absent from docs
-- **WHEN** reading `docs/configuration.md`
-- **THEN** the removed variables SHALL NOT appear as supported operator-configurable inputs
+### Requirement: Configuration documentation records knowledge auto-ingest posture
+
+The docs SHALL explain that Ghostship does not enable auto-ingest, that operators must opt in to worktree ingestion, and that the disabled posture relies on verified upstream defaults with a CI regression guard rather than a config pin.
 
 #### Scenario: Knowledge auto-ingest posture documented
 - **WHEN** an operator reads the knowledge section of `docs/configuration.md`
@@ -94,6 +85,9 @@ The documentation SHALL include a "Knowledge auto-ingest" note stating that:
   deliberately NOT pinned (no `knowledge.auto_ingest` key exists to pin), that a CI test
   guards against an upstream default flip, and how to opt in explicitly if wanted
 
+#### Scenario: Knowledge note records verified upstream defaults
+- **WHEN** an operator reads the knowledge auto-ingest note
+- **THEN** it says KiroCrew 0.9.0+ (PR #2448) makes artifact watching and auto-add-documents opt-in; the actual `knowledge.auto_ingest_artifacts` and `knowledge.auto_add_documents` toggles default to false; no single `knowledge.auto_ingest` boolean exists to pin; an upstream default flip is guarded by `tests/unit/test_trn223_knowledge_autoingest.py`; and worktree ingestion requires explicit opt-in
 ### Requirement: Transport runtime config centralised in Config dataclass
 The transport SHALL load all runtime configuration from environment variables exactly once at startup into a `Config` dataclass defined in `transport/config.py`. All transport subsystems SHALL read configuration from this loaded instance rather than calling `os.environ.get()` directly at use sites.
 
@@ -129,20 +123,21 @@ The system SHALL optionally inject `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_C
 - **WHEN** `GA_GIT_AUTHOR_NAME` is unset
 - **THEN** the crew container does not have `GIT_AUTHOR_NAME` or `GIT_COMMITTER_NAME` in its environment — kiro-cli uses its own per-session identity
 
-### Requirement: Configuration docs accurately describe GA_FILE_SECRET and TRANSPORT_DATA_DIR behaviour
+### Requirement: Configuration docs explain GA_FILE_SECRET
 
-`docs/configuration.md` SHALL document in the `GA_FILE_SECRET` table row that the absence from `compose.yml` is intentional: the secret is auto-generated and persisted in `DATA_DIR/ga-file-secret` on first start; no operator override is needed or supported.
-
-`docs/configuration.md` SHALL document in the `TRANSPORT_DATA_DIR` table row that this variable is effectively pinned to `/data` in the standard install because `DATA_DIR` is always mounted as `/data`; changing it would require a custom compose override.
+The `GA_FILE_SECRET` row SHALL explain that the transport generates and persists it at `DATA_DIR/ga-file-secret` on first start; it is not passed through compose and needs no operator override.
 
 #### Scenario: Operator reads GA_FILE_SECRET docs
 - **WHEN** an operator reads the `GA_FILE_SECRET` entry in `docs/configuration.md`
 - **THEN** they understand that the value is auto-generated by the transport on first start, not passed through compose, and no override is needed
 
+### Requirement: Configuration docs explain TRANSPORT_DATA_DIR
+
+The `TRANSPORT_DATA_DIR` row SHALL state that standard installs use `/data` because `DATA_DIR` is mounted there, and changing it requires a custom compose override.
+
 #### Scenario: Operator reads TRANSPORT_DATA_DIR docs
 - **WHEN** an operator reads the `TRANSPORT_DATA_DIR` entry in `docs/configuration.md`
 - **THEN** they understand that the effective value is `/data` in the standard install and cannot be changed without a custom compose override
-
 ### Requirement: GA_MAX_ACTIVE_CREWS documents zero-and-negative-disable semantics
 
 `docs/configuration.md` and `config/ghostship.conf.example` SHALL document that any value ≤ 0 for `GA_MAX_ACTIVE_CREWS` disables the active-crew limit (not only `0`).

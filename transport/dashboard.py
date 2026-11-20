@@ -60,6 +60,9 @@ def _scope_header_values(scope: dict, header_name: str) -> list[str]:
     return values
 
 
+_LOOPBACK_DASHBOARD_HOSTS = frozenset({"localhost", "127.0.0.1"})
+
+
 def _normalise_hostname(hostname: str) -> str | None:
     if not hostname or any(ch.isspace() or ord(ch) < 0x21 or ord(ch) == 0x7f for ch in hostname):
         return None
@@ -201,6 +204,11 @@ class DashboardGate:
             normalised = _normalise_hostname(hostname or "")
             if normalised:
                 self._allowed_dashboard_hosts.add(normalised)
+                if normalised in _LOOPBACK_DASHBOARD_HOSTS:
+                    # A loopback dashboard is reachable as either name; Caddy
+                    # only publishes on 127.0.0.1, so both are the same origin
+                    # in practice and neither is DNS-rebindable.
+                    self._allowed_dashboard_hosts.update(_LOOPBACK_DASHBOARD_HOSTS)
         try:
             configured_scheme = urlsplit(external_url).scheme.lower()
         except ValueError:
@@ -268,13 +276,26 @@ class DashboardGate:
         """Authorize a dashboard WebSocket session and optional browser Origin."""
         if not self.has_valid_session(scope):
             return False
-        if not self._api_key:
-            return True
 
         origins = _scope_header_values(scope, "origin")
         if not origins:
-            # Authenticated non-browser clients do not send Origin.
+            # Non-browser clients do not send Origin.
             return True
+        # Browsers always send Origin on WebSocket handshakes and apply no
+        # CORS to them, so the Origin must be the dashboard itself even when
+        # no API key is set — otherwise any web page could open the crew's
+        # WS (the proxy rewrites Origin for KiroCrew, bypassing its own check).
+        return self.is_dashboard_origin(scope)
+
+    def is_dashboard_origin(self, scope: dict) -> bool:
+        """True when the request's single browser Origin is the dashboard itself.
+
+        Compares Origin against the portal-supplied ``X-Portal-Dashboard-Host``
+        (set by Caddy, trusted only alongside the portal secret), the allowed
+        dashboard hosts, the dashboard port range and the external scheme.
+        Independent of session or API-key state.
+        """
+        origins = _scope_header_values(scope, "origin")
         if len(origins) != 1:
             return False
         origin = _parse_origin(origins[0])

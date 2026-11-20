@@ -143,9 +143,9 @@ Registered as `ghostship`:
 | <img src="docs/images/tool-supply.png" width="256"> | `supply` | Deliver a file, tar archive, or git bundle into a crew's workspace. |
 | <img src="docs/images/tool-evac.png" width="256"> | `evac` | Extract a file, git diff, git bundle, or directory tar (`pack=True`) from a crew's workspace. |
 | <img src="docs/images/tool-nuke.png" width="256"> | `nuke` | Destroy a crew (container + both volumes). Requires `confirm=True`. |
-| <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order. Built-in templates: `sdd` (aliases: `specky`), `independent-review` (alias: `indy`), `free-will` (aliases: `free`, `willy`), `privacy` (aliases: `privacy-probe`, `scrub`). See [docs/architecture.md#captain-supervision](docs/architecture.md#captain-supervision). |
+| <img src="docs/images/tool-captain.png" width="256"> | `captain` | Manage a crew's standing order. Built-in templates: `sdd` (`specky`), `independent-review` (`indy`), `free-will` (`free`, `willy`), and `repo-hygiene-sweep` (`sweepy`). Use Indy for change reviews; Repo Hygiene Sweep is a read-only repository maintenance pass that takes its target path in `message`, optionally scopes change checks with `change_name`, and always scans privacy/sensitive data across the whole repository. See [docs/architecture.md#captain-supervision](docs/architecture.md#captain-supervision). |
 | <img src="docs/images/tool-schedule.png" width="256"> | `schedule` | Book, cancel, or list recurring tasks. `action="create"` with `cron`, `interval`, or `delay`; `action="cancel"` by job_id; `action="list"` returns all active jobs. |
-| <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas via the KiroCrew spawn API — lightweight, immediate, no persistent session attached. Returns a `task_id`. Pass `tasks=[...]` for atomic batch dispatch; response includes `batch_id` and per-task `task_ids`. By default (`slot=None`) enrolled persona agents route into their attested member DM slot (visible in the dashboard); pass `slot=False` to dispatch headless with no session (saves ~250 MB per slot process). |
+| <img src="docs/images/tool-dispatch.png" width="256"> | `dispatch` | Spawn a task on one of the six agent personas via the KiroCrew spawn API. Returns a `task_id`; pass `tasks=[...]` for atomic batch dispatch, where every task shares the same resolved slot. By default (`slot=None`), enrolled personas route into their attested member DM slot and unenrolled personas run headless. Pass `slot=False` to force headless dispatch. Legacy `slot=True` warns and falls back to the default; it does not create per-task slots. String slot values are invalid under the boolean-or-null tool input. |
 | <img src="docs/images/tool-steer.png" width="256"> | `steer` | Guide a running task or continue a completed one; `force=True` hard-stops before continuing. |
 | <img src="docs/images/tool-pickup.png" width="256"> | `pickup` | Check progress or collect result. `timeout_secs=0` checks once; `timeout_secs=N` polls until done or timeout. Without `task_id`: list all tasks. |
 
@@ -159,7 +159,7 @@ Registered as `ghostship`:
 - [docs/troubleshooting.md](docs/troubleshooting.md) — debugging guide, known workarounds
 - [docs/manual-install.md](docs/manual-install.md) — non-standard distro prerequisites
 - [docs/dependencies.md](docs/dependencies.md) — dependency inventory, manual checks and review process
-- [config/dependencies.yaml](config/dependencies.yaml) — authoritative dependency review metadata
+- [dependencies.yaml](dependencies.yaml) — authoritative dependency review metadata
 - [CHANGELOG.md](CHANGELOG.md) — release notes
 
 Maintainers can run `python3 scripts/dependency_check.py validate` for an offline inventory check or `python3 scripts/dependency_check.py check` for a bounded manual upstream review. See the [dependency guide](docs/dependencies.md) before considering an upgrade.

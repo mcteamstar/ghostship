@@ -8,18 +8,7 @@ Documents the operator-visible behavior change introduced by KiroCrew 0.9.0 wher
 
 ### Requirement: Operator documentation for vector-similarity retrieval upgrade
 
-The system SHALL include operator-facing documentation for the 0.9.0 upgrade
-stating that memory retrieval now ranks by vector similarity rather than
-recency. The documentation SHALL inform operators that:
-
-- On a long-running crew with accumulated memory, the set of memories injected
-  into a given turn may differ after the upgrade (different memories may
-  surface compared to pre-upgrade behavior).
-- The first start after upgrading to 0.9.0 on a crew with existing memory rows
-  may trigger a one-time re-embedding pass to backfill vector representations,
-  which can briefly delay startup on large memory stores.
-- Fresh or ephemeral crews (e.g. spec-ops) that start with no prior memory are
-  unaffected by both the retrieval-ranking change and the re-embedding pass.
+Release documentation SHALL explain that 0.9.0 ranks memories by vector similarity rather than recency, so accumulated crews may inject different memories. First startup with existing rows may re-embed and briefly delay large stores; fresh or ephemeral crews without prior memories are unaffected.
 
 #### Scenario: Upgrade documentation present in 0.9.0 release notes
 
@@ -43,13 +32,7 @@ recency. The documentation SHALL inform operators that:
 
 ### Requirement: DB seed schema unaffected by vector-similarity upgrade
 
-The ghostship DB seed (`seed_kiro_db.py`) SHALL continue to seed only the four
-gateway-infrastructure tables: `auth_kv`, `history`, `migrations` (versions
-0–5, resulting in `(6, 5)` for `COUNT(*), MAX(version)`), and `state`. The
-seed SHALL NOT pre-create any `memories`, `lessons`, or embedding table — those
-tables remain owned by the gateway's own first-start migration. Under KiroCrew
-0.9.0+, the vector-similarity memory subsystem SHALL be fully provisioned by
-gateway migration, not by the ghostship seed.
+`seed_kiro_db.py` SHALL seed only gateway tables `auth_kv`, `history`, `migrations` (versions 0–5), and `state`. It SHALL NOT create memory or embedding tables; KiroCrew 0.9.0+ gateway migrations own those tables.
 
 #### Scenario: Pristine 0.9.0 image seed contains no embedding table
 

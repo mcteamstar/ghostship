@@ -245,6 +245,11 @@ except ModuleNotFoundError:
     )
     from transport import lifecycle as _lifecycle  # local dev
 
+try:
+    import kiro_signin as _kiro_signin  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import kiro_signin as _kiro_signin  # local dev
+
 # dispatch() mutates the shared in-memory task-timestamp store that lives in
 # lifecycle (same objects server used). Reference lifecycle's live objects.
 _task_timestamps = _lifecycle._task_timestamps
@@ -465,6 +470,8 @@ def _build_crews_payload(podman) -> dict:
             "acp_profile": info.get("acp_profile", "default"),
             "agents": [],
         }
+        if entry["acp_backend"] == "kiro" and info.get("kiro_signin"):
+            entry["kiro_signin"] = info["kiro_signin"]
         # Derive dashboard_url from stored dashboard_port (None if no port assigned).
         # ga-portal is always present — always use the Caddy scheme.
         _ui_p = info.get("dashboard_port")
@@ -632,6 +639,8 @@ def _build_internal_fleet_payload(podman) -> dict:
             # agents: always [] — no gateway call made (registry-only contract)
             "agents": [],
         }
+        if entry["acp_backend"] == "kiro" and info.get("kiro_signin"):
+            entry["kiro_signin"] = info["kiro_signin"]
         _ui_p = info.get("dashboard_port")
         if _ui_p is not None:
             _caddy_scheme = "http" if cfg.ga_portal_tls_mode == "off" else "https"
@@ -1222,6 +1231,9 @@ def launch(
                     pass
             return result
         result["acp_profile"] = resolved_profile
+        if backend == "kiro":
+            # Off the launch path: the gateway check runs kiro-cli (~12s).
+            _kiro_signin.check_in_background(crew_id)
         # Persist dashboard_port in registry and register with Caddy.
         # Portal is the sole dashboard proxy.
         if dashboard_port is not None and "error" not in result:
@@ -1651,6 +1663,8 @@ def captain(
 ) -> dict:
     """Autopilot: hand the full SDD lifecycle to a recurring Raven check-in — manage the single Raven-backed standing-orders Captain for a crew.
 
+    Transport spawn requests explicitly name the crew’s recorded backend.
+
     Two paths: manual relay (you dispatch/pickup/steer each persona yourself),
     or Captain autopilot (a recurring Raven check-in drives the full cycle
     unattended). Captain is the autopilot path.
@@ -1670,6 +1684,11 @@ def captain(
     autonomy and self-cancels on completion; pass both ``template="willy"``
     and ``message=`` together. The resolved order shares the same recurring
     Raven check-in as a hand-written message.
+    ``repo-hygiene-sweep`` (alias: ``sweepy``) performs one read-only
+    repository hygiene pass. Pass the absolute target repository path in
+    ``message``; optional comma-separated ``change_name`` values scope its
+    change-specific checks while privacy/sensitive-data checks remain
+    repository-wide. It self-cancels after reporting.
     ``stop`` pauses that check-in without deleting it, and ``status`` reports
     its durable state.
 
@@ -1686,15 +1705,19 @@ def captain(
         message: Free-form standing order text. Required when no template is
             given. Also accepted alongside ``free-will`` (and any template
             that uses a ``<message>`` placeholder) to supply the instruction.
+            For ``repo-hygiene-sweep``, provide the absolute target repository
+            path.
         template: Name of a built-in standing-order template. Available
             templates: ``spec-driven-development`` / ``sdd`` / ``specky``
             (single or multi-change lifecycle), ``independent-review`` /
             ``indy`` (scoped or whole-codebase review), ``free-will`` /
-            ``free`` / ``willy`` (open-ended autonomous captaincy).
+            ``free`` / ``willy`` (open-ended autonomous captaincy), and
+            ``repo-hygiene-sweep`` / ``sweepy`` (read-only repository hygiene).
         change_name: Substitution value for a template. For ``sdd``, accepts
             a single change name or a comma-separated list for multi-change
             mode. For ``independent-review``, optional — omit to review the
-            entire codebase.
+            entire codebase. For ``repo-hygiene-sweep``, optional and may be
+            comma-separated; omit to inspect the full repository.
         cron: Cron expression for a new standing-orders check-in.
         interval: Fixed interval in seconds for a new standing-orders check-in.
         timezone: IANA timezone for cron interpretation, matching schedule().
@@ -2083,6 +2106,8 @@ def dispatch(
 ) -> dict:
     """Step 3: send a task to an agent persona — spawn a task (or a batch of tasks) on a KiroCrew agent for autonomous execution.
 
+    Transport spawn requests explicitly name the crew’s recorded backend.
+
     The agent has zero context beyond the ``task`` string — be specific and
     self-contained. Use pickup as the next step to check progress or collect
     the result.
@@ -2117,6 +2142,12 @@ def dispatch(
         Batch (crew died mid-dispatch): the same shape with ``status: "partial"``,
         the ``task_ids`` assigned so far, and an ``error`` field naming the
         failure. Tasks that never received a ``task_id`` are the lost members.
+        Kiro crew whose sign-in is known to be unusable: nothing is spawned;
+        ``{"error": "not_authenticated", "backend": "kiro", "crew_id",
+        "message", "login_command"}``. The transport records sign-in state
+        after launch and wake; ``pickup`` likewise reports a sign-in-shaped
+        task failure as ``error_code: "not_authenticated"`` (original text in
+        ``upstream_error``).
 
     Args:
         task: What to do (single dispatch). Be specific — the agent has no
@@ -2138,10 +2169,13 @@ def dispatch(
             dispatches headless (no session created, echoed slot ``None``).
             ``False`` — explicit headless, regardless of enrollment: no session
             is created and the echoed slot is ``None``.
-            ``True`` and arbitrary string slot names are no longer accepted —
-            member slots cover all legitimate slotted-dispatch use cases. A
-            member DM slot is pre-created at enrollment time, so no dispatch-time
-            slot pre-creation is performed.
+            ``True`` is a legacy value, not a per-task slot mode: it logs a
+            warning and falls back to the ``None`` behavior. String-valued
+            slots are invalid under this boolean-or-null tool input. A member
+            DM slot is pre-created at enrollment time, so no dispatch-time
+            slot pre-creation is performed. Dashboard port allocation does
+            not affect slot resolution. For ``tasks=[...]``, one resolved slot
+            is shared by every task in the batch.
 
             MEMORY COST: a member-slot attachment spawns a kiro-cli-chat process
             inside the crew container (~300-400 MB RSS). For autonomous or
@@ -2171,6 +2205,9 @@ def dispatch(
         crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return {"error": str(e)}
+
+    if (denied := _kiro_signin.dispatch_guard(crew_id, crew)) is not None:
+        return denied
 
     effective_slot, parent_session = _resolve_dispatch_slot(agent, slot, crew)
 

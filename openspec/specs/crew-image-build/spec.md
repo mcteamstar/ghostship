@@ -11,19 +11,11 @@ agents authenticate on first launch without a silent schema mismatch.
 
 ### Requirement: Base-image pin tracks the target KiroCrew gateway version
 
-The crew-image build SHALL pin the base image to the KiroCrew gateway version the
-crew is intended to run, expressed as an immutable tag or digest, and the pin
-default SHALL be identical in the admission build definition and the shipped
-configuration default so that a build with no override matches an install build.
-The pin SHALL be KiroCrew v0.12.2, released 2026-11-12, at immutable multi-arch
-index digest
-`sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e`.
-The image contains Kiro CLI 2.27.1; this version SHALL be verified from the image
-rather than inferred from the gateway release number. The digest SHALL be
-recorded as the `KC_BASE_IMAGE` default in
-`crews/_base/admission/Containerfile`. The comment block above the ARG SHALL
-record the KiroCrew version, actual Kiro CLI version, digest, and verification
-date.
+The admission build and shipped configuration SHALL default to the verified
+KiroCrew `0.13.0` multi-architecture digest. Before release, maintainers SHALL
+inspect the stable image, verify its bundled Kiro CLI and seed schema, and smoke
+test fresh crews. The `KC_BASE_IMAGE` comment SHALL record the gateway version,
+CLI version, digest, and verification date.
 
 #### Scenario: operator builds with the default base image
 
@@ -53,25 +45,31 @@ date.
 - **WHEN** an operator explicitly overrides `KC_BASE_IMAGE` after this change is
   applied
 - **THEN** that build uses the explicit override
-- **AND** a build without an override continues to use the v0.12.2 default.
+- **AND** a build without an override continues to use the pinned default.
+
+#### Scenario: release uses the verified stable pin
+
+- **WHEN** a Ghostship release targeting KiroCrew 0.13.0 is prepared
+- **THEN** the `KC_BASE_IMAGE` default names the verified stable `0.13.0` index
+  digest
+- **AND** image inspection, seed verification and fresh-crew smoke checks have
+  passed against that image.
+
+#### Scenario: login containers use the pinned image
+
+- **WHEN** an operator runs a backend login after this change is applied
+- **THEN** the ephemeral login container runs the same pinned KiroCrew image as
+  new crews
+- **AND** the Kiro CLI that captures the kiro credential is the image's bundled
+  version.
 
 ### Requirement: kiro-cli DB seed matches the base-image migration schema
 
-The build-time kiro-cli database seed SHALL pre-seed the migration rows and
-resulting SQLite schema used by the pinned image's active Kiro CLI chat runtime,
-so that at launch the crew only needs to insert authentication rows with no
-migration wait or restart cycle. The seed SHALL record, in a human-readable
-annotation, the gateway version and actual bundled Kiro CLI version it was
-verified against, the verification date, and the observed migration count and
-maximum version. The v0.12.2 image contains Kiro CLI 2.27.1 and the active chat
-runtime has 11 migration rows, versions 0 through 10 (maximum 10). Its schema
-includes `auth_kv` with `key TEXT PRIMARY KEY, value TEXT`, `state` with
-`value BLOB`, the `conversations` and `conversations_v2` tables and indexes, and
-the `extracted_kas_versions` and `pinned_bin_versions` tables. The seed SHALL
-match those migration rows and definitions; verification MAY inspect and query
-the image directly or inspect its published layers when direct execution is
-unavailable. A future base-image upgrade SHALL re-verify both migration rows and
-the resulting table/auth schema before release.
+The CLI seed SHALL match the pinned image’s active chat runtime migration rows
+and SQLite schema, including `auth_kv` and `state`, so launch can inject auth
+without waiting for migrations. Each pin change SHALL reverify these against
+the image or its published layers. The seed annotation SHALL record the gateway
+and CLI versions, verification date, migration count, and maximum version.
 
 #### Scenario: seed verified and matching the base image
 
@@ -114,10 +112,19 @@ the resulting table/auth schema before release.
 
 #### Scenario: v0.12.2 chat schema is fully pre-seeded
 
-- **WHEN** the pinned v0.12.2 image's active chat runtime is initialized
-- **THEN** the seed contains 11 migration rows for versions 0 through 10
-- **AND** its `state`, conversation, version, and authentication table
-  definitions match the image schema.
+- **WHEN** the previously pinned v0.12.2 image's active chat runtime is initialized
+- **THEN** its seed contained 11 migration rows for versions 0 through 10
+- **AND** that baseline is what the newly pinned image's schema is compared
+  against when deciding whether the seed must change.
+
+#### Scenario: injected Identity Center credential carries its profile
+
+- **WHEN** a kiro IAM Identity Center credential that includes
+  `api.codewhisperer.profile` is injected into a fresh crew built on the pinned
+  image
+- **THEN** the profile row lands in the seeded `state` table
+- **AND** a kiro task on that crew completes without a "No profile selected"
+  error.
 
 ### Requirement: OpenSpec Node runtime satisfies the gateway Node floor
 

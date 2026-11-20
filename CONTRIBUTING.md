@@ -36,3 +36,20 @@ parts into a separate PR rather than sending everything at once.
   (`fix:`, `feat:`, `chore:`, `docs:`, `test:`), subject line ≤50 chars.
 - For security-sensitive changes (auth, HMAC, path handling), include a note
   on what was verified and how.
+
+
+## Test commands
+
+To run the integration checks with the same Python dependencies used by CI:
+
+    python3 -m pip install -r transport/requirements.txt
+    scripts/run.sh --integration
+
+The integration category runs the six shell install checks, then
+test_profile_launch_flow.py and test_on_demand_recovery.py with pytest. Those
+Python suites use fake Podman clients, so this category does not require a
+running Podman service. The runner reports either Python suite as a failure and
+continues to run the other suite.
+
+The crew-image checks and the fresh install/start smoke test require Podman.
+They are part of the release verification workflow described in RELEASING.md.

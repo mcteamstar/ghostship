@@ -78,11 +78,7 @@ The `crews()` MCP tool response SHALL include the `acp_backend` value for each c
 
 ### Requirement: Claude backend external network requirement
 
-When `GA_CREW_ACP_BACKEND=claude`, crew containers require outbound HTTPS access to the Anthropic API endpoint. By default this is `api.anthropic.com`. When `ANTHROPIC_BASE_URL` is set, the transport SHALL inject it as `ANTHROPIC_BASE_URL` into Claude-backend crew containers, allowing traffic to be directed to an Anthropic-compatible endpoint (e.g. a local model router or proxy).
-
-The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=claude` SHALL name the effective endpoint: `api.anthropic.com` when `ANTHROPIC_BASE_URL` is unset, or the configured URL when it is set.
-
-`ANTHROPIC_BASE_URL` has no effect when `GA_CREW_ACP_BACKEND != "claude"`.
+When `GA_CREW_ACP_BACKEND=claude`, crew containers SHALL use outbound HTTPS to `api.anthropic.com` by default. If `ANTHROPIC_BASE_URL` is set, the transport SHALL inject and log that endpoint; it SHALL have no effect on other backends.
 
 #### Scenario: Base URL unset — default Anthropic endpoint used
 - **WHEN** `GA_CREW_ACP_BACKEND=claude` and `ANTHROPIC_BASE_URL` is unset
@@ -101,11 +97,7 @@ The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=claude`
 
 ### Requirement: Codex backend external network requirement
 
-When `GA_CREW_ACP_BACKEND=codex`, crew containers require outbound HTTPS access to the OpenAI API endpoint. By default this is `api.openai.com`. When `OPENAI_BASE_URL` is set, the transport SHALL inject it as `OPENAI_BASE_URL` into Codex-backend crew containers, allowing traffic to be directed to an OpenAI-compatible endpoint (e.g. a local model router or proxy).
-
-The WARNING log entry emitted at `launch` time when `GA_CREW_ACP_BACKEND=codex` SHALL name the effective endpoint: `api.openai.com` when `OPENAI_BASE_URL` is unset, or the configured URL when it is set.
-
-`OPENAI_BASE_URL` has no effect when `GA_CREW_ACP_BACKEND != "codex"`.
+When `GA_CREW_ACP_BACKEND=codex`, crew containers SHALL use outbound HTTPS to `api.openai.com` by default. If `OPENAI_BASE_URL` is set, the transport SHALL inject and log that endpoint; it SHALL have no effect on non-Codex crews.
 
 #### Scenario: Base URL unset — default OpenAI endpoint used
 - **WHEN** `GA_CREW_ACP_BACKEND=codex` and `OPENAI_BASE_URL` is unset
@@ -231,3 +223,50 @@ Whenever the transport restarts a crew and re-applies its crew config (reconcile
 #### Scenario: Claude crew restarted under a kiro default
 - **WHEN** a crew was launched with `backend="claude"` while the default is `kiro`, and the crew is restarted
 - **THEN** the crew's config still selects the claude runtime
+
+### Requirement: Transport spawns name the crew's recorded backend
+
+Every `POST /api/spawn` the transport sends to a crew gateway (single dispatch,
+batch dispatch, Captain check-in, scheduled immediate dispatch, and scheduled
+tick dispatch) SHALL include a `backend` field naming the
+crew's recorded `acp_backend` in KiroCrew's request spelling, so the task runs on
+that backend and not on one the gateway would inherit from the parent session.
+
+#### Scenario: dispatch to a kiro crew names kiro
+
+- **WHEN** `dispatch` sends a task to a crew whose registry entry records
+  `acp_backend: "kiro"`, or records no backend
+- **THEN** the `/api/spawn` body contains `"backend": "kiro"`
+- **AND** never `"kas"` or another gateway-internal name.
+
+#### Scenario: dispatch to a claude or codex crew names that backend
+
+- **WHEN** `dispatch` sends a task to a crew recording `acp_backend: "claude"` or
+  `"codex"`
+- **THEN** the `/api/spawn` body names that same backend.
+
+#### Scenario: member-slot parent does not change the runtime
+
+- **WHEN** a dispatch is routed into a member slot
+  (`parent_session="dashboard:member-<agent>"`)
+- **AND** that gateway session has a different harness pick recorded
+- **THEN** the task runs on the crew's recorded backend, because the body names it.
+
+#### Scenario: batch, Captain, and scheduled dispatches name the backend
+
+- **WHEN** batch dispatch, Captain, scheduled immediate dispatch, or a scheduled
+  tick sends a spawn to a crew
+- **THEN** every `/api/spawn` body names the crew's recorded backend.
+
+#### Scenario: gateway refuses the named backend
+
+- **WHEN** the gateway rejects the spawn because the named backend cannot start
+- **THEN** `dispatch` returns an error carrying the gateway's refusal
+- **AND** the transport does not resend the task without a `backend` field.
+
+#### Scenario: in-crew nested spawns are unaffected
+
+- **WHEN** an agent inside a crew spawns a sub-task with the `ghostship-spawn`
+  helper
+- **THEN** that request is not changed by this requirement, and inherits its
+  parent's harness as the gateway decides.

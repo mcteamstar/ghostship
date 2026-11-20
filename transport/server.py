@@ -1131,6 +1131,28 @@ async def _resolve_crew_for_proxy(
     return crew_id, sub_path, crew
 
 
+def _rewrite_dashboard_origin(headers: dict[str, str], scope: dict) -> bool:
+    """Map a same-origin dashboard Origin onto the crew gateway's own origin.
+
+    KiroCrew's CSRF check only accepts its loopback origin
+    (``http://localhost:{CREW_GATEWAY_PORT}``), so the browser's dashboard
+    origin (e.g. ``http://localhost:64058``) fails every state-changing
+    request. Rewrite only when Origin is verifiably the dashboard itself, so a
+    cross-site Origin is forwarded unchanged and KiroCrew still rejects it.
+
+    Returns True when the request carries a foreign (non-dashboard) Origin.
+    """
+    origin_keys = [k for k in headers if k.lower() == "origin"]
+    if not origin_keys:
+        return False
+    if not _dashboard_gate.is_dashboard_origin(scope):
+        return True
+    for k in origin_keys:
+        del headers[k]
+    headers["Origin"] = f"http://localhost:{CREW_GATEWAY_PORT}"
+    return False
+
+
 async def _handle_crew_ui_proxy(request: Request) -> Response:
     """Reverse-proxy GET/POST to the crew gateway UI at http://gs-{crew_id}:5476/.
 
@@ -1182,8 +1204,12 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
         if k.lower() not in _STRIPPED_CREW_PROXY_HEADERS
     }
     forward_headers["Cookie"] = _crew_cookie(crew)
+    foreign_origin = _rewrite_dashboard_origin(forward_headers, request.scope)
 
     # Proxy and stream, retrying once with a fresh cookie on 401/403 (stale token).
+    # A foreign-Origin 403 is KiroCrew's CSRF check, not a stale cookie, so it
+    # must not trigger a re-mint (cross-site pages could otherwise force one
+    # per request).
     body = await request.body()
     try:
         async with _async_http.stream(
@@ -1192,7 +1218,7 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
             headers=forward_headers,
             content=body,
         ) as upstream_resp:
-            if upstream_resp.status_code in (401, 403):
+            if upstream_resp.status_code in (401, 403) and not foreign_origin:
                 await upstream_resp.aread()  # drain so the context can close
                 logger.info(
                     "UI proxy: upstream %d for crew %s — refreshing cookie",
@@ -1447,6 +1473,22 @@ async def _handle_crew_api_proxy(request: Request) -> Response:
 
 
 
+def _reject_browser_origin(request: Request) -> Response | None:
+    """403 for dashboard allocation requests that carry an ``Origin`` header.
+
+    ``POST /crews/{id}/dashboard`` with no body is a CORS "simple request", so
+    without an API key any web page could trigger it cross-site. It is an
+    operator/CLI endpoint and those clients never send Origin, so any Origin
+    means a browser and is refused.
+    """
+    if any(k.lower() == "origin" for k, _ in request.headers.items()):
+        return JSONResponse(
+            {"error": "browser requests are not accepted on this endpoint"},
+            status_code=403,
+        )
+    return None
+
+
 async def _handle_crew_dashboard_post(request: Request) -> Response:
     """POST /crews/{crew_id}/dashboard — allocate a UI port and register with Portal.
 
@@ -1455,7 +1497,11 @@ async def _handle_crew_dashboard_post(request: Request) -> Response:
     No-op if the crew already has a dashboard — returns the existing dashboard_url.
 
     Returns 404 for unknown crew. Returns 409 if port pool is exhausted.
+    Returns 403 for any request carrying a browser Origin (see
+    ``_reject_browser_origin``).
     """
+    if (denied := _reject_browser_origin(request)) is not None:
+        return denied
     resolved = await _resolve_crew_for_proxy(request.scope["path"], auto_wake=False)
     if isinstance(resolved, Response):
         return resolved
@@ -1525,8 +1571,11 @@ async def _handle_crew_dashboard_delete(request: Request) -> Response:
     clears dashboard_port from the registry. Returns {"dashboard_url": null}.
     No-op if the crew has no dashboard — returns {"dashboard_url": null} without error.
 
-    Returns 404 for unknown crew.
+    Returns 404 for unknown crew. Returns 403 for any request carrying a
+    browser Origin (see ``_reject_browser_origin``).
     """
+    if (denied := _reject_browser_origin(request)) is not None:
+        return denied
     parsed = _extract_crew_proxy_parts(request.scope["path"])
     if parsed is None:
         return PlainTextResponse("Not found", status_code=404)

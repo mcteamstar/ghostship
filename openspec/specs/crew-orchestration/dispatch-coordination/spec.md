@@ -9,33 +9,7 @@ check-in cycles overlap.
 
 ### Requirement: Layered 3-signal pre-dispatch check
 
-Before dispatching any persona for an SDD transition, the dispatching agent SHALL
-evaluate three coordination signals, in order, and MUST NOT dispatch unless all
-three are clear:
-
-1. **Mailbox intent signal (primary):** the agent SHALL scan `raven@localhost` for
-   an unconfirmed pending intent (`dispatching <persona> <intent_id>`) or a
-   confirmed intent (`dispatching <persona> <spawn_task_id>`) for the target
-   persona. A non-stale intent means the persona is already dispatched.
-2. **Task-description marker signal (secondary):** the agent SHALL cross-check the
-   `task` field in `kirocrew spawn list` for an in-flight task whose description
-   begins with `SDD dispatch <change> <persona>`, matching change and persona. The
-   `intent_id` portion MUST NOT be required to match because `kirocrew spawn list`
-   truncates task descriptions to 80 characters and the full `SDD dispatch <change>
-   <persona> <intent_id>` marker always exceeds that limit; matching on the
-   change+persona prefix is both necessary and sufficient for the secondary signal.
-   The `agent` field MUST NOT be used for this check.
-3. **Agent-field signal (tertiary):** the agent MAY check the `agent` field in
-   `kirocrew spawn list` as a final confirmation only. Because it is populated
-   asynchronously, it MUST NOT be the sole dispatch guard.
-
-If any signal indicates an in-flight or recently dispatched task, the agent SHALL
-hold and reassess on the next check-in rather than dispatch.
-
-If the mailbox (`raven@localhost`) cannot be read due to unavailability or an
-access error, the agent SHALL treat this as a hold condition and MUST NOT dispatch.
-A missing or unreadable mailbox is never a green light; the check-in reassesses on
-the next cycle.
+Before an SDD dispatch, the agent SHALL check mailbox intents, the `task` description's `SDD dispatch <change> <persona>` prefix (without requiring the truncated intent ID), then the `agent` field as tertiary confirmation; it MUST dispatch only when all signals are clear.
 
 #### Scenario: All signals clear
 - **WHEN** the mailbox has no non-stale intent, `spawn list` has no matching
@@ -59,31 +33,26 @@ the next cycle.
 - **THEN** the dispatching agent holds; a clear agent field alone is insufficient
   to proceed
 
+### Requirement: Unreadable intent mailbox blocks dispatch
+
+If `raven@localhost` is unavailable or unreadable, the agent SHALL hold and MUST NOT dispatch until a later check-in.
+
 #### Scenario: Mailbox unavailable is a hold condition
 - **WHEN** the mailbox (`raven@localhost`) cannot be read (unavailable or access error)
 - **THEN** the dispatching agent holds and does not dispatch; a missing or
   unreadable mailbox is treated the same as a blocking signal, not as a clear one
+### Requirement: Intent marker precedes spawn
 
-### Requirement: Intent-marker dispatch protocol
-
-Once all three signals are clear and a transition requires a dispatch, the
-dispatching agent SHALL generate a unique local `intent_id` of the form
-`intent-<uuid>`, place it at the start of the worker task description as
-`SDD dispatch <change> <persona> <intent_id>`, and write a pending dispatch-intent
-message to `raven@localhost` (`To: raven@localhost`,
-`From: raven+<raven_task_id>@localhost`, subject `dispatching <persona> <intent_id>`)
-BEFORE calling `/api/spawn`. The agent MUST NOT invent or claim a spawn task ID
-before the gateway assigns one inside `/api/spawn`.
-
-After the spawn succeeds, the agent SHALL write a confirmation message with subject
-`dispatching <persona> <spawn_task_id>` using the gateway-returned ID, including the
-`intent_id` in the body to link the two records. If `/api/spawn` fails, the agent
-SHALL write no confirmation.
+After all signals clear, the agent SHALL generate `intent-<uuid>`, prefix the worker task with `SDD dispatch <change> <persona> <intent_id>`, and mail `dispatching <persona> <intent_id>` from `raven+<raven_task_id>@localhost` before `/api/spawn`; it MUST NOT invent the gateway ID.
 
 #### Scenario: Pending marker precedes spawn
 - **WHEN** the agent decides to dispatch a persona
 - **THEN** it writes the pending intent message to `raven@localhost` before
   calling `/api/spawn`
+
+### Requirement: Intent marker is confirmed after spawn
+
+After success, the agent SHALL mail `dispatching <persona> <spawn_task_id>` using the gateway ID and link the intent in the body; on failure it SHALL write no confirmation.
 
 #### Scenario: Confirmation follows a successful spawn
 - **WHEN** `/api/spawn` returns a spawn task ID
@@ -94,7 +63,6 @@ SHALL write no confirmation.
 - **WHEN** `/api/spawn` fails
 - **THEN** the agent writes no confirmation message and leaves only the pending
   marker, which becomes stale by the staleness rules
-
 ### Requirement: Pending-marker election
 
 After writing its pending intent and before calling `/api/spawn`, the dispatching

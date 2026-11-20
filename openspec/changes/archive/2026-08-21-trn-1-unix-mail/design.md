@@ -182,7 +182,7 @@ Key changes:
   rather than appending to `/var/mail/captain` directly
 
 HMAC signing secret: injected at `_finish_crew_setup` time — generate a random
-32-byte hex secret, write to `/home/kirocrew/workplace/.admiral_secret` (not in
+32-byte hex secret, write to the crew workspace's `.admiral_secret` file (not in
 agent PATH, not in env), update registry with the secret for re-use on future orders.
 
 ### 6. Verification helper in crew image
@@ -193,7 +193,7 @@ agent PATH, not in env), update registry with the secret for re-use on future or
 """Verify X-Admiral-Sig on a message read from stdin."""
 import sys, hmac, hashlib, email
 
-secret_path = '/home/kirocrew/workplace/.admiral_secret'
+secret_path = '/path/to/.admiral_secret'
 msg = email.message_from_file(sys.stdin)
 sig = msg.get('X-Admiral-Sig', '')
 body = msg.get_payload()

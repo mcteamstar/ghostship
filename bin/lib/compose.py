@@ -51,7 +51,7 @@ class ComposeConfig:
     ga_host_url: str = ""
 
     # Transport env vars
-    ga_max_crews: str = "20"
+    ga_max_crews: str = "100"
     ga_max_active_crews: str = "3"
     ga_idle_timeout_secs: str = "300"
     ga_subagent_timeout_secs: str = "3600"
@@ -212,15 +212,12 @@ def generate_compose(config: ComposeConfig) -> str:
         portal_secrets.append("ga-api-key")
 
     # --- Portal ports ---
+    dashboard_ports = config.dashboard_port_range_start
+    if dashboard_ports != config.dashboard_port_range_end:
+        dashboard_ports = f"{dashboard_ports}-{config.dashboard_port_range_end}"
     portal_ports = [
-        (
-            f"{config.portal_bind}:{config.port}:{config.port}"
-        ),
-        (
-            f"{config.portal_bind}:{config.dashboard_port_range_start}-"
-            f"{config.dashboard_port_range_end}:{config.dashboard_port_range_start}-"
-            f"{config.dashboard_port_range_end}"
-        ),
+        f"{config.portal_bind}:{config.port}:{config.port}",
+        f"{config.portal_bind}:{dashboard_ports}:{dashboard_ports}",
     ]
 
     # --- Top-level secrets ---
@@ -332,7 +329,7 @@ def _config_from_env() -> ComposeConfig:
         host=host,
         portal_bind=portal_bind,
         ga_host_url=ga_host_url,
-        ga_max_crews=env.get("GA_MAX_CREWS", "20"),
+        ga_max_crews=env.get("GA_MAX_CREWS", "100"),
         ga_max_active_crews=env.get("GA_MAX_ACTIVE_CREWS", "3"),
         ga_idle_timeout_secs=env.get("GA_IDLE_TIMEOUT_SECS", "300"),
         ga_subagent_timeout_secs=env.get("GA_SUBAGENT_TIMEOUT_SECS", "3600"),

@@ -10,32 +10,15 @@ makes genuine orders unverifiable.
 
 ### Requirement: Admiral signature payload is length-prefixed and normalization-free
 
-The signing payload for `X-Admiral-Sig` SHALL be constructed using a length-prefixed
-encoding rather than direct string interpolation, to eliminate header-injection
-opportunities and body-normalization ambiguity.
+Signer and verifier SHALL construct `X-Admiral-Sig` payload bytes from UTF-8 Subject and From values, each preceded by its decimal byte length and newline, followed by the unmodified simple-message body bytes.
 
-The canonical payload encoding is:
+#### Scenario: Canonical payload encoding
+- **WHEN** the signer or verifier constructs a payload for a simple message
+- **THEN** it uses the exact byte sequence below, with decimal ASCII lengths and no separator after either header value:
 
 ```
 <subject-length-decimal>\n<subject-bytes><from-length-decimal>\n<from-bytes><body-bytes>
-```
 
-where:
-- `<subject-length-decimal>` is the byte length of the Subject header value (UTF-8 encoded)
-  as a decimal ASCII integer followed by a newline.
-- `<subject-bytes>` are the exact UTF-8 bytes of the Subject header value with no
-  trailing separator.
-- `<from-length-decimal>` is the byte length of the From header value (UTF-8 encoded)
-  as a decimal ASCII integer followed by a newline.
-- `<from-bytes>` are the exact UTF-8 bytes of the From header value with no trailing
-  separator.
-- `<body-bytes>` are the exact UTF-8 bytes of the message body as returned by the
-  Python `email` library's `get_payload()` for a simple (non-multipart) message, with
-  no stripping, normalization, or modification.
-
-The private key signs `payload_bytes`, where:
-
-```
 payload_bytes = (
     f"{len(subject_utf8)}\n".encode() + subject_utf8 +
     f"{len(from_utf8)}\n".encode() + from_utf8 +
@@ -43,7 +26,11 @@ payload_bytes = (
 )
 ```
 
-All lengths are in bytes (UTF-8), not Unicode code points.
+The header values are exact UTF-8 bytes; `body_bytes` is the exact string payload returned by `email.message.get_payload()` encoded as UTF-8, without stripping or normalization.
+
+#### Scenario: Header lengths count UTF-8 bytes
+- **WHEN** a Subject or From value contains a multibyte UTF-8 character
+- **THEN** its length prefix counts encoded bytes rather than Unicode code points
 
 #### Scenario: Signer and verifier construct identical payloads for a simple message
 
@@ -65,7 +52,6 @@ All lengths are in bytes (UTF-8), not Unicode code points.
 - **WHEN** the transport signs a body ending in spaces or tabs
 - **THEN** the verifier uses the body bytes verbatim (no stripping) and signature
   verification exits 0, because signer and verifier both operate on the same bytes
-
 ### Requirement: Verifier rejects multipart messages before attempting signature verification
 
 The `verify-admiral-sig` verifier SHALL exit 1 without attempting signature

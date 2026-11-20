@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.13.0
+
+### Dashboard and sign-in fixes
+
+- Route crew dashboard pages through the portal and allow same-origin dashboard
+  writes while retaining cross-site protections.
+- Wait for the Kiro Identity Center profile before storing credentials, and
+  report crew sign-in state so dispatch can return `not_authenticated` clearly.
+- Upgrade the crew base to KiroCrew 0.13.0 and name the recorded backend on
+  Transport spawns. Recreate existing crews to adopt the new image.
+
+### OpenSpec and repository hygiene
+
+- Bundle OpenSpec 2.1.0 and its change verification skill in spec-ops crews.
+- Add the `sweepy` Captain order to check spec validity, contradictions, stale
+  changes, documentation drift, and sensitive data. Privacy checks remain part
+  of Indy and Sweepy, and the standalone privacy order is removed.
+- Move the dependency inventory to the repository root, improve strict OpenSpec
+  validation, and extend integration coverage.
+- Clarify member slot routing, credential recovery, Podman setup, and network
+  topology in the operator docs.
+
 ## v0.12.2
 
 ### Truthful nuke cleanup (TRN-330)
@@ -21,7 +43,7 @@
 - Update the pre-seeded CLI database to migrations 0–10, including the BLOB
   state schema and conversation/version tables found in the v0.12.2 chat runtime.
 - The release-note review and static image evidence are recorded in
-  `docs/dependency-review-2026-11-14.md`.
+  [the historical dependency review](https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-14.md).
 - Verified on arm64 (macOS): the local image build seeds the database, and a
   fresh kiro crew completed a task and continued its session with no schema
   errors. Headless ACP dispatch persists sessions under `~/.kiro/sessions`

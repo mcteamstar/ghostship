@@ -34,12 +34,39 @@ Consumers:
 4. **Tag**: `git tag v<semver>` on the release commit on `main`.
 5. **Build**: `install.sh` automatically passes the version to `podman build`.
 
+## Test verification before release
+
+The tests workflow in .github/workflows/test.yml is the release verification
+entry point. Confirm that its test, integration-tests, podman-integration, and
+install-smoke jobs pass before release.
+
+The lightweight integration job uses the same commands shown here:
+
+    python3 -m pip install -r transport/requirements.txt
+    scripts/run.sh --integration
+
+The podman-integration job builds localhost/spec-ops:latest and runs these
+image-backed checks:
+
+    python3 tests/integration/test_model_defaults.py --connection ghost-academy --image localhost/spec-ops:latest
+    podman --connection ghost-academy run --rm -i --network none --security-opt no-new-privileges --cap-drop SYS_ADMIN --cap-drop NET_RAW --entrypoint python3 localhost/spec-ops:latest - < tests/integration/test_codex_sandbox.py
+    python3 tests/integration/test_verify_admiral_sig.py --connection ghost-academy --image localhost/spec-ops:latest
+
+The install-smoke job runs:
+
+    bash tests/integration/test_install_smoke.sh
+
+That script uses a temporary HOME, data directory, socket, and Podman store. It
+installs and starts the services, probes /health through the portal, and checks
+that the temporary resources are removed after both a successful readiness
+check and a forced portal-to-transport failure.
+
 ## Dependency review before release
 
 Before each release, run `python3 scripts/dependency_check.py validate` and
 `python3 scripts/dependency_check.py check`. Resolve declaration drift and
 record each component's outcome, evidence and next review date in
-`config/dependencies.yaml`. A lookup candidate is not approval to upgrade or
+`dependencies.yaml`. A lookup candidate is not approval to upgrade or
 evidence of compatibility. Review security advisories and upstream
 compatibility warnings as soon as they are found, even between releases.
 

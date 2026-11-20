@@ -24,7 +24,7 @@ The transport SHALL apply a sliding-window failed-attempt throttle to `POST /das
 - **THEN** the throttle source key is derived from the ASGI client address, not from `X-Forwarded-For`
 
 ### Requirement: Server-side revocable session store for dashboard sessions
-The transport SHALL manage `gs_session` tokens using `security.SessionStore` rather than a plain dict. Session issuance and validation SHALL go through `SessionStore.issue()` and `SessionStore.validate()` respectively, so that tokens can be revoked server-side and expire according to the store's `lifetime_secs`. The session lifetime SHALL be configurable via `GA_PORTAL_SESSION_TTL_SECS`, which SHALL be injected into the crew container environment by `install.sh` so operator configuration takes effect.
+The transport SHALL store `gs_session` tokens in `security.SessionStore`, issuing and validating them through `.issue()` and `.validate()` for revocation and expiry. `GA_PORTAL_SESSION_TTL_SECS` SHALL be injected into the crew environment by `install.sh` to configure the lifetime.
 
 #### Scenario: Issued token is valid until expiry
 - **WHEN** a `gs_session` token is issued by a successful `POST /dashboard/login`
@@ -81,7 +81,7 @@ The transport SHALL use the server-validated `next` URL (from `_validate_next_ur
 
 ### Requirement: WebSocket upgrade authenticated by gs_session cookie, not app token
 
-The transport WS proxy route (the `Connection: Upgrade` route in `CaddyPortal.register_crew`) SHALL authenticate WebSocket upgrade requests solely via the `gs_session` session cookie inherited from the dashboard SPA's initial HTTP load. The WS proxy route SHALL NOT set or forward an `X-App-Token` header (or any per-app token) to the upstream crew gateway. The WS route bypasses `forward_auth` because the browser context already carries a validated `gs_session` from the SPA load; this invariant MUST be preserved across gateway version upgrades.
+The dashboard WebSocket upgrade SHALL authenticate solely with the validated `gs_session` cookie from the SPA load and bypass `forward_auth`. It SHALL NOT set or forward `X-App-Token` or another app token to the gateway; preserve this across gateway upgrades.
 
 #### Scenario: WS upgrade proxy carries no app token
 - **WHEN** a browser with a valid `gs_session` cookie opens a WebSocket connection to the crew dashboard
@@ -177,7 +177,7 @@ normalisation.
 - **THEN** it returns `/`
 
 ### Requirement: Forward_auth port parameter is validated against the configured range
-The `/dashboard/auth` forward_auth endpoint SHALL reject any `port` query parameter value that does not fall within the configured dashboard port range (`ga_dashboard_port_base` through `ga_dashboard_port_base + ga_dashboard_port_range_size - 1`, inclusive). A request with a `port` value outside this range SHALL receive HTTP 400 without performing a crew lookup. A request with a `port` value inside the range that does not map to any known crew SHALL receive HTTP 200 (valid session, no crew-specific cookie injection needed).
+`/dashboard/auth` SHALL reject ports outside the configured dashboard range with HTTP 400 before crew lookup. A port within range but unmapped to a crew SHALL return HTTP 200 without crew-specific cookie injection.
 
 #### Scenario: Port below the configured range is rejected
 - **WHEN** `GET /dashboard/auth` is called with a `port` query parameter whose integer value is less than `ga_dashboard_port_base`

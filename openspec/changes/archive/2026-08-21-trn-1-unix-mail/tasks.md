@@ -42,7 +42,7 @@ File: `crews/kirocrew/verify-admiral-sig` (new, copied into image)
 Write the Python verification helper (see design.md §6). COPY it into the image
 at `/usr/local/bin/verify-admiral-sig` with execute permission. The helper:
 - Reads a raw RFC 5322 message from stdin
-- Reads the signing secret from `/home/kirocrew/workplace/.admiral_secret`
+- Reads the signing secret from the configured `.admiral_secret` file
 - Exits 0 if `X-Admiral-Sig:` matches, 1 if mismatch, 2 if secret not found
 
 ## Task 4 — Rewrite `_write_captain_mail` in transport
@@ -67,7 +67,7 @@ File: `transport/server.py`
 
 In `_finish_crew_setup`, after the gateway is ready:
 - Generate a random 32-byte hex secret: `secrets.token_hex(32)`
-- Write it to `/home/kirocrew/workplace/.admiral_secret` inside the container
+- Write it to the configured `.admiral_secret` path inside the container
   via `container_exec` (mode 0600, owned by kirocrew)
 - Store it in the registry under the crew entry so `_write_captain_mail` can
   read it on subsequent calls without re-reading the container file each time

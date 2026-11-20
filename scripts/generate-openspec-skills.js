@@ -2,92 +2,96 @@
 /**
  * generate-openspec-skills.js
  *
- * Regenerate academy/skills/openspec-* SKILL.md files from the installed
- * @fission-ai/openspec package's template API.
+ * Generate Academy's six core OpenSpec workflow skills from the installed
+ * @fission-ai/openspec package's shared-skill templates. The CLI and generated
+ * skills are a coupled versioned asset. Ghostship uses skill delivery, so the
+ * examples are adapted away from OpenSpec command-file invocations.
  *
  * Usage:
  *   npm install -g @fission-ai/openspec@<version>
  *   node scripts/generate-openspec-skills.js
- *
- * The script reads the installed package version, generates each skill's
- * SKILL.md from the zero-arity template getters, preserves allowed-tools
- * from the existing files, and writes the updated files.
  */
 
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { pathToFileURL } = require('url');
 
-// Resolve the installed @fission-ai/openspec package
-const pkgRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
-const openspecRoot = path.join(pkgRoot, '@fission-ai', 'openspec');
-const pkgJson = JSON.parse(fs.readFileSync(path.join(openspecRoot, 'package.json'), 'utf8'));
-const version = pkgJson.version;
+const CORE_SKILLS = [
+  ['explore', 'openspec-explore'],
+  ['propose', 'openspec-propose'],
+  ['update', 'openspec-update-change'],
+  ['apply', 'openspec-apply-change'],
+  ['sync', 'openspec-sync-specs'],
+  ['archive', 'openspec-archive-change'],
+];
 
-console.log(`Generating skills from @fission-ai/openspec@${version}`);
+const GHOSTSHIP_EXAMPLE_REPLACEMENTS = [
+  ['User: /opsx:explore add-auth-system',
+    'User: Use the openspec-explore skill to explore add-auth-system'],
+  ['`/opsx:apply add-auth`',
+    'the `openspec-apply-change` skill for `add-auth`'],
+  ['`/opsx:apply <other>`',
+    'the `openspec-apply-change` skill for `<other>`'],
+  ['`/opsx:update <other>`',
+    'the `openspec-update-change` skill for `<other>`'],
+  ['`/opsx:sync <other>`',
+    'the `openspec-sync-specs` skill for `<other>`'],
+  ['`/opsx:archive <other>`',
+    'the `openspec-archive-change` skill for `<other>`'],
+];
 
-const templates = require(path.join(openspecRoot, 'dist', 'core', 'templates', 'skill-templates.js'));
-
-// Map: skill directory name -> template getter function name
-const SKILL_MAP = {
-  'openspec-explore':        'getExploreSkillTemplate',
-  'openspec-propose':        'getOpsxProposeSkillTemplate',
-  'openspec-update-change':  'getUpdateChangeSkillTemplate',
-  'openspec-apply-change':   'getApplyChangeSkillTemplate',
-  'openspec-sync-specs':     'getSyncSpecsSkillTemplate',
-  'openspec-archive-change': 'getArchiveChangeSkillTemplate',
-};
-
-// Repo root is two levels up from this script
-const repoRoot = path.resolve(__dirname, '..');
-const skillsBase = path.join(repoRoot, 'academy', 'skills');
-
-let updatedCount = 0;
-
-for (const [skillName, fnName] of Object.entries(SKILL_MAP)) {
-  const skillDir = path.join(skillsBase, skillName);
-  const skillFile = path.join(skillDir, 'SKILL.md');
-
-  if (!templates[fnName]) {
-    console.error(`  ERROR: template function ${fnName} not found in package`);
-    process.exit(1);
+function adaptInstructions(instructions) {
+  let result = instructions;
+  for (const [source, replacement] of GHOSTSHIP_EXAMPLE_REPLACEMENTS) {
+    result = result.replaceAll(source, replacement);
   }
-
-  const tmpl = templates[fnName]();
-  if (!tmpl || !tmpl.instructions) {
-    console.error(`  ERROR: ${fnName}() returned empty content`);
-    process.exit(1);
+  if (/\/opsx:|\[\[opsx:/i.test(result)) {
+    throw new Error('Unadapted OpenSpec command-file reference remains in a core skill template');
   }
-
-  // Read existing file to preserve allowed-tools
-  let allowedTools = 'Bash(openspec:*)';
-  if (fs.existsSync(skillFile)) {
-    const existing = fs.readFileSync(skillFile, 'utf8');
-    const match = existing.match(/^allowed-tools:\s*(.+)$/m);
-    if (match) allowedTools = match[1].trim();
-  }
-
-  // Assemble SKILL.md
-  const content = [
-    '---',
-    `name: ${tmpl.name}`,
-    `description: ${tmpl.description}`,
-    `allowed-tools: ${allowedTools}`,
-    `license: MIT`,
-    `compatibility: Requires openspec CLI.`,
-    `metadata:`,
-    `  author: ${tmpl.metadata?.author || 'openspec'}`,
-    `  version: "${tmpl.metadata?.version || '1.0'}"`,
-    `  generatedBy: "${version}"`,
-    '---',
-    '',
-    tmpl.instructions.trimEnd(),
-  ].join('\n');
-
-  fs.mkdirSync(skillDir, { recursive: true });
-  fs.writeFileSync(skillFile, content + '\n', 'utf8');
-  console.log(`  ✓ ${skillName} (${tmpl.instructions.length} chars)`);
-  updatedCount++;
+  return result;
 }
 
-console.log(`\nDone. ${updatedCount} skills updated to @fission-ai/openspec@${version}`);
+async function main() {
+  const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+  const openspecRoot = path.join(npmRoot, '@fission-ai', 'openspec');
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(openspecRoot, 'package.json'), 'utf8'));
+  const version = pkgJson.version;
+  const generatorPath = path.join(openspecRoot, 'dist', 'core', 'shared', 'skill-generation.js');
+  const { getSkillTemplates, generateSkillContent } = await import(pathToFileURL(generatorPath).href);
+  const workflows = CORE_SKILLS.map(([workflowId]) => workflowId);
+  const templates = getSkillTemplates(workflows);
+  const templatesByWorkflow = new Map(templates.map((entry) => [entry.workflowId, entry]));
+
+  console.log(`Generating Academy skills from @fission-ai/openspec@${version}`);
+
+  const repoRoot = path.resolve(__dirname, '..');
+  const skillsBase = path.join(repoRoot, 'academy', 'skills');
+  let updatedCount = 0;
+
+  for (const [workflowId, skillName] of CORE_SKILLS) {
+    const entry = templatesByWorkflow.get(workflowId);
+    if (!entry || entry.dirName !== skillName) {
+      throw new Error(`Missing or unexpected OpenSpec skill template for ${workflowId}: expected ${skillName}`);
+    }
+
+    const skillDir = path.join(skillsBase, skillName);
+    const skillFile = path.join(skillDir, 'SKILL.md');
+    const content = generateSkillContent(entry.template, version, adaptInstructions);
+
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(skillFile, content, 'utf8');
+    console.log(`  ✓ ${skillName} (${entry.template.instructions.length} chars)`);
+    updatedCount++;
+  }
+
+  if (updatedCount !== CORE_SKILLS.length) {
+    throw new Error(`Expected ${CORE_SKILLS.length} core skills, generated ${updatedCount}`);
+  }
+  console.log(`\nDone. ${updatedCount} skills updated to @fission-ai/openspec@${version}`);
+}
+
+main().catch((error) => {
+  console.error(error.message || error);
+  process.exitCode = 1;
+});

@@ -2326,8 +2326,8 @@ class TestMintCookieAndRefreshCookie(unittest.TestCase):
 
 
 
-class TestResolveDispatchSlotTrue(unittest.TestCase):
-    """_resolve_dispatch_slot: slot=True logs a warning and proceeds as slot=None."""
+class TestResolveDispatchSlot(unittest.TestCase):
+    """Dispatch slot resolution follows enrollment and preserves legacy True fallback."""
 
     def setUp(self):
         from transport.lifecycle import _resolve_dispatch_slot
@@ -2340,6 +2340,27 @@ class TestResolveDispatchSlotTrue(unittest.TestCase):
     def _unenrolled_crew(self):
         """Return a plain dict crew with no enrolled agents."""
         return {"enrolled_agents": []}
+
+    def test_default_enrolled_agent_uses_member_slot(self):
+        eff_slot, parent = self._resolve_dispatch_slot(
+            "ghost", None, self._enrolled_crew()
+        )
+        self.assertEqual(eff_slot, "ghost")
+        self.assertEqual(parent, "dashboard:member-ghost")
+
+    def test_default_unenrolled_agent_is_headless(self):
+        eff_slot, parent = self._resolve_dispatch_slot(
+            "ghost", None, self._unenrolled_crew()
+        )
+        self.assertIsNone(eff_slot)
+        self.assertIsNone(parent)
+
+    def test_false_forces_headless_for_enrolled_agent(self):
+        eff_slot, parent = self._resolve_dispatch_slot(
+            "ghost", False, self._enrolled_crew()
+        )
+        self.assertIsNone(eff_slot)
+        self.assertIsNone(parent)
 
     def test_slot_true_logs_warning(self):
         """slot=True must emit a WARNING log."""

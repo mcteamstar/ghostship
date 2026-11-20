@@ -2,7 +2,7 @@
 
 ## Managing credentials: `ghostship auth`
 
-All backend auth is driven by one CLI:
+Manage backend credentials with the CLI:
 
 ```bash
 ghostship auth login <backend>                    # store a credential (kiro|claude|codex)
@@ -12,14 +12,24 @@ ghostship auth logout <backend> --profile <name>  # clear a specific named profi
 ghostship auth status                             # show all profiles for every backend
 ```
 
-Credentials live in `DATA_DIR/credentials/<backend>/<profile>.json` and are resolved per crew launch — not in the config file.
-Successful `launch` responses include `acp_profile`, the resolved profile recorded for the crew.
-Static API keys and Claude setup tokens are stored in a crew container's environment at creation. After rotating one or switching that profile to OAuth, operations on the old container are rejected so it cannot silently use the old value; create a new crew and transfer its workspace to use the new credential. Logging out alone does not interrupt an already-running crew.
+Credentials live in `DATA_DIR/credentials/<backend>/<profile>.json` and are resolved per crew launch — not in the config file. Successful `launch` responses include `acp_profile`, the resolved profile recorded for the crew.
 
-- `login` presents a numbered method menu per backend (or pass `--method`).
+### Credential lifecycle
+
+| Backend | Login-flow methods propagated to matching running crews | Static methods injected at container creation |
+|:--------|:--------------------------------------------------------|:----------------------------------------------|
+| Kiro | `builder-id`, `identity-center` | `api-key` |
+| Claude | `oauth` | `api-key`, `setup-token` |
+| Codex | `chatgpt` | `api-key` |
+
+When a login-flow method completes, Ghostship attempts to inject the newly stored credential into crews registered as running for the same backend and profile. Stopped crews are not targeted; their stored flow credential is injected when they next wake. A flow-completion response can include `propagation_failed` crew IDs if an injection fails. Switching a profile from a static method to a login-flow method does not remove the static environment value already present in a crew, so recreate that crew to complete the method change.
+
+Static credentials are injected into the container environment at creation and are not propagated. After rotating a static value or changing its method, an already-running container keeps its launch-time environment value. When the crew stops, the launcher refuses to wake it if the stored credential is missing or no longer matches the container's static method/value. Because `evac` follows the same wake path, preserve the workspace with `evac` before changing or removing the static credential whenever possible. If the crew is already stopped after the credential changed or was removed, restore the exact launch-time static method and value under its recorded profile (for example, with `ghostship auth login <backend> --profile <name> --method <method> --yes`), then wake it and run `evac`. Without that credential, `evac` cannot wake the crew. Do not `nuke` until `evac` succeeds: `nuke` deletes the workspace and home volumes. Then `launch` a replacement and `supply` the saved workspace. See [Repository transfer](architecture.md#repository-transfer).
+
+- On a terminal, `login` presents a numbered method menu per backend; in non-interactive use, pass `--method`.
 - Secrets are read from a hidden terminal prompt or stdin — never appear in `argv` or output.
 - The transport URL and bearer key are **discovered automatically** from the installed containers (Podman inspect). Override with `--url` / `--api-key`, or `GHOSTSHIP_URL` / `GHOSTSHIP_API_KEY` env vars.
-- `ghostship auth logout <backend>` cancels any pending login and clears the credential. It does not touch running crews — relaunch or nuke to drop a crew's credential.
+- `ghostship auth logout <backend>` cancels any pending login and clears the selected profile credential. It does not remove credentials already injected into running containers. A stopped crew cannot wake while its profile credential is absent.
 
 Per-backend methods:
 
@@ -54,7 +64,11 @@ Profile resolution at `launch` time:
 2. If only one profile exists for the backend → use it implicitly.
 3. Otherwise → use `default`.
 
-If the resolved profile has no stored credential, the backend's auth flow is initiated.
+### Launch when a credential is missing
+
+The `launch` MCP tool checks credentials before it registers or creates a crew. If the resolved profile is `default` and has no stored credential, `launch` starts that backend's login flow and returns `not_authenticated` with the login URL/code, or reports that a login is already pending. Complete the returned flow as directed, then retry `launch`. This response does not create a crew, so there is nothing to nuke.
+
+If the resolved profile is named and has no stored credential, `launch` returns `not_authenticated` without starting a flow or falling back to another profile. Authenticate it first with `ghostship auth login <backend> --profile <name>`, then retry `launch`. In non-interactive use, also pass `--method <method>`.
 
 ## Kiro auth
 
@@ -73,7 +87,7 @@ ghostship auth login kiro --method identity-center \
 ghostship auth login kiro --method api-key
 ```
 
-The Identity Center start URL **must include `/#/`**. Omit `--method` to pick from the menu. Complete auth before calling `launch` — crews created before auth completes cannot be salvaged (nuke them).
+The Identity Center start URL **must include `/#/`**. Omit `--method` for the terminal method menu, or pass it explicitly in non-interactive use. See [Launch when a credential is missing](#launch-when-a-credential-is-missing) for how `launch` handles unauthenticated profiles.
 
 ### Identity provider config
 
@@ -91,11 +105,11 @@ Set defaults in `config/ghostship.yaml` under `backends.kiro.identity_center` �
 
 ### Secret rotation
 
-When tokens expire: `ghostship auth logout kiro` then `ghostship auth login kiro`. New auth is injected into running kiro crews. Running crews keep their launch-time credential until relaunched or nuked.
+For expired `builder-id` or `identity-center` auth, run `ghostship auth logout kiro` then `ghostship auth login kiro`; completion updates running Kiro crews assigned to that profile. `api-key` rotation follows the static credential rules above.
 
 ### Uninstall retention
 
-`uninstall.sh` keeps `DATA_DIR/credentials/` so a later install can reuse logins. Pass `--purge-auth` to remove them.
+`ghostship uninstall` keeps `DATA_DIR/credentials/` so a later install can reuse logins. Pass `--purge-auth` to remove them.
 
 ### Auth API
 
@@ -126,14 +140,14 @@ UNAUTHENTICATED  ──[POST /login/kiro/builder-id]──►  PENDING  ──[G
 
 ### Prerequisites
 
-Enable the Claude backend by adding `claude` to `backends.agent` in `config/ghostship.yaml` and re-running `ghostship install`.
+Enable the Claude backend by adding a `claude: {}` section under `backends:` in `config/ghostship.yaml`, then run `ghostship install`. See [configuration.md](configuration.md).
 
 ### Setup-token (headless, recommended) {#setup-token-headless-recommended}
 
 1. On your own machine: `claude setup-token`, approve in browser, copy the token.
 2. `ghostship auth login claude --method setup-token` and paste the token.
 
-The token is long-lived but does expire. When crews fail Claude auth, run `claude setup-token` again and re-run the login. New and relaunched crews pick up the new value.
+The token is long-lived but does expire. When crews fail Claude auth, run `claude setup-token` again and `ghostship auth login claude --method setup-token`. This is a static credential: existing containers keep the value injected at creation, and a stopped crew cannot wake after the stored value changes. Recreate the crew to use the replacement token; preserve its workspace as described above.
 
 ### OAuth (interactive)
 
@@ -143,7 +157,7 @@ ghostship auth login claude --method oauth
 
 The CLI starts a flow, prints the URL, and polls for completion. After approval the browser shows `<code>#<state>` — the CLI submits it automatically. If no code is submitted within 15 minutes, or the exchange doesn't complete within 120 seconds, the flow expires.
 
-OAuth tokens may expire over time. Re-authenticate with `ghostship auth logout claude` then `ghostship auth login claude`.
+OAuth tokens may expire over time. Re-authenticate with `ghostship auth logout claude` then `ghostship auth login claude`. Completing the flow updates matching running crews; stopped crews receive the stored OAuth credential when they next wake.
 
 ### Auth API
 
@@ -166,7 +180,7 @@ UNAUTHENTICATED  ──[POST /login/claude/oauth]──►  PENDING  ──[POST
 
 ### Prerequisites
 
-Enable the Codex backend by adding `codex` to `backends.agent` in `config/ghostship.yaml` and re-running `ghostship install`.
+Enable the Codex backend by adding a `codex: {}` section under `backends:` in `config/ghostship.yaml`, then run `ghostship install`. See [configuration.md](configuration.md).
 
 ### Authenticate
 
@@ -174,7 +188,7 @@ Enable the Codex backend by adding `codex` to `backends.agent` in `config/ghosts
 ghostship auth login codex   # presents method menu: chatgpt or api-key
 ```
 
-For `chatgpt`: the CLI starts a flow, prints the URL, and polls for completion. Approve in your browser.
+For `chatgpt`: the CLI starts a flow, prints the URL, and polls for completion. Approve in your browser. Completing the flow updates matching running Codex crews; stopped crews receive the stored OAuth credential when they next wake. Codex `api-key` rotation follows the static credential rules above.
 
 ### Auth API
 

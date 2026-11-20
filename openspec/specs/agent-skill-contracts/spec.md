@@ -30,23 +30,9 @@ fleet driving. Neither description SHALL claim scope that belongs to the other.
   → pickup/steer → evac → nuke, plus the Captain autopilot) and does not claim
   to cover the shell-only install/auth steps
 
-### Requirement: Setup and operational flow is followable without consulting docs/
+### Requirement: Admin setup flow is self-contained
 
-Each skill file SHALL contain the ordered steps needed to complete its own flow
-without the reader having to open anything under `docs/`. `docs/` remains the
-authoritative reference for detail not carried in the skill, and a skill MAY
-point to it, but the primary path SHALL be self-contained.
-
-For `ghostship-admin`, the setup path SHALL be an explicit ordered sequence:
-install prerequisites → run the installer → complete the auth flow → register
-the MCP client, with the auth-before-launch guardrail presented as a prominent
-callout rather than buried.
-
-For `ghostship-command`, the operational path SHALL state the intended workflow
-order (launch → supply → dispatch → pickup/steer → evac → nuke) in the mental
-model before the per-step detail, surface the Captain autopilot in that same
-mental-model overview, and frame the "discover before assuming anything"
-guidance as the pre-work step 0.
+The `ghostship-admin` skill SHALL present prerequisites, install, authentication, and MCP registration in order, with the auth-before-launch guardrail prominent.
 
 #### Scenario: Admin setup path is a self-contained ordered sequence
 
@@ -55,6 +41,10 @@ guidance as the pre-work step 0.
   the skill file, and the auth-before-launch guardrail is visible as a callout
   before the launch step
 
+### Requirement: Command flow is self-contained
+
+The `ghostship-command` skill SHALL present discovery as step 0, then the operation order and Captain autopilot before per-step detail.
+
 #### Scenario: Command mental model states workflow order up front
 
 - **WHEN** an agent reads the mental-model section of `ghostship-command/SKILL.md`
@@ -62,12 +52,15 @@ guidance as the pre-work step 0.
   present in that overview, before the per-step detail, and the discover step is
   labeled as step 0
 
+### Requirement: Documentation remains optional reference material
+
+Each skill's primary path SHALL be self-contained; `docs/` MAY provide authoritative detail but SHALL NOT be required to complete the flow.
+
 #### Scenario: docs/ is reference, not a required detour
 
 - **WHEN** an agent follows either skill's primary flow
 - **THEN** it does not need to open any `docs/` page to complete that flow, even
   though the skill may reference `docs/` for additional detail
-
 ### Requirement: Each skill signals its handoff boundary to the other
 
 Each skill file SHALL make explicit where its own responsibility ends and the

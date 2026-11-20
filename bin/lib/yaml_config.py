@@ -90,7 +90,7 @@ DEFAULTS: dict[str, str] = {
     "GA_TRUSTED_PROXY_CIDR": "",
     "GA_REQUIRE_SECRET_ON_EXTERNAL_BIND": "false",
     # ── crew lifecycle ──
-    "GA_MAX_CREWS": "20",
+    "GA_MAX_CREWS": "100",
     "GA_MAX_ACTIVE_CREWS": "3",
     "GA_IDLE_TIMEOUT_SECS": "300",
     "GA_SUBAGENT_TIMEOUT_SECS": "3600",

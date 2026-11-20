@@ -11,15 +11,7 @@ with a mechanism that tracks *request volume* regardless of outcome.
 
 ### Requirement: Sliding-window RateLimiter primitive
 
-The system SHALL provide a `RateLimiter` class in `transport/security.py` that
-implements a sliding-window request counter. The class SHALL be keyed on arbitrary
-string caller-identity keys, thread-safe, and hold state in memory only (no external
-store). The window SHALL be defined by `max_requests` (integer) and `window_secs`
-(float). The `record(key)` method SHALL atomically check whether the caller is within
-the limit and, if so, record the request and return `True`; if the limit is exceeded it
-SHALL return `False` without recording. The `is_limited(key)` method SHALL check
-without recording. Expired timestamps (older than `window_secs`) SHALL be pruned on
-each call so memory stays bounded by the number of requests within the current window.
+`RateLimiter` in `transport/security.py` SHALL maintain a thread-safe, in-memory sliding window per string key, bounded by integer `max_requests` and floating-point `window_secs`. `record` atomically allows and records or denies without recording; `is_limited` checks without recording; each call SHALL prune expired timestamps.
 
 #### Scenario: Within limit — request allowed
 - **WHEN** a caller has made fewer than `max_requests` requests in the last `window_secs`
@@ -37,7 +29,6 @@ each call so memory stays bounded by the number of requests within the current w
 - **WHEN** two threads call `record(key)` concurrently for the same key at the limit boundary
 - **THEN** exactly one call returns `True` and the other returns `False`; the recorded
   count never exceeds `max_requests` within the window
-
 ### Requirement: RateLimitMiddleware ASGI layer
 
 The system SHALL provide a `RateLimitMiddleware` ASGI class in `transport/server.py`
@@ -70,72 +61,43 @@ WebSocket, lifespan) SHALL pass through unchanged.
 - **THEN** the middleware passes the request through without any rate check
 
 ### Requirement: Composite caller-identity key
-The middleware SHALL derive a per-caller key from available request signals:
 
-- **No API key presented**: key is the source IP address.
-- **API key presented (valid or not yet verified)**: key is
-  `SHA-256(api_key)[:8]:<source_ip>` — a fixed-length prefix of the key's hash
-  concatenated with the source IP. The raw key value is never stored in limiter
-  state.
+Middleware SHALL key callers by source IP without an API key, or `SHA-256(api_key)[:8]:<source_ip>` when present; raw keys SHALL NOT be stored. It SHALL use the first `X-Forwarded-For` address only for configured trusted peers, otherwise the ASGI peer; trusted CIDRs are parsed at startup.
 
-Source IP extraction follows a **trusted-proxy rule** controlled by the
-`GA_TRUSTED_PROXY` environment variable:
+#### Scenario: No API key uses an IP-only bucket
+- **WHEN** a request arrives without an Authorization header
+- **THEN** its limiter key is the resolved source IP alone
 
-- `GA_TRUSTED_PROXY` unset or empty (default): use `scope["client"][0]` (the
-  ASGI peer address — the address of the immediate upstream connection, which is
-  the Caddy container when the standard deployment topology is in use). No
-  `X-Forwarded-For` header is consulted.
-- `GA_TRUSTED_PROXY=1` or a specific IP: use the **last hop** of the
-  `X-Forwarded-For` header (the hop added by the trusted proxy). If XFF is
-  absent, fall back to `scope["client"][0]`. The *first* hop is never used
-  because it is client-controlled.
+#### Scenario: API key is hashed into the caller key
+- **WHEN** a request presents an API key, valid or not yet verified
+- **THEN** its limiter key uses SHA-256(api_key)[:8] and the resolved source IP without storing the raw key
 
-The raw `GA_TRUSTED_PROXY` value is read once at startup and does not change
-at runtime.
+#### Scenario: Untrusted peer cannot spoof the source address
+- **WHEN** a request comes from a peer outside `GA_TRUSTED_PROXY_CIDR` and supplies `X-Forwarded-For`
+- **THEN** the source IP is the ASGI peer address and the header is ignored
 
-#### Scenario: Default — ASGI client address used (no XFF consulted)
-- **WHEN** `GA_TRUSTED_PROXY` is unset and a request arrives from the Caddy
-  container with an `X-Forwarded-For` header
-- **THEN** the rate-limit key is derived from `scope["client"][0]` (the Caddy
-  container IP) and the `X-Forwarded-For` header is not read
+#### Scenario: Trusted peer uses the first forwarded hop
+- **WHEN** a trusted proxy sends `X-Forwarded-For: 10.0.0.1, 192.168.1.5`
+- **THEN** the source IP is `10.0.0.1`
 
-#### Scenario: Trusted proxy enabled — last XFF hop used
-- **WHEN** `GA_TRUSTED_PROXY=1` is set and a request carries
-  `X-Forwarded-For: 10.0.0.1, 192.168.1.5`
-- **THEN** the rate-limit source IP is `192.168.1.5` (the last hop)
+#### Scenario: Trusted peer without a forwarded header falls back
+- **WHEN** a request comes from a trusted peer without an `X-Forwarded-For` header
+- **THEN** the source IP is the ASGI peer address
 
-#### Scenario: Trusted proxy enabled — XFF absent falls back to ASGI client
-- **WHEN** `GA_TRUSTED_PROXY=1` is set and a request carries no
-  `X-Forwarded-For` header
-- **THEN** the rate-limit source IP is `scope["client"][0]`
-
-#### Scenario: Same IP, same key — shared bucket
+#### Scenario: Same IP and same key share a bucket
 - **WHEN** two requests arrive from the same source IP with the same API key
 - **THEN** they share the same rate-limit bucket
 
-#### Scenario: Same IP, different keys — separate buckets
+#### Scenario: Same IP and different keys use separate buckets
 - **WHEN** two requests arrive from the same source IP with different API keys
 - **THEN** they use separate rate-limit buckets
 
-#### Scenario: No API key — IP-only bucket
-- **WHEN** a request arrives with no `Authorization` header
-- **THEN** the bucket key is the source IP alone
-
+#### Scenario: Unset trusted-proxy configuration ignores forwarded headers
+- **WHEN** `GA_TRUSTED_PROXY_CIDR` is unset or empty and a request carries `X-Forwarded-For`
+- **THEN** the middleware uses the ASGI peer address
 ### Requirement: Per-endpoint default limits
 
-The transport SHALL enforce the following default limits:
-
-| Endpoint                   | Default limit      |
-|----------------------------|--------------------|
-| `GET /login`               | 30 req / 60 s      |
-| `POST /login`              | 5 req / 300 s      |
-| `/files/*`                 | 60 req / 60 s      |
-| `/crews/{id}/api/*`        | 120 req / 60 s     |
-| `/mcp` (and sub-paths)     | 300 req / 60 s     |
-
-Each limit is independently overridable via environment variable (see next requirement).
-`/crews/{id}/ui/*` (the browser-asset proxy) is not limited in this version — deferred
-to a follow-on.
+The transport SHALL limit `GET /login` to 30/60s, `POST /login` to 5/300s, `/files/*` to 60/60s, `/crews/{id}/api/*` to 120/60s, and `/mcp` to 300/60s. Each is independently overridable; `/crews/{id}/ui/*` is not limited.
 
 #### Scenario: GET /login — polling allowed, hammering blocked
 - **WHEN** a caller makes 30 `GET /login` requests within 60 seconds
@@ -156,23 +118,9 @@ to a follow-on.
 #### Scenario: /crews/*/api/* — proxied crew API
 - **WHEN** a caller makes 120 requests to a `/crews/{id}/api/` path within 60 seconds
 - **THEN** the 121st request within that window returns 429
-
 ### Requirement: Per-endpoint env-var overrides
 
-The transport SHALL read the following environment variables at startup to override
-default limits. Each variable uses the format `<count>:<window_secs>` (both positive
-integers). On parse failure the default is used and a `WARNING`-level log entry is
-emitted naming the variable and describing the parse error. A master switch disables
-the entire middleware.
-
-| Variable                    | Controls                   |
-|-----------------------------|----------------------------|
-| `GA_RATE_LIMIT_ENABLED`     | Master switch (`true`/`false`, default `true`) |
-| `GA_RATE_LIMIT_LOGIN_GET`   | `GET /login` limit         |
-| `GA_RATE_LIMIT_LOGIN_POST`  | `POST /login` limit        |
-| `GA_RATE_LIMIT_MCP`         | `/mcp` limit               |
-| `GA_RATE_LIMIT_FILES`       | `/files/*` limit           |
-| `GA_RATE_LIMIT_CREW_API`    | `/crews/*/api/*` limit     |
+At startup, `GA_RATE_LIMIT_LOGIN_GET`, `GA_RATE_LIMIT_LOGIN_POST`, `GA_RATE_LIMIT_MCP`, `GA_RATE_LIMIT_FILES`, and `GA_RATE_LIMIT_CREW_API` SHALL override their endpoint defaults.
 
 #### Scenario: Valid override is applied
 - **WHEN** `GA_RATE_LIMIT_MCP=600:120` is set
@@ -183,11 +131,14 @@ the entire middleware.
 - **THEN** the `/files/*` limiter uses the default (60 req / 60 s) and a `WARNING` log
   entry names `GA_RATE_LIMIT_FILES` and describes the parse failure
 
+### Requirement: Rate-limit overrides are validated and can be disabled
+
+Override values SHALL use positive `<count>:<window_secs>` integers; invalid values SHALL use defaults and log a warning naming the variable. `GA_RATE_LIMIT_ENABLED` SHALL disable the whole middleware when false.
+
 #### Scenario: Master switch disables all limiting
 - **WHEN** `GA_RATE_LIMIT_ENABLED=false` is set
 - **THEN** `RateLimitMiddleware` is not added to the stack and all requests pass through
   without any rate check; an `INFO` log entry confirms rate limiting is disabled
-
 ### Requirement: In-memory state only
 
 Rate limiter state is held in process memory and is not persisted. Restarting the
