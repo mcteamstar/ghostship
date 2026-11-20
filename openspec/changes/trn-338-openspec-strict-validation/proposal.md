@@ -36,7 +36,7 @@ Validation on 2026-11-20 used `openspec validate --all --strict --report full --
 | Total warnings | 178 | 2 |
 | Items passed / failed | 29 / 58 | 85 / 2 |
 
-Scenario review found no removed or changed original scenario behavior in the other modified specs. In `captain/independent-review`, duplicate stale four/five-report labels were consolidated and corrected to distinguish five review tracks from seven dispatched tasks. Its three test-coverage shards remain fixed as in the source order; configurability is deferred to TRN-344. No order or runtime behavior changed.
+Scenario review found no removed or changed original scenario behavior in the behavior-preserving edits. In `captain/independent-review`, duplicate stale four/five-report labels were consolidated and corrected to distinguish five review tracks from seven dispatched tasks. Its three test-coverage shards remain fixed as in the source order; configurability is deferred to TRN-344. No order or runtime behavior changed.
 
 ### Intentional Remaining Exceptions
 
@@ -44,3 +44,7 @@ Scenario review found no removed or changed original scenario behavior in the ot
 - `yaml-config` retains one overlong requirement because its old-to-new path table is the exhaustive compatibility mapping, not a set of optional examples.
 
 Both remaining strict findings are accounted for above.
+
+### Independent Review Corrections
+
+Review against source found that wording cleanup had dropped type and nullability details from the `crews()` response contract and the floating-point type of `RateLimiter.window_secs`; those contracts are restored. The dashboard specifications also still described removed transport-side listeners and the removed `GA_DASHBOARD_PORT_ENABLED` switch, so they now describe Portal-managed ports and transport proxying. These are specification corrections only; no runtime behavior changed.

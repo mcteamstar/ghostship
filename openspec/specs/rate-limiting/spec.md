@@ -11,7 +11,7 @@ with a mechanism that tracks *request volume* regardless of outcome.
 
 ### Requirement: Sliding-window RateLimiter primitive
 
-`RateLimiter` in `transport/security.py` SHALL maintain thread-safe in-memory timestamps per string key over `max_requests` and `window_secs`. `record` atomically allows and records or denies without recording; `is_limited` checks without recording; expired timestamps SHALL be pruned.
+`RateLimiter` in `transport/security.py` SHALL maintain a thread-safe, in-memory sliding window per string key, bounded by integer `max_requests` and floating-point `window_secs`. `record` atomically allows and records or denies without recording; `is_limited` checks without recording; each call SHALL prune expired timestamps.
 
 #### Scenario: Within limit — request allowed
 - **WHEN** a caller has made fewer than `max_requests` requests in the last `window_secs`

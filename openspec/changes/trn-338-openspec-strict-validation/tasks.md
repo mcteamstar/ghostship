@@ -10,6 +10,7 @@
 - [x] 2.1 Replace placeholder Purpose sections with concise capability purposes; verify affected specs pass Purpose validation.
 - [x] 2.2 Review overlong requirement descriptions and split multi-behavior requirements into focused requirements and scenarios without changing behavior; validate each batch and compare scenarios before and after.
 - [x] 2.3 Rewrite non-normative requirement language as SHALL/MUST only where intended behavior is clear; verify each changed requirement against scenarios and source evidence.
+- [x] 2.4 Reconcile independent-review findings with source behavior, restore dropped response and duration types, and update dashboard requirements to Portal-managed routing; verify strict-validation counts remain stable.
 
 ## 3. Verify the baseline
 

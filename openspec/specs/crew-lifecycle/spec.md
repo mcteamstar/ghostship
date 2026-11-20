@@ -7,7 +7,7 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 ## Requirements
 
 ### Requirement: Crew creation via launch
-`launch` SHALL create an isolated crew with workspace/home volumes for a valid unique ID, using canonical `comp` (legacy `composition` alias; `comp` wins conflicts with a warning; default is `spec-ops`). It SHALL store the image's `org.ghostship.version`, and enforce `GA_MAX_CREWS` across registered crews with distinct total/active-limit errors. Dashboard allocation follows the explicit argument, then `GA_DASHBOARD_DEFAULT`; enabled launches store and return a port URL, otherwise URL is null.
+`launch` SHALL create an isolated crew with workspace/home volumes for a valid unique ID, resolve `comp` (legacy `composition` alias; `comp` wins conflicts with a warning; default `spec-ops`), store the image version, and enforce `GA_MAX_CREWS` across registered crews with distinct total/active-limit errors. Dashboard defaulting follows the explicit argument then `GA_DASHBOARD_DEFAULT`; enabled launches return a URL.
 
 #### Scenario: First launch for a new crew_id
 - **WHEN** `launch` is called with a `crew_id` that has no existing registry entry and the registered crew count is below `GA_MAX_CREWS`
@@ -69,8 +69,12 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 - **WHEN** `GA_DASHBOARD_DEFAULT` is unset or `false` and `launch(crew_id)` is called with no `dashboard` argument
 - **THEN** no dashboard is allocated and `dashboard_url` is null — existing default behaviour preserved
 
+#### Scenario: Dashboard port is registered with Portal
+- **WHEN** `launch` is called with `dashboard=True`
+- **THEN** the system allocates and stores a UI port, registers the crew with Portal, and returns its `dashboard_url`
+
 ### Requirement: Crew teardown via nuke
-`nuke` SHALL require confirmation, attempt to remove the container and both volumes, and remove the registry entry after cleanup attempts. It SHALL stop any dashboard listener and release its port. Documentation SHALL describe it as destructive permanent teardown, not routine cleanup. Resource failures SHALL be identified and return a cleanup-failure status.
+`nuke` SHALL require confirmation, attempt to remove the container and both volumes, and remove the registry entry after cleanup attempts. For an assigned dashboard, it SHALL remove the Portal registration and release the port. Documentation SHALL describe it as destructive permanent teardown, not routine cleanup. Resource failures SHALL be identified and return a cleanup-failure status.
 
 #### Scenario: Nuke without confirmation
 - **WHEN** `nuke` is called for an existing `crew_id` without `confirm=True`
@@ -105,7 +109,7 @@ Manage the creation and teardown of isolated KiroCrew "crew" containers on deman
 
 ### Requirement: REST API to retrofit or remove a dashboard
 
-`POST /crews/{crew_id}/dashboard` SHALL allocate a UI port and return its URL, idempotently reusing an active dashboard. `DELETE` SHALL stop the listener, release the port, and return null, including when already inactive. Both endpoints honor `GA_API_KEY` and `GA_DASHBOARD_PORT_ENABLED`.
+`POST /crews/{crew_id}/dashboard` SHALL allocate a UI port and register it with Portal, idempotently reusing an active dashboard. `DELETE` SHALL remove the Portal registration, release the port, and return null, including when already inactive. Both endpoints SHALL honor `GA_API_KEY` authentication.
 
 #### Scenario: POST /dashboard on a running crew
 - **WHEN** `POST /crews/my-crew/dashboard` is called for a crew without a `dashboard_port`

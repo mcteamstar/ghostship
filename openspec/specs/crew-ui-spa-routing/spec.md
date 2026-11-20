@@ -2,29 +2,29 @@
 
 ## Purpose
 
-Enable the KiroCrew gateway SPA to load and navigate correctly when accessed via the transport, by giving each crew a dedicated port on the transport. The SPA owns its entire origin so assets, client-side routing, and hard reloads all work correctly. All traffic is handled by the transport, so existing security policies apply uniformly.
+Serve each crew's browser dashboard through a Portal-managed port, with the transport proxying UI and WebSocket traffic to the crew gateway. The SPA owns its origin so assets, client-side routing, and hard reloads work correctly; dashboard messages are read through REST.
 
 ## Requirements
 
-### Requirement: Each crew is assigned a unique UI port on the transport at launch
+### Requirement: Each crew dashboard is served through Portal on a unique UI port
 
-When launched with `dashboard=true`, the transport SHALL allocate and store a unique port from the configured range, start a listener, and return it as `dashboard_url`. HTTP and WebSocket requests SHALL proxy to `http://gs-{crew_id}:5476/{path}`, with bidirectional WebSocket forwarding via `httpx-ws`.
+When launched with `dashboard=true`, the transport SHALL allocate and store a unique port from the configured range, register it with Portal (Caddy), and return it as `dashboard_url`. Portal SHALL forward requests on that port to the transport's `/crews/{crew_id}/ui` proxy, which SHALL forward HTTP and WebSocket traffic to `http://gs-{crew_id}:5476/{path}`. The transport SHALL NOT start a per-port listener.
 
 #### Scenario: SPA loads at root of origin
-- **WHEN** a browser opens `http://ghostship-host.example.ts.net:64058/`
-- **THEN** the transport proxies to `http://gs-my-crew:5476/` and the SPA loads correctly
+- **WHEN** a browser opens `<scheme>://ghostship-host.example.ts.net:64058/`, where the scheme follows Portal's configured TLS mode
+- **THEN** Portal forwards the request to `ga-transport` at `/crews/my-crew/ui/`, the transport proxies to `http://gs-my-crew:5476/`, and the SPA loads correctly
 
 #### Scenario: Client-side navigation and hard reload both work
 - **WHEN** the SPA navigates to `/chat` and the user hard-reloads
-- **THEN** `http://ghostship-host.example.ts.net:64058/chat` is handled by the transport, proxied to `http://gs-my-crew:5476/chat`, and the SPA renders correctly
+- **THEN** `<scheme>://ghostship-host.example.ts.net:64058/chat` is forwarded by Portal to the transport's `/crews/my-crew/ui/chat` proxy, then to `http://gs-my-crew:5476/chat`, and the SPA renders correctly
 
 #### Scenario: WebSocket connection proxied to upstream
-- **WHEN** the SPA opens a WebSocket connection to `ws://ghostship-host.example.ts.net:64058/api/ws`
-- **THEN** the transport upgrades the connection and bidirectionally proxies messages to `ws://gs-my-crew:5476/api/ws`
+- **WHEN** the SPA opens a WebSocket connection to the dashboard's `/api/ws` path
+- **THEN** Portal forwards the upgrade to the transport's `/crews/my-crew/ui/api/ws` route, which bidirectionally proxies messages to `ws://gs-my-crew:5476/api/ws`
 
-#### Scenario: GA_API_KEY auth applies to UI port traffic
-- **WHEN** `GA_API_KEY` is set and a request to the crew UI port omits or supplies an incorrect `Authorization: Bearer` header
-- **THEN** the transport returns HTTP 401 before proxying, consistent with all other authenticated routes
+#### Scenario: Dashboard session auth applies to UI traffic
+- **WHEN** `GA_API_KEY` is set and a browser request through Portal has no valid `gs_session` cookie
+- **THEN** Portal's forward-auth check or the transport's WebSocket session check rejects the request before it reaches the crew gateway
 
 #### Scenario: Launch returns dashboard_url
 - **WHEN** `launch` is called for crew `my-crew` with `dashboard=True`
@@ -36,19 +36,19 @@ When launched with `dashboard=true`, the transport SHALL allocate and store a un
 
 #### Scenario: Port released at nuke
 - **WHEN** `nuke` is called for a crew that has an allocated dashboard port
-- **THEN** the transport listener on the allocated port is stopped and the port is returned to the pool
+- **THEN** the Portal registration is removed and the port is returned to the pool
 
 #### Scenario: Port range exhausted
 - **WHEN** `launch(dashboard=True)` is called and all ports in the range are already allocated
 - **THEN** `launch` returns an error indicating the dashboard port pool is exhausted
 
-### Requirement: Transport UI port listeners restored on restart
+### Requirement: Portal dashboard registrations restored on transport restart
 
-On startup, the transport SHALL re-start listeners for any crews that have a `dashboard_port` in the registry, restoring UI access for running crews after a transport restart.
+On startup, the transport SHALL restore each allocated port and re-register crews with a `dashboard_port` in the registry with Portal (Caddy), restoring UI access after a transport restart without starting per-port transport listeners.
 
-#### Scenario: Listeners restored after transport restart
+#### Scenario: Portal registrations restored after transport restart
 - **WHEN** the transport restarts and a crew has a `dashboard_port` in the registry
-- **THEN** the transport starts a proxy listener on that port before accepting requests
+- **THEN** the transport restores its port mapping and registers the crew with Portal before accepting requests
 
 ### Requirement: crews list includes dashboard_url per crew
 
@@ -61,14 +61,6 @@ The `crews` tool response SHALL include `dashboard_url` for each crew that has a
 #### Scenario: crews response includes null dashboard_url for headless crew
 - **WHEN** `crews` is called and a crew has no `dashboard_port`
 - **THEN** that crew's entry includes `dashboard_url: null`
-
-### Requirement: GA_DASHBOARD_PORT_ENABLED flag
-
-When `GA_DASHBOARD_PORT_ENABLED=false`, the transport SHALL skip all port allocation and listener management. Default is `true`.
-
-#### Scenario: Feature disabled skips port allocation
-- **WHEN** `GA_DASHBOARD_PORT_ENABLED=false` and `launch(dashboard=True)` is called
-- **THEN** no port is allocated and `dashboard_url` is `null` in the response
 
 ### Requirement: Transport strips Accept-Encoding from crew proxy requests
 

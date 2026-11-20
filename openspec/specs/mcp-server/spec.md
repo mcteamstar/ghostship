@@ -233,12 +233,16 @@ base URL for all externally-reachable endpoints. Presigned file URLs
 ### Requirement: crews() response shape
 `crews()` SHALL return a top-level `crews` array with each crew's ID, container, status, canonical `comp` and compatibility `composition`, timestamps, uptime, health, image version, dashboard URL, policy version, and tracked agents (`task_id`, `agent`, `done`, `elapsed_secs`; never `last_tool`). Include host memory and active/max counts at top level. Legacy `composition` supplies missing `comp`; on mismatch, `comp` wins and the mismatch is logged.
 
+#### Scenario: Response fields retain their types and nullability
+- **WHEN** `crews()` returns a fleet payload
+- **THEN** each crew entry uses strings for `crew_id`, `container`, `comp`, `composition`, `created_at`, and `crew_image_version`; `status` is `running` or `stopped`; `last_task_at` and `dashboard_url` are strings or null; `uptime_secs` is an integer or null; `gateway_healthy` is boolean; and `agents` is an array with string `task_id`/`agent`, boolean `done`, and numeric `elapsed_secs`. `policy_version` is an integer when present. At top level, `host_memory_available_gb` is a number or null and `active_crews`/`max_active_crews` are integers.
+
 #### Scenario: crews() omits last_tool from agent entries
 - **WHEN** `crews()` is called and one or more agents are listed for a crew
 - **THEN** each agent entry contains `task_id`, `agent`, `done`, and `elapsed_secs`, and does not contain `last_tool`
 
-#### Scenario: running crew includes uptime_secs
-- **WHEN** `crews()` is called and a crew has `status == "running"`
+#### Scenario: Running crew includes uptime_secs when inspect succeeds
+- **WHEN** `crews()` is called and a crew has `status == "running"` with a valid Podman start time
 - **THEN** that crew's entry includes an `uptime_secs` integer reflecting seconds since its container started
 
 #### Scenario: stopped crew omits uptime_secs

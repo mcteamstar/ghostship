@@ -21,6 +21,7 @@ The 2026-11-20 baseline in proposal.md covers 87 items (29 passed, 58 failed) an
 - Use OpenSpec v2-recognized extension metadata for Plane identifiers after aligning repository workflow guidance.
 - Shorten overlong requirements by separating distinct behaviors only where semantics can be preserved; compare each against its current main spec before syncing.
 - Handle placeholder sections and RFC wording as separate cleanup categories.
+- Independent review found dashboard requirements that still described the removed transport-side listeners and feature flag; align those specs with the existing Portal/Caddy implementation without changing runtime code.
 
 ## Risks / Trade-offs
 
