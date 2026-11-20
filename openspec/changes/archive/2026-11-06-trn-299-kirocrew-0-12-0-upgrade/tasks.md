@@ -70,7 +70,7 @@
 
 - [x] 4.1 In `mcteamstar/adjutant`, update the ghostship submodule to the release/0.12.0 branch
   tip and run `./deploy.sh starport`. Verify the transport health endpoint is healthy.
-  Verify: `curl http://starport.penguin-piano.ts.net/mcp` returns healthy response.
+  Verify: `curl https://portal.example.com/mcp` returns healthy response.
 
 ## Workflow follow-up
 

@@ -9,11 +9,16 @@ requiring an MCP session.
 ## Requirements
 
 ### Requirement: `GET /api/crews` returns the fleet list
-The transport SHALL expose `GET /api/crews` as an HTTP endpoint protected by the `DashboardGate` session mechanism at the Caddy layer (same `gs_session` cookie and `forward_auth` chain as `/` and `/crews/*/ui`). The response SHALL be JSON with `Content-Type: application/json` and SHALL contain the same fleet data returned by the MCP `crews()` tool.
+Transport SHALL expose `GET /api/crews` as JSON with the same fleet data as MCP
+`crews()`. Caddy SHALL enforce the same DashboardGate session and forward-auth
+chain used by `/` and `/crews/*/ui`. Transport SHALL list this route in
+`BearerAuthMiddleware.public_routes`.
 
-In `BearerAuthMiddleware`, `GET /api/crews` SHALL be listed in `public_routes` — session enforcement is at the Caddy layer, not at the transport bearer layer.
+#### Scenario: Authenticated request returns fleet JSON
+- **WHEN** `GET /api/crews` is requested with a valid `gs_session` cookie
+- **THEN** Caddy's `forward_auth` check passes and the transport returns HTTP 200 with `Content-Type: application/json`
+- **AND** the response body matches this schema:
 
-The response shape SHALL be:
 ```json
 {
   "crews": [
@@ -52,13 +57,6 @@ The response shape SHALL be:
 }
 ```
 
-`comp` SHALL be the canonical crew comp name. `composition` SHALL be a same-value compatibility alias during the rollback window. Legacy-only persisted records SHALL resolve `comp` from `composition`; if both persisted fields differ, `comp` SHALL be authoritative, the mismatch SHALL be logged, and the response SHALL emit both fields with the authoritative value.
-
-#### Scenario: Authenticated request returns fleet JSON
-- **WHEN** `GET /api/crews` is requested with a valid `gs_session` cookie
-- **THEN** Caddy's `forward_auth` check passes and the transport returns HTTP 200 with `Content-Type: application/json`
-- **THEN** the response body matches the schema above
-
 #### Scenario: Unauthenticated request is redirected to login
 - **WHEN** `GET /api/crews` is requested without a valid `gs_session` cookie
 - **THEN** Caddy's `forward_auth` call returns a redirect to `/dashboard/login`
@@ -66,6 +64,10 @@ The response shape SHALL be:
 #### Scenario: Empty fleet returns valid response
 - **WHEN** no crews are registered and `GET /api/crews` is called
 - **THEN** the response is HTTP 200 with `{"crews": [], "active_crews": 0, ...}`
+
+### Requirement: Fleet responses normalize the crew composition
+
+`comp` SHALL be the canonical crew comp name. `composition` SHALL be a same-value compatibility alias during the rollback window. Legacy-only persisted records SHALL resolve `comp` from `composition`; if both persisted fields differ, `comp` SHALL be authoritative, the mismatch SHALL be logged, and the response SHALL emit both fields with the authoritative value.
 
 #### Scenario: Crew response exposes canonical comp and equal alias
 - **WHEN** a crew is launched with `comp="spec-ops"` and `GET /api/crews` is called

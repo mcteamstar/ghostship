@@ -75,6 +75,10 @@ When install.sh reads a `config/ghostship.yaml` that uses any of the old key pat
 from before TRN-257, it SHALL warn the operator naming the old and new path and
 continue using the value. It SHALL NOT silently ignore the old path.
 
+#### Scenario: Migrate a supported deprecated path
+- **WHEN** the installer reads a deprecated key from the table below
+- **THEN** it applies the indicated mapping or removal.
+
 The deprecated path mappings are:
 
 | Old path | New path |
