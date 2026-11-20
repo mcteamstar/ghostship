@@ -38,7 +38,7 @@ export XDG_CONFIG_HOME="$SMOKE_HOME/.config"
 export XDG_DATA_HOME="$SMOKE_DATA"
 export XDG_RUNTIME_DIR="$SMOKE_RUNTIME"
 export PODMAN_SOCK="$SMOKE_RUNTIME/podman.sock"
-export CONTAINER_HOST="unix://$PODMAN_SOCK"
+unset CONTAINER_HOST CONTAINER_CONNECTION
 export GA_MACHINE_NAME="$MACHINE_NAME"
 export GA_DEDICATED_MACHINE="false"
 export PATH="$SMOKE_BIN:$PATH"
@@ -163,7 +163,9 @@ run_smoke_pass() (
   local mode="$1"
   trap pass_exit EXIT
   cd "$REPO_DIR"
-  ./install.sh --config "$SMOKE_CONFIG"
+  echo "Installing Ghostship ($mode)"
+  PYTHONUNBUFFERED=1 ./install.sh --config "$SMOKE_CONFIG"
+  echo "Starting Ghostship ($mode)"
   ./bin/start.sh --config "$SMOKE_CONFIG"
   curl --fail --silent --show-error --max-time 15 "$HEALTH_URL" >/dev/null
   echo "Portal /health is ready at $HEALTH_URL"

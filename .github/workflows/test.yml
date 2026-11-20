@@ -156,6 +156,7 @@ jobs:
           sudo apt-get install -y podman podman-compose curl
 
       - name: Install, start, probe, and clean up
+        timeout-minutes: 15
         run: bash tests/integration/test_install_smoke.sh
 
   security-scan:
