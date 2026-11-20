@@ -68,7 +68,7 @@ machine:
   dedicated: false
   name: "$MACHINE_NAME"
 portal:
-  tls_mode: off
+  tls_mode: "off"
   dashboard:
     port_range:
       start: "$DASHBOARD_PORT"
