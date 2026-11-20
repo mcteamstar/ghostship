@@ -1,5 +1,7 @@
 # Changelog
 
+## v0.13.1
+
 ## v0.13.0
 
 ### Dashboard and sign-in fixes
