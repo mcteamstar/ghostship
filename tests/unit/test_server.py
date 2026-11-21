@@ -24,12 +24,15 @@ Dual-import shim (container flat layout vs. local dev package):
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import json
 import time
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -212,6 +215,150 @@ class TestLoadTransportSecret(unittest.TestCase):
                 server._load_transport_secret()
 
         self.assertEqual(exc_info.exception.code, 1)
+
+
+class TestApiKeyStartupGuard(unittest.TestCase):
+    """The server startup guard rejects or allows the real entrypoint cases."""
+
+    @staticmethod
+    def _server_module():
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _run_server_entrypoint(self, server, api_key, config, progressed):
+        """Execute the real __main__ block with external startup I/O stubbed."""
+        class _Registry:
+            _reg = {"crews": {}}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class _Thread:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        def _run(coro):
+            coro.close()
+            progressed.append("startup continued")
+
+        source = Path(server.__file__).read_text(encoding="utf-8")
+        parsed = ast.parse(source)
+        entrypoint = next(
+            node
+            for node in parsed.body
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "__name__"
+            and len(node.test.comparators) == 1
+            and isinstance(node.test.comparators[0], ast.Constant)
+            and node.test.comparators[0].value == "__main__"
+        )
+        namespace = vars(server).copy()
+        namespace.update({
+            "__name__": "__main__",
+            "cfg": config,
+            "GA_API_KEY": api_key,
+            "_warn_inert_backend_settings": lambda: None,
+            "_reconcile_registry": lambda: None,
+            "_validate_academy": lambda: [],
+            "registry": _Registry(),
+            "_dashboard_ports_in_use": set(),
+            "threading": SimpleNamespace(Thread=_Thread),
+            "mcp": SimpleNamespace(streamable_http_app=lambda **_kwargs: object()),
+            "_dashboard_gate": SimpleNamespace(
+                handle_login_post=lambda *_a, **_kw: None,
+                handle_logout_post=lambda *_a, **_kw: None,
+                handle_auth=lambda *_a, **_kw: None,
+                handle_login_get=lambda *_a, **_kw: None,
+            ),
+            "Starlette": lambda **_kwargs: object(),
+            "_openapi": SimpleNamespace(
+                generate_schema=lambda **_kwargs: {"paths": {}},
+                get_mcp_tools=lambda _mcp: [],
+            ),
+            "BearerAuthMiddleware": lambda app, **_kwargs: app,
+            "_build_rate_limiters": lambda: None,
+            "SecurityHeadersMiddleware": lambda app, **_kwargs: app,
+            "TransportSecretMiddleware": lambda app, **_kwargs: app,
+            "uvicorn": SimpleNamespace(
+                Config=lambda *_a, **_kw: object(),
+                Server=lambda _config: object(),
+            ),
+            "asyncio": SimpleNamespace(run=_run),
+        })
+
+        with patch.object(server, "cfg", config):
+            entrypoint_code = compile(
+                ast.Module(body=[entrypoint], type_ignores=[]),
+                server.__file__,
+                "exec",
+            )
+            exec(entrypoint_code, namespace)
+
+    def test_wildcard_bind_with_loopback_portal_continues_without_key(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="127.0.0.1",
+        )
+        progressed = []
+
+        self._run_server_entrypoint(server, "", config, progressed)
+
+        self.assertEqual(progressed, ["startup continued"])
+
+    def test_non_loopback_portal_without_key_exits_startup(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="192.0.2.40",
+        )
+        progressed = []
+
+        with self.assertLogs(server.__name__, level="ERROR") as captured:
+            with self.assertRaises(SystemExit) as exc_info:
+                self._run_server_entrypoint(server, "", config, progressed)
+
+        self.assertEqual(exc_info.exception.code, 1)
+        self.assertEqual(progressed, [])
+        self.assertIn("192.0.2.40", "\n".join(captured.output))
+
+    def test_explicit_opt_out_warns_and_continues(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="192.0.2.41",
+            ga_api_key_disabled=True,
+        )
+        progressed = []
+
+        with self.assertLogs(server.__name__, level="WARNING") as captured:
+            self._run_server_entrypoint(server, "", config, progressed)
+
+        self.assertEqual(progressed, ["startup continued"])
+        self.assertIn("without authentication", "\n".join(captured.output))
+
+    def test_configured_key_allows_non_loopback_portal(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="192.0.2.42",
+        )
+        progressed = []
+
+        self._run_server_entrypoint(server, "configured-test-key", config, progressed)
+
+        self.assertEqual(progressed, ["startup continued"])
 
 
 # ── TestExtractCrewProxyParts ─────────────────────────────────────────────────

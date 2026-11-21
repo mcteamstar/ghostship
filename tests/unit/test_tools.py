@@ -16,6 +16,7 @@ from __future__ import annotations
 import types
 import sys
 import unittest
+from urllib.parse import urlsplit
 from unittest.mock import MagicMock, patch
 
 import transport.registry as _reg_mod
@@ -586,6 +587,52 @@ class TestEvacStoppedCrew(unittest.TestCase):
         """evac with path traversal returns error dict."""
         result = self._call(path="../../etc/passwd", crew_id="any-crew")
         self.assertIn("error", result)
+
+
+class TestPresignedPublicUrls(unittest.TestCase):
+    """The supply and evac tool responses use the configured public authority."""
+
+    def test_supply_and_evac_urls_use_explicit_url_or_portal_fallback(self):
+        from transport.config import Config
+        import transport.files as files
+        import transport.tools as tools
+
+        crew = {"container": "gs-url-check"}
+        cases = (
+            (
+                "explicit public URL wins",
+                Config(
+                    ga_host_url="https://files.example.test:9443/",
+                    ga_portal_host="192.0.2.99",
+                    port=65001,
+                ),
+                ("https", "files.example.test", 9443),
+            ),
+            (
+                "portal host fallback keeps configured port",
+                Config(ga_portal_host="portal.example.test", port=65123),
+                ("http", "portal.example.test", 65123),
+            ),
+        )
+
+        for label, config, expected_authority in cases:
+            with self.subTest(label=label):
+                with (
+                    patch.object(files, "cfg", config),
+                    patch.object(tools, "_require_crew", return_value=crew),
+                    patch.object(tools, "_ensure_crew_running", return_value=crew),
+                    patch.object(tools, "_bg_prewarm"),
+                    patch.object(tools._security, "audit_auth_event"),
+                ):
+                    supply = tools.supply(path="repo/input.tar", crew_id="url-check")
+                    evac = tools.evac(path="repo/result.txt", crew_id="url-check")
+
+                for response, field in ((supply, "delivery_url"), (evac, "url")):
+                    parsed = urlsplit(response[field])
+                    self.assertEqual(
+                        (parsed.scheme, parsed.hostname, parsed.port),
+                        expected_authority,
+                    )
 
 
 # ── TestGetCrewAgents ─────────────────────────────────────────────────────────

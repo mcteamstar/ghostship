@@ -88,6 +88,42 @@ class _LaunchHarness(unittest.TestCase):
         return env
 
 
+class TestLaunchCorsPublicOrigin(_LaunchHarness):
+    """launch passes the public transport origin into the crew container."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.put("claude", "setup-token", "claude-token")
+
+    def test_external_public_url_path_is_removed_from_cors_origin(self):
+        config = Config(
+            ga_host_url="https://academy.example.test:8443/portal/transport/",
+            ga_portal_host="192.0.2.88",
+            port=65111,
+        )
+
+        with patch.object(self.tools, "cfg", config):
+            result = self.launch()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(
+            self.created_env()["KIROCREW_CORS_ORIGINS"],
+            "http://gs-crew-a:5476,https://academy.example.test:8443",
+        )
+
+    def test_portal_host_fallback_includes_non_default_port(self):
+        config = Config(ga_portal_host="portal.example.test", port=65123)
+
+        with patch.object(self.tools, "cfg", config):
+            result = self.launch()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(
+            self.created_env()["KIROCREW_CORS_ORIGINS"],
+            "http://gs-crew-a:5476,http://portal.example.test:65123",
+        )
+
+
 class TestBackendSelection(_LaunchHarness):
 
     def setUp(self):

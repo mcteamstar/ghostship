@@ -777,23 +777,6 @@ class TestPortalOnlyHost(unittest.TestCase):
             "http://[2001:db8::1]:64057",
         )
 
-    def test_presigned_urls_use_public_base_url(self):
-        # transport.files cannot be imported in the unit env; check the wiring.
-        from pathlib import Path
-
-        src = (Path(__file__).resolve().parents[2] / "transport" / "files.py").read_text()
-        self.assertIn("return cfg.public_base_url()", src)
-
-    def test_crew_cors_origin_uses_public_base_url(self):
-        # The CORS origin injected into crews is derived from public_base_url(),
-        # so it follows GA_HOST_URL, then the portal host.
-        from pathlib import Path
-
-        src = (Path(__file__).resolve().parents[2] / "transport" / "tools.py").read_text()
-        self.assertIn("_urlparse(cfg.public_base_url())", src)
-        self.assertNotIn('_transport_public_origin = f"http://localhost:{PORT}"', src)
-
-
 class TestApiKeyExposure(unittest.TestCase):
     """Startup check is on ga-portal's published address, not the listen address."""
 
@@ -822,16 +805,6 @@ class TestApiKeyExposure(unittest.TestCase):
         from transport.config import api_key_exposure
 
         self.assertIsNone(api_key_exposure("s3cret", Config(ga_portal_host="0.0.0.0")))
-
-    def test_server_exits_on_error_verdict(self):
-        # transport.server cannot be imported in the unit env; check the wiring.
-        from pathlib import Path
-
-        src = (Path(__file__).resolve().parents[2] / "transport" / "server.py").read_text()
-        self.assertIn("verdict = api_key_exposure(api_key, config or cfg)", src)
-        self.assertIn("_enforce_api_key_requirement(GA_API_KEY)", src)
-        self.assertNotIn('environ.get("HOST"', src)
-
 
 # ── New env-var fields: ga_task_timestamp_ttl_secs, ga_pickup_max_poll_secs,
 #    ga_batch_max_tasks (TRN-309) ───────────────────────────────────────────────
