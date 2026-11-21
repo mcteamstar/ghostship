@@ -5,8 +5,7 @@ Covers:
   the nuke-specific cleanup helper and returns an accurate teardown status
 - schedule(): missing name error; invalid interval error; action='cancel' non-
   existent job returns structured error
-- dispatch(): crew not found returns {"error": ...}; gateway unreachable returns
-  {"error": ...}
+- task adapters forward MCP arguments and retain registry-error compatibility
 - resource_agents and resource_jobs MCP resource handlers: correct shape with
   empty and non-empty registry
 - supply / evac stopped-crew branches
@@ -392,47 +391,46 @@ class TestSchedule(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
 
-# ── TestDispatch ──────────────────────────────────────────────────────────────
+# ── Task MCP adapters ──────────────────────────────────────────────────────────────
 
-class TestDispatch(unittest.TestCase):
-    """dispatch(): error paths for crew not found and gateway unreachable."""
+class TestTaskAdapters(unittest.TestCase):
+    def test_forward_arguments_and_return_service_result(self):
+        from transport import tools
 
-    def _call(self, **kwargs):
-        try:
-            from tools import dispatch  # container flat /app/
-        except ModuleNotFoundError:
-            from transport.tools import dispatch  # local dev
-        return dispatch(**kwargs)
+        cases = [
+            ("dispatch", {"tasks": ["first", "second"], "crew_id": "crew", "slot": False},
+             (None, "ghost", "crew", None, ["first", "second"], False),
+             {"task_ids": ["first-id", "second-id"], "status": "dispatched"}),
+            ("pickup", {"task_ids": ["first-id"], "crew_id": "crew", "timeout_secs": 5},
+             (None, "crew", 5, None, ["first-id"]), {"done": False, "total_tasks": 1}),
+            ("steer", {"task_id": "first-id", "message": "continue", "crew_id": "crew", "force": True},
+             ("first-id", "continue", "crew", True), {"error": "gateway unreachable"}),
+        ]
+        for name, arguments, expected_call, result in cases:
+            with self.subTest(tool=name), patch.object(tools, "_task_service") as service:
+                operation = getattr(service, name)
+                operation.return_value = result
+                self.assertIs(getattr(tools, name)(**arguments), result)
+                operation.assert_called_once_with(*expected_call)
 
-    def test_crew_not_found_returns_error(self):
-        """dispatch to a non-existent crew returns {"error": ...}."""
-        _patch_registry(self, {})
-        registry._reg = {"crews": {}}
-        with patch("transport.tools._task_service.require_crew", side_effect=KeyError("not found")):
-            result = self._call(task="do work", crew_id="missing-crew")
-        self.assertIn("error", result)
+    def test_adapters_share_the_lifecycle_service(self):
+        from transport import lifecycle, tools
 
-    def test_gateway_unreachable_returns_error(self):
-        """dispatch when gateway is unreachable returns {"error": ...}."""
-        crew_id = "unreachable-crew"
-        _patch_registry(self, {crew_id: _fake_crew_dict(crew_id)})
-        registry._reg = {"crews": {crew_id: _fake_crew_dict(crew_id)}}
+        service = tools._task_service
+        self.assertIs(service, lifecycle._task_service)
+        for helper in ("_dispatch_batch", "_pickup_single", "_pickup_batch", "_pickup_list"):
+            self.assertIs(getattr(lifecycle, helper).__self__, service)
+        self.assertIs(lifecycle._task_timestamps, service._task_timestamps)
+        self.assertIs(lifecycle._task_timestamps_lock, service._task_timestamps_lock)
 
-        try:
-            from lifecycle import CrewUnresponsiveError  # container flat /app/
-        except ModuleNotFoundError:
-            from transport.lifecycle import CrewUnresponsiveError  # local dev
+    def test_registry_corruption_is_a_structured_tool_error(self):
+        from transport import tools
 
-        with (
-            patch("transport.tools._task_service.require_crew",
-                  return_value=_fake_crew_dict(crew_id)),
-            patch("transport.tools._task_service.ensure_running",
-                  return_value=_fake_crew_dict(crew_id)),
-            patch("transport.tools._task_service.call_gateway",
-                  side_effect=CrewUnresponsiveError("gateway unreachable")),
-        ):
-            result = self._call(task="do work", crew_id=crew_id)
-        self.assertIn("error", result)
+        with patch.object(tools, "_task_service") as service:
+            service.dispatch.side_effect = _reg_mod.RegistryCorruptError("invalid registry")
+            self.assertEqual(tools.dispatch(task="work", crew_id="crew"), {
+                "error": "registry corrupt — crews.json.corrupt preserved for inspection",
+            })
 
 
 # ── TestResourceAgents ────────────────────────────────────────────────────────

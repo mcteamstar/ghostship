@@ -13,26 +13,9 @@ steer". Now:
 
 from __future__ import annotations
 
-import sys
-import types
 from types import SimpleNamespace
-from unittest.mock import patch
 
-import httpx
-
-# transport.tools imports transport.files, which needs real starlette routing
-# that the unit-test stubs (conftest) don't provide. steer never signs file
-# URLs, so a stand-in exposing the two imported names is enough.
-if "transport.files" not in sys.modules:
-    try:
-        import transport.files  # noqa: F401
-    except ImportError:
-        _files_stub = types.ModuleType("transport.files")
-        _files_stub._sign_file_url = lambda *a, **k: ""
-        _files_stub._sign_upload_url = lambda *a, **k: ""
-        sys.modules["transport.files"] = _files_stub
-
-import transport.tools as tools
+import httpx2 as httpx
 
 _COOKIE = "eyJzZWNyZXQtY29va2llIn0.sig"
 
@@ -42,14 +25,6 @@ def _status_error(status: int, body: str) -> httpx.HTTPStatusError:
     return httpx.HTTPStatusError(f"HTTP {status}", request=None, response=response)
 
 
-def _run_steer(api_side_effect, **steer_kw):
-    crew = {"cookie": _COOKIE}
-    with patch.object(tools._task_service, "require_crew", return_value=crew), \
-            patch.object(tools._task_service, "ensure_running", return_value=crew), \
-            patch.object(tools._task_service, "call_gateway", side_effect=api_side_effect):
-        return tools.steer(task_id="t1", message="stop", crew_id="c1", **steer_kw)
-
-
 _UNSUPPORTED = (
     '{"error": "steer_unsupported: this run\'s backend cannot guarantee a '
     'mid-turn steer - use mode=\'follow_up\'", "code": "steer_failed"}'
@@ -57,13 +32,13 @@ _UNSUPPORTED = (
 _NOT_RUNNING = '{"error": "not_running: run finished - use spawn_continue", "code": "not_running"}'
 
 
-def test_running_steer_gateway_error_returns_structured_error():
+def test_running_steer_gateway_error_returns_structured_error(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
         raise _status_error(502, f"steer rejected by provider cookie={_COOKIE}")
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert "HTTP 502" in result["error"]
     assert "steer rejected by provider" in result["error"]
@@ -71,20 +46,20 @@ def test_running_steer_gateway_error_returns_structured_error():
     assert "force=True" in result["hint"]
 
 
-def test_session_starting_hint_says_retry_not_force():
+def test_session_starting_hint_says_retry_not_force(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
         raise _status_error(503, '{"error": "session_starting: retry", "code": "session_starting"}')
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert "HTTP 503" in result["error"]
     assert "retry" in result["hint"]
     assert not result["hint"].startswith("steer(..., force=True)")
 
 
-def test_steer_unsupported_falls_back_to_follow_up():
+def test_steer_unsupported_falls_back_to_follow_up(make_task_service):
     sent = []
 
     def api(crew, crew_id, method, path, **kw):
@@ -95,7 +70,7 @@ def test_steer_unsupported_falls_back_to_follow_up():
             raise _status_error(502, _UNSUPPORTED)
         return {"id": "t1", "status": "follow_up_queued"}
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert sent == [{"message": "stop"}, {"message": "stop", "mode": "follow_up"}]
     assert result["action"] == "follow_up_queued"
@@ -103,7 +78,7 @@ def test_steer_unsupported_falls_back_to_follow_up():
     assert "pickup(crew_id=...)" in result["note"]
 
 
-def test_follow_up_refusal_returns_structured_error():
+def test_follow_up_refusal_returns_structured_error(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
@@ -111,13 +86,13 @@ def test_follow_up_refusal_returns_structured_error():
             raise _status_error(502, _UNSUPPORTED)
         raise _status_error(503, '{"error": "shutting_down", "code": "steer_failed"}')
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert "follow-up" in result["error"]
     assert "HTTP 503" in result["error"]
 
 
-def test_task_finishing_before_interrupt_is_continued():
+def test_task_finishing_before_interrupt_is_continued(make_task_service):
     calls = []
 
     def api(crew, crew_id, method, path, **kw):
@@ -128,13 +103,13 @@ def test_task_finishing_before_interrupt_is_continued():
             raise _status_error(409, _NOT_RUNNING)
         return {"id": "t2"}
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert calls[-1] == ("POST", "/api/spawn/t1/continue")
     assert result == {"task_id": "t2", "crew_id": "c1", "action": "redeployed", "message": "stop"}
 
 
-def test_task_finishing_before_follow_up_is_continued():
+def test_task_finishing_before_follow_up_is_continued(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
@@ -145,25 +120,25 @@ def test_task_finishing_before_follow_up_is_continued():
         assert kw["json"] == {"task": "stop"}
         return {"id": "t3"}
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert result["action"] == "redeployed"
     assert result["task_id"] == "t3"
 
 
-def test_continue_on_finished_task_gateway_error_returns_structured_error():
+def test_continue_on_finished_task_gateway_error_returns_structured_error(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": True}
         raise _status_error(404, '{"error": "gone", "code": "conversation_gone"}')
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert "continue for finished task t1" in result["error"]
     assert "HTTP 404" in result["error"]
 
 
-def test_force_steer_resume_failure_says_task_was_stopped():
+def test_force_steer_resume_failure_says_task_was_stopped(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
@@ -171,29 +146,29 @@ def test_force_steer_resume_failure_says_task_was_stopped():
             return {}
         raise _status_error(409, '{"error": "busy", "code": "conversation_busy"}')
 
-    result = _run_steer(api, force=True)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1", force=True)
 
     assert "after force stop" in result["error"]
     assert "stopped and was not resumed" in result["error"]
     assert "HTTP 409" in result["error"]
 
 
-def test_force_steer_stop_failure_returns_structured_error():
+def test_force_steer_stop_failure_returns_structured_error(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         if method == "GET":
             return {"done": False}
         raise _status_error(500, '{"error": "boom"}')
 
-    result = _run_steer(api, force=True)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1", force=True)
 
     assert "force stop of task t1" in result["error"]
     assert "HTTP 500" in result["error"]
 
 
-def test_running_steer_success_unchanged():
+def test_running_steer_success_unchanged(make_task_service):
     def api(crew, crew_id, method, path, **kw):
         return {"done": False} if method == "GET" else {}
 
-    result = _run_steer(api)
+    result = make_task_service(api, crew={"cookie": _COOKIE}).steer("t1", "stop", "c1")
 
     assert result == {"task_id": "t1", "crew_id": "c1", "action": "steered", "message": "stop"}

@@ -462,3 +462,38 @@ def fake_podman_with_sentinel(tmp_path):
         filename=".captain_done",
     )
     return podman
+
+
+@pytest.fixture
+def make_task_service():
+    """Build an isolated service, with individual collaborators overridable."""
+    from types import SimpleNamespace
+
+    from transport.lifecycle import _validate_agent
+    from transport.task_service import TaskService
+
+    def make(call_gateway, *, crew=None, **overrides):
+        if crew is None:
+            crew = {"container": "gs-test-crew", "enrolled_agents": []}
+        dependencies = {
+            "config": SimpleNamespace(
+                ga_batch_max_tasks=5, ga_pickup_max_poll_secs=30, ga_task_timestamp_ttl_secs=60,
+            ),
+            "require_crew": lambda _: crew,
+            "ensure_running": lambda record, _: record,
+            "to_crew": lambda *_: SimpleNamespace(container=crew["container"]),
+            "validate_agent": _validate_agent,
+            "call_gateway": call_gateway,
+            "get_podman": lambda: None,
+            "sign_in": lambda: SimpleNamespace(dispatch_guard=lambda *_: None),
+            "record_last_task_at": lambda *_: None,
+            "write_batch": lambda *_args, **_kwargs: None,
+            "find_batch": lambda *_: None,
+            "update_batch_status": lambda *_: None,
+            "read_mail_counts": lambda *_: {},
+            "read_mail_subjects": lambda *_: {},
+        }
+        dependencies.update(overrides)
+        return TaskService(**dependencies)
+
+    return make
