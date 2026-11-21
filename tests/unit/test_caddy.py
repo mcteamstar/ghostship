@@ -125,7 +125,7 @@ class TestCaddyPortalRegisterCrew(unittest.TestCase):
 
     def _call_register(self, portal, crew_id="abc", port=8765, status=200):
         mock_resp = MagicMock(status_code=status, text="")
-        with patch("transport.caddy.httpx.put", return_value=mock_resp, create=True) as mock_put:
+        with patch("transport.caddy._caddy_admin_client.put", return_value=mock_resp, create=True) as mock_put:
             portal.register_crew(crew_id, port)
         return mock_put
 
@@ -237,7 +237,7 @@ class TestCaddyPortalRegisterCrew(unittest.TestCase):
     def test_forward_auth_present_when_api_key_set(self):
         portal = self._make_portal(api_key="secret")
         mock_resp = MagicMock(status_code=200, text="")
-        with patch("transport.caddy.httpx.put", return_value=mock_resp, create=True) as mock_put:
+        with patch("transport.caddy._caddy_admin_client.put", return_value=mock_resp, create=True) as mock_put:
             portal.register_crew("abc", 8765)
         body = mock_put.call_args[1]["json"]
         http_route = self._get_http_catch_all_route(body)
@@ -250,7 +250,7 @@ class TestCaddyPortalRegisterCrew(unittest.TestCase):
     def test_forward_auth_absent_when_api_key_empty(self):
         portal = self._make_portal(api_key="")
         mock_resp = MagicMock(status_code=200, text="")
-        with patch("transport.caddy.httpx.put", return_value=mock_resp, create=True) as mock_put:
+        with patch("transport.caddy._caddy_admin_client.put", return_value=mock_resp, create=True) as mock_put:
             portal.register_crew("abc", 8765)
         body = mock_put.call_args[1]["json"]
         http_route = self._get_http_catch_all_route(body)
@@ -262,7 +262,7 @@ class TestCaddyPortalRegisterCrew(unittest.TestCase):
         portal = self._make_portal()
         mock_put = self._call_register(portal, crew_id="abc", port=8765)
         url = mock_put.call_args[0][0]
-        self.assertEqual(url, "http://ga-portal:2019/config/apps/http/servers/crew-abc")
+        self.assertEqual(url, "http://localhost:2019/config/apps/http/servers/crew-abc")
 
 
 # ── 5. TestCaddyPortalRegisterCrew — retry and error paths ───────────────────
@@ -281,7 +281,7 @@ class TestCaddyPortalRegisterCrewRetry(unittest.TestCase):
             MagicMock(status_code=500, text="err"),
             MagicMock(status_code=200, text="ok"),
         ]
-        with patch("transport.caddy.httpx.put", side_effect=side_effects, create=True) as mock_put, \
+        with patch("transport.caddy._caddy_admin_client.put", side_effect=side_effects, create=True) as mock_put, \
              patch("transport.caddy.time.sleep"):
             portal.register_crew("abc", 8765)
         self.assertEqual(mock_put.call_count, 2)
@@ -294,7 +294,7 @@ class TestCaddyPortalRegisterCrewRetry(unittest.TestCase):
             MagicMock(status_code=500, text="err"),
             MagicMock(status_code=500, text="err"),
         ]
-        with patch("transport.caddy.httpx.put", side_effect=side_effects, create=True), \
+        with patch("transport.caddy._caddy_admin_client.put", side_effect=side_effects, create=True), \
              patch("transport.caddy.time.sleep"):
             # Must not raise
             portal.register_crew("abc", 8765)
@@ -306,7 +306,7 @@ class TestCaddyPortalRegisterCrewRetry(unittest.TestCase):
             Exception("timeout"),
             MagicMock(status_code=200, text="ok"),
         ]
-        with patch("transport.caddy.httpx.put", side_effect=side_effects, create=True) as mock_put, \
+        with patch("transport.caddy._caddy_admin_client.put", side_effect=side_effects, create=True) as mock_put, \
              patch("transport.caddy.time.sleep"):
             portal.register_crew("abc", 8765)
         self.assertEqual(mock_put.call_count, 2)
@@ -315,7 +315,7 @@ class TestCaddyPortalRegisterCrewRetry(unittest.TestCase):
     def test_no_exception_all_retries_connection_error(self):
         portal = self._make_portal()
         side_effects = [Exception("conn refused")] * 3
-        with patch("transport.caddy.httpx.put", side_effect=side_effects, create=True), \
+        with patch("transport.caddy._caddy_admin_client.put", side_effect=side_effects, create=True), \
              patch("transport.caddy.time.sleep"):
             # Must not raise
             portal.register_crew("abc", 8765)
@@ -332,7 +332,7 @@ class TestCaddyPortalDeregisterCrew(unittest.TestCase):
 
     def _call_deregister(self, crew_id="abc", status=200):
         mock_resp = MagicMock(status_code=status, text="")
-        with patch("transport.caddy.httpx.delete", return_value=mock_resp, create=True) as mock_del:
+        with patch("transport.caddy._caddy_admin_client.delete", return_value=mock_resp, create=True) as mock_del:
             self._portal.deregister_crew(crew_id)
         return mock_del
 
@@ -340,7 +340,7 @@ class TestCaddyPortalDeregisterCrew(unittest.TestCase):
     def test_delete_url_includes_crew_id(self):
         mock_del = self._call_deregister(crew_id="abc", status=200)
         url = mock_del.call_args[0][0]
-        self.assertEqual(url, "http://ga-portal:2019/id/crew-abc")
+        self.assertEqual(url, "http://localhost:2019/id/crew-abc")
 
     # 6.3
     def test_delete_200_succeeds(self):
@@ -360,7 +360,7 @@ class TestCaddyPortalDeregisterCrew(unittest.TestCase):
 
     # 6.7
     def test_delete_connection_error_no_exception(self):
-        with patch("transport.caddy.httpx.delete", side_effect=Exception("conn refused"), create=True):
+        with patch("transport.caddy._caddy_admin_client.delete", side_effect=Exception("conn refused"), create=True):
             self._portal.deregister_crew("abc")  # must not raise
 
 
@@ -378,7 +378,19 @@ class TestCaddyModuleLevelHelpers(unittest.TestCase):
 
     # 7.2
     def test_caddy_admin_url_constant(self):
-        self.assertEqual(_caddy_admin_url(), "http://ga-portal:2019")
+        self.assertEqual(_caddy_admin_url(), "http://localhost:2019")
+        self.assertEqual(transport.caddy.CADDY_ADMIN_SOCKET,
+                         "/run/ga-portal-admin/admin.sock")
+
+    def test_admin_client_uses_unix_socket_transport(self):
+        with patch("transport.caddy.httpx.HTTPTransport") as make_transport, \
+             patch("transport.caddy.httpx.Client") as make_client:
+            transport.caddy._create_caddy_admin_client()
+
+        make_transport.assert_called_once_with(
+            uds="/run/ga-portal-admin/admin.sock"
+        )
+        make_client.assert_called_once_with(transport=make_transport.return_value)
 
     # 7.3
     def test_portal_constructor_stores_fields(self):
@@ -391,7 +403,7 @@ class TestCaddyModuleLevelHelpers(unittest.TestCase):
     # 7.4
     def test_caddy_register_crew_module_wrapper_issues_put(self):
         mock_resp = MagicMock(status_code=200, text="")
-        with patch("transport.caddy.httpx.put", return_value=mock_resp, create=True) as mock_put, \
+        with patch("transport.caddy._caddy_admin_client.put", return_value=mock_resp, create=True) as mock_put, \
              patch.object(transport.caddy, "GA_API_KEY", ""):
             _caddy_register_crew("test", 9000)
         mock_put.assert_called_once()
@@ -401,7 +413,7 @@ class TestCaddyModuleLevelHelpers(unittest.TestCase):
     # 7.5
     def test_caddy_deregister_crew_module_wrapper_issues_delete(self):
         mock_resp = MagicMock(status_code=200, text="")
-        with patch("transport.caddy.httpx.delete", return_value=mock_resp, create=True) as mock_del:
+        with patch("transport.caddy._caddy_admin_client.delete", return_value=mock_resp, create=True) as mock_del:
             _caddy_deregister_crew("test")
         mock_del.assert_called_once()
         url = mock_del.call_args[0][0]

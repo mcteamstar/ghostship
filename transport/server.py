@@ -1160,6 +1160,13 @@ async def _handle_crew_ui_proxy(request: Request) -> Response:
     - Streams the upstream response body without buffering.
     - Returns 404 for unknown crew_id.
     """
+    # The public dashboard listener normally validates this session in Caddy's
+    # forward_auth handler. Internal callers on ga-portside can reach Transport
+    # directly with only the transport secret, so enforce the original browser
+    # session again before waking a crew or dialing its gateway.
+    if not _dashboard_gate.has_valid_session(request.scope):
+        return PlainTextResponse("Unauthorized", status_code=401)
+
     resolved = await _resolve_crew_for_proxy(request.scope["path"])
     if isinstance(resolved, Response):
         return resolved
@@ -1802,6 +1809,20 @@ async def _handle_health(request: Request) -> Response:
     return PlainTextResponse("ok")
 
 
+def _restore_caddy_dashboard_routes(restored_crews: dict[str, dict[str, Any]]) -> None:
+    """Reconcile persisted dashboard routes through the Caddy admin socket."""
+    for crew_id, info in restored_crews.items():
+        port = info.get("dashboard_port")
+        if port is None:
+            continue
+        _dashboard_gate.register_port(crew_id, int(port))
+        _caddy_portal.register_crew(
+            crew_id,
+            int(port),
+            crew_cookie=info.get("cookie", ""),
+        )
+
+
 health_routes = [
     Route("/health", _handle_health, methods=["GET"]),
 ]
@@ -1943,9 +1964,10 @@ if __name__ == "__main__":
             ("GET",  "/dashboard/auth"): _dashboard_gate.handle_auth,
             ("GET",  "/dashboard/login"): _dashboard_gate.handle_login_get,
             ("GET",  "/openapi.json"): _handle_openapi_get,  # public, no auth
-            # Crew UI paths — protected by Caddy's gs_session forward-auth,
-            # not by bearer token. The transport never sees these requests
-            # without Caddy's forward-auth check having passed first.
+            # Crew UI paths are bearer-exempt because Caddy proxies browser
+            # requests without the operator API key. The handlers validate the
+            # dashboard session too, so internal callers cannot bypass Caddy's
+            # forward-auth check by presenting only the transport secret.
             ("GET",  "/crews/*/ui"): _handle_crew_ui_proxy,
             ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
             # Internal portside fleet data endpoint (TRN-286) — transport-secret-only,
@@ -2039,17 +2061,12 @@ if __name__ == "__main__":
 
     async def _main() -> None:
         # Portal (Caddy) is the sole dashboard proxy and is always present.
-        # On restart, re-register all existing crew servers with Caddy (idempotent
-        # — Caddy's --resume may have already loaded them, but we call again so a
-        # fresh data-volume wipe is handled gracefully).
+        # On restart, re-register all existing crew servers through the admin
+        # socket. This is idempotent when Caddy resumes saved routes and repairs
+        # a lost Caddy config without exposing the admin API on TCP.
         with registry:
             _restored_crews = dict(registry._reg.get("crews", {}))
-        for _cid, _info in _restored_crews.items():
-            _p = _info.get("dashboard_port")
-            if _p is not None:
-                _dashboard_gate.register_port(_cid, int(_p))
-                _crew_cookie_val = _info.get("cookie", "")
-                _caddy_portal.register_crew(_cid, int(_p), crew_cookie=_crew_cookie_val)
+        _restore_caddy_dashboard_routes(_restored_crews)
         logger.info("Portal (Caddy) is the sole dashboard proxy")
         await server.serve()
 

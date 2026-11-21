@@ -6,6 +6,10 @@ Transport spawn requests name the crew’s recorded backend, including Captain a
 
 **ga-transport** — the MCP server (`transport/server.py`). Runs as a container started by `podman-compose` from the `compose.yml` that `install.sh` generates. Manages crew containers via the Podman socket and exposes the `ghostship` MCP tools. Fronted by Caddy (`ga-portal`) — see [portal.md](portal.md).
 
+**ga-portal (Caddy)** — publishes the main and per-crew dashboard listeners on `ga-portside`. Its admin API is bound to `/run/ga-portal-admin/admin.sock` on a dedicated Podman volume: Portal mounts it read-write and Transport read-only; the socket mode is `0600`. Radar and crew containers do not mount it, and no TCP admin listener or host mapping is configured. Transport uses this socket to register, remove, and restore per-crew dashboard routes.
+
+For keyed installs, Transport also validates the original `gs_session` before its HTTP UI proxy wakes a crew or connects to its gateway. This preserves the session gate for requests that arrive directly from another internal container instead of through Caddy's `forward_auth` route.
+
 **Crew containers** — on-demand KiroCrew instances (`localhost/spec-ops:latest`), named `gs-<id>`. Each has a workspace volume (`gs-vol-<id>`) and a home volume (`gs-home-<id>`). Created by `launch`, torn down by `nuke`. All join `ga-starboard` so the transport can reach them by name (`http://gs-<id>:5476`).
 
 **Crew image** (`crews/spec-ops/Containerfile`) — extends the KiroCrew v0.13.0 base image pinned to index digest `sha256:f4c6c72656e60ed21fd02a86d2b631735660d58d9d0806f7b464acbd3ccb9a26` (bundled Kiro CLI 2.27.1). Built locally at install time as `localhost/spec-ops:latest` in three stages:

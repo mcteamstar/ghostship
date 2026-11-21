@@ -96,6 +96,21 @@ class TestMinimalConfig:
         doc = _parsed(_minimal_config())
         assert "ga-portal-data" in doc["volumes"]
 
+    def test_admin_socket_volume_is_mounted_only_by_portal_and_transport(self) -> None:
+        doc = _parsed(_minimal_config())
+        services = doc["services"]
+        portal_mounts = services["ga-portal"]["volumes"]
+        transport_mounts = services["ga-transport"]["volumes"]
+
+        assert "ga-portal-admin:/run/ga-portal-admin:rw" in portal_mounts
+        assert "ga-portal-admin:/run/ga-portal-admin:ro" in transport_mounts
+        assert all(
+            not mount.startswith("ga-portal-admin:")
+            for mount in services["ga-radar"].get("volumes", [])
+        )
+        assert "ga-portal-admin" in doc["volumes"]
+        assert all("2019" not in port for port in services["ga-portal"]["ports"])
+
     def test_transport_secret_bind_guard_defaults_to_false(self) -> None:
         doc = _parsed(_minimal_config())
         env = doc["services"]["ga-transport"]["environment"]

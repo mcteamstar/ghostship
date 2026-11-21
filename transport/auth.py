@@ -466,10 +466,10 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
 
     async def __call__(self, scope, receive, send) -> None:
         # WebSocket upgrades for /crews/<id>/ui/<path> are proxied to the crew
-        # gateway with the session cookie injected. Access is gated by Caddy's
-        # forward_auth upstream (keyed deployments); the transport's bearer check
-        # applies to HTTP scopes only, so WS is dispatched here,
-        # before AsyncMiddlewareBase forwards other non-HTTP scopes downstream.
+        # gateway with the session cookie injected. The transport bearer check
+        # applies to HTTP scopes only, so WS is dispatched here before
+        # AsyncMiddlewareBase forwards other non-HTTP scopes downstream. The WS
+        # handler validates the dashboard session and Origin itself.
         if scope["type"] == "websocket":
             _ws_parts = scope.get("path", "").lstrip("/").split("/")
             if (
@@ -479,7 +479,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             ):
                 # Delegate to the registered ws_proxy handler if present.
                 # The WS handler lives in public_routes (no bearer auth needed —
-                # Caddy's gs_session forward-auth is the gate). Check both dicts.
+                # the handler validates the gs_session itself). Check both dicts.
                 ws_handler = self._public_routes.get(
                     ("WS", "/crews/*/ui")
                 ) or self._routes.get(("WS", "/crews/*/ui"))
@@ -510,7 +510,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
 
         Returns True if a public route handled the request.
         Supports exact path keys, the ``/crews/*/ui`` wildcard pattern (crew UI
-        paths are gated by Caddy's gs_session forward-auth, not bearer), and the
+        paths are bearer-exempt; the handler validates the gs_session), and the
         ``POST /crews/*/captain/stop`` crew-internal self-cancel endpoint (the
         handler validates the crew's dashboard session cookie itself, so it is
         bearer-exempt but not unauthenticated).
@@ -524,7 +524,8 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             await response(scope, receive, send)
             return True
 
-        # Pattern match for /crews/{id}/ui[/{path}] — gated by Caddy forward-auth.
+        # Pattern match for /crews/{id}/ui[/{path}] — the handler enforces the
+        # dashboard session gate for both Portal and direct internal callers.
         _path = scope["path"]
         _parts = _path.lstrip("/").split("/")
         if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":

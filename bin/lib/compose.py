@@ -135,6 +135,7 @@ def generate_compose(config: ComposeConfig) -> str:
         f"{config.data_dir}/academy/mcp:/mcp:ro",
         f"{config.data_dir}/crews:/crews:ro",
         f"{config.podman_sock}:{config.podman_sock}",
+        "ga-portal-admin:/run/ga-portal-admin:ro",
     ]
     if config.ga_orders_dir:
         transport_volumes.append(f"{config.ga_orders_dir}:/mnt/orders:ro")
@@ -269,6 +270,7 @@ def generate_compose(config: ComposeConfig) -> str:
                 "volumes": [
                     f"{config.data_dir}/caddy/initial-config.json:/config/initial-config.json:ro",
                     "ga-portal-data:/data",
+                    "ga-portal-admin:/run/ga-portal-admin:rw",
                 ],
                 "command": [
                     "caddy",
@@ -286,6 +288,7 @@ def generate_compose(config: ComposeConfig) -> str:
         "secrets": top_secrets,
         "volumes": {
             "ga-portal-data": None,
+            "ga-portal-admin": None,
         },
     }
 

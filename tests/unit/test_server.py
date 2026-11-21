@@ -750,6 +750,127 @@ class TestCrewUiProxyForeignOriginNoCookieRefresh(unittest.TestCase):
         refresh.assert_called_once()
 
 
+class TestCrewUiProxySessionGate(unittest.TestCase):
+    """Direct internal UI-proxy calls still require a dashboard session."""
+
+    def _server(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _invoke(self, *, api_key, with_session):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from transport.dashboard import DashboardGate
+
+        _s = self._server()
+        gate = DashboardGate(
+            session_ttl_secs=3600,
+            api_key=api_key,
+            external_url="http://localhost:64057",
+        )
+        headers = {"x-transport-token": "radar-transport-secret"}
+        if with_session:
+            token = gate._sessions.issue()
+            headers["cookie"] = f"gs_session={token}"
+        scope = _make_scope("GET", "/crews/c1/ui", headers=headers)
+
+        class _ProxyRequest:
+            def __init__(self, request_scope):
+                self.scope = request_scope
+                self.method = request_scope["method"]
+                self.headers = {
+                    key.decode("latin-1"): value.decode("latin-1")
+                    for key, value in request_scope["headers"]
+                }
+
+            async def body(self):
+                return b""
+
+        resolver = AsyncMock(return_value=("c1", "", {"cookie": "crew-cookie"}))
+        stream = MagicMock(return_value=_FakeStreamCtx(200))
+
+        async def _go():
+            return await _s._handle_crew_ui_proxy(_ProxyRequest(scope))
+
+        with patch.object(_s, "_dashboard_gate", gate), \
+             patch.object(_s, "_resolve_crew_for_proxy", resolver), \
+             patch.object(_s, "_cookie_near_expiry", return_value=False), \
+             patch.object(_s, "_crew_cookie", return_value="mc_token_5476=crew"), \
+             patch.object(_s._async_http, "stream", stream, create=True):
+            response = _run(_go())
+        return response, resolver, stream
+
+    def test_transport_secret_without_session_is_rejected_before_proxy(self):
+        response, resolver, stream = self._invoke(api_key="keyed-install", with_session=False)
+
+        self.assertEqual(response.status_code, 401)
+        resolver.assert_not_awaited()
+        stream.assert_not_called()
+
+    def test_valid_session_can_proxy_on_keyed_install(self):
+        response, resolver, stream = self._invoke(api_key="keyed-install", with_session=True)
+
+        self.assertEqual(response.status_code, 200)
+        resolver.assert_awaited_once()
+        stream.assert_called_once()
+
+    def test_open_install_can_proxy_without_session(self):
+        response, resolver, stream = self._invoke(api_key="", with_session=False)
+
+        self.assertEqual(response.status_code, 200)
+        resolver.assert_awaited_once()
+        stream.assert_called_once()
+
+
+class TestRestoreCaddyDashboardRoutes(unittest.TestCase):
+    """Startup route restoration uses the same Caddy socket client."""
+
+    def test_restored_dashboard_routes_are_registered_through_caddy_portal(self):
+        from unittest.mock import MagicMock, patch
+        import transport.caddy as _caddy
+        from transport.caddy import CaddyPortal
+        from transport.dashboard import DashboardGate
+
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+
+        portal = CaddyPortal(
+            port=64057,
+            api_key="",
+            port_range_start=64058,
+            port_range_size=4,
+        )
+        gate = DashboardGate(
+            session_ttl_secs=3600,
+            api_key="",
+            external_url="http://localhost:64057",
+        )
+        response = MagicMock(status_code=200, text="")
+        with patch.object(_s, "_caddy_portal", portal), \
+             patch.object(_s, "_dashboard_gate", gate), \
+             patch.object(
+                 _caddy._caddy_admin_client,
+                 "put",
+                 return_value=response,
+                 create=True,
+             ) as put:
+            _s._restore_caddy_dashboard_routes({
+                "alpha": {"dashboard_port": 64058, "cookie": "old-cookie"},
+                "headless": {},
+            })
+
+        self.assertEqual(gate._port_crew[64058], "alpha")
+        put.assert_called_once()
+        self.assertEqual(
+            put.call_args.args[0],
+            "http://localhost:2019/config/apps/http/servers/crew-alpha",
+        )
+
+
 class TestCrewDashboardEndpointRejectsBrowserOrigin(unittest.TestCase):
     """POST/DELETE /crews/{id}/dashboard refuse any request carrying Origin
     (cross-site "simple request" guard); non-browser clients are unaffected."""

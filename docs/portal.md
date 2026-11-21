@@ -28,6 +28,14 @@ Two routing tiers:
 1. **Main port (443/80)** — static config written at install time. Covers MCP, files, health, auth, the Radar fleet dashboard (`/`), and the fleet API (`/api/crews`).
 2. **Per-crew dashboard ports (64058–64121)** — one Caddy server per port, added/removed live via the Caddy admin API on `launch`/`nuke`.
 
+### Caddy admin API boundary
+
+Transport manages per-crew Caddy routes through `/run/ga-portal-admin/admin.sock` on the dedicated `ga-portal-admin` Podman volume. Caddy mounts that volume read-write; Transport mounts it read-only. The socket is created with mode `0600`. Radar and crew containers do not mount the volume, and Caddy does not listen for admin requests on TCP port 2019 or publish that port to the host. The portal's public listeners and dashboard routes continue to use the existing `ga-portside` network and published ports.
+
+The current Caddy and Transport images run as UID/GID `0:0` inside rootless Podman and map to the same host identity, so the owner-only socket is usable by both containers. Re-check this assumption if either service image changes its runtime identity.
+
+When upgrading an existing install, rerun `ghostship install` so it regenerates the Compose file and Caddy config with the socket volume. Transport restores persisted per-crew routes through the socket when it starts.
+
 ## Radar fleet dashboard
 
 `GET /` serves the Radar SPA — a browser view of all crews without requiring an MCP session. See [radar.md](radar.md) for full documentation.
@@ -86,7 +94,7 @@ caddy trust --ca /path/to/ga-portal-data/_data/caddy/pki/authorities/local/root.
 
 `gs_session` cookies are issued by `/dashboard/login` and validated by `/dashboard/auth`. TTL is `GA_PORTAL_SESSION_TTL_SECS` (default 24 h). Sessions are in-memory and reset on transport restart.
 
-When `GA_API_KEY` is set, dashboard HTTP requests and WebSocket handshakes require one valid, unexpired `gs_session` cookie. Caddy's WebSocket route bypasses its HTTP `forward_auth` subrequest so the upgrade can pass through; the transport validates the session before looking up or connecting to the crew. Browser handshakes must also have an `Origin` matching the external scheme, configured dashboard hostname, and dashboard port. Caddy overwrites private portal host metadata and sends it with the portal transport secret. The expected scheme comes from the configured portal TLS mode or, when TLS mode is `off`, the scheme in `GA_HOST_URL` (HTTP by default). Client-supplied forwarding headers do not establish the origin. Configure `GA_HOST_URL` with the external scheme and hostname when TLS is terminated before Caddy; configure `GA_HOST_URL` or `GA_PORTAL_DOMAIN` when the hostname differs from the portal's published host.
+When `GA_API_KEY` is set, dashboard HTTP requests and WebSocket handshakes require one valid, unexpired `gs_session` cookie. Caddy's HTTP `forward_auth` check is an edge gate; Transport repeats the session check on its HTTP UI proxy before waking or connecting to a crew. This also rejects direct internal requests that carry the shared transport secret but no dashboard session. Caddy's WebSocket route bypasses its HTTP `forward_auth` subrequest so the upgrade can pass through; the transport validates the session before looking up or connecting to the crew. Browser handshakes must also have an `Origin` matching the external scheme, configured dashboard hostname, and dashboard port. Caddy overwrites private portal host metadata and sends it with the portal transport secret. The expected scheme comes from the configured portal TLS mode or, when TLS mode is `off`, the scheme in `GA_HOST_URL` (HTTP by default). Client-supplied forwarding headers do not establish the origin. Configure `GA_HOST_URL` with the external scheme and hostname when TLS is terminated before Caddy; configure `GA_HOST_URL` or `GA_PORTAL_DOMAIN` when the hostname differs from the portal's published host.
 
 Authenticated non-browser WebSocket clients may omit `Origin`, but they still need the session cookie. When `GA_API_KEY` is unset, dashboard HTTP and WebSocket access needs no dashboard session, but a browser `Origin` is still checked: a WebSocket handshake whose `Origin` is not the dashboard itself is refused, so other web pages cannot hijack a crew's live session. The portal-to-transport shared secret remains an internal gate when configured.
 

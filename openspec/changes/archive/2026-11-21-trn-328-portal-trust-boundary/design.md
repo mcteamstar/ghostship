@@ -17,14 +17,14 @@ See proposal.md for motivation and intended trust boundaries. Compose places Cad
 
 ## Decisions
 
-- Configure Caddy's admin endpoint as a Unix-domain socket in a dedicated shared volume mounted only by Caddy and Transport. Before choosing ownership and mode bits, verify both processes' runtime UID/GID from the pinned images; use restrictive shared-group permissions that allow Transport and deny Radar and crews.
+- Configure Caddy's admin endpoint as a Unix-domain socket in a dedicated shared volume mounted only by Caddy and Transport. On the current Corsair images, Caddy v2.11.7 and Transport both run as UID/GID `0:0` and map to the same rootless Podman identity, so no supplementary shared group is needed. Use owner-only socket permissions (`0600`); re-check ownership and permissions if either service's runtime identity changes.
 - Keep the admin listener off TCP. A host firewall or Origin check is not an adequate substitute because other containers can reach portside.
 - Enforce the dashboard session check in Transport before the HTTP proxy opens an upstream connection. Keep open-install behavior when API-key auth is disabled.
 - Test generated Compose and exercise authorized socket requests and denied callers. Confirm port 2019 is absent from host mappings.
 
 ## Risks / Trade-offs
 
-- [Container UID/GID differences prevent socket access] → Verify identities against the actual image and test a fresh install.
+- [Container UID/GID differences prevent socket access] → The current images share the same rootless identity; verify a fresh generated Compose install and re-check if either runtime identity changes.
 - [Socket removal disrupts route reconciliation] → Cover registration, removal, and startup reconciliation.
 - [Internal dashboard callers depended on the secret alone] → Return 401 before any crew proxy connection and test that path.
 

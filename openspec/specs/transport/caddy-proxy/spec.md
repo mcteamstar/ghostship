@@ -8,7 +8,7 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 
 ### Requirement: `ga-portal` is always present
 
-`install.sh` SHALL always include and start `ga-portal`; `GA_PORTAL_ENABLED` is removed and ignored. Caddy binds the portal and dashboard port ranges, while transport binds no dashboard ports. The admin API stays internal on port 2019. `ga-portal` uses only `ga-portside`, never `ga-starboard`.
+`install.sh` SHALL always include and start `ga-portal`; `GA_PORTAL_ENABLED` is removed and ignored. Caddy binds the portal and dashboard port ranges, while transport binds no dashboard ports. The Caddy admin API SHALL use a Unix-domain socket shared only with `ga-transport` and SHALL NOT be exposed on a TCP listener or published to the host. `ga-portal` uses only `ga-portside`, never `ga-starboard`.
 
 #### Scenario: Install always starts ga-portal
 - **WHEN** `install.sh` runs
@@ -19,6 +19,8 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 - **WHEN** `install.sh` runs
 - **THEN** `compose.yml` contains a `ga-portal` service with the `caddy:2` image, `GA_PORTAL_PORT` and the dashboard range bound, and no `2019:2019` host mapping
 - **THEN** the `ga-transport` service does not bind the dashboard port range
+- **THEN** `ga-portal` and `ga-transport` share the Caddy admin socket directory
+- **THEN** no other service mounts the Caddy admin socket directory
 
 ### Requirement: Initial Caddy JSON configuration
 
@@ -133,19 +135,22 @@ Each per-crew Caddy server SHALL order a `Connection: Upgrade` route before its 
 - **THEN** `SessionStore.validate()` returns the session successfully and the
   connection is proxied to the crew gateway as a WebSocket
 
-### Requirement: Caddy admin API restricted to transport-origin requests
-`initial-config.json` SHALL restrict Caddy admin API origins to `http://ga-transport` and reject others. Keep the bind at `0.0.0.0:2019` for internal routing; Compose SHALL NOT publish that port.
+### Requirement: Caddy admin API is accessible only to Transport
+The Caddy admin API SHALL listen on a Unix-domain socket in a directory shared by `ga-portal` and `ga-transport`. Filesystem permissions on the socket SHALL allow the Transport process to connect. The admin API SHALL NOT listen on a TCP address. `ga-radar` and crew containers SHALL NOT receive a mount of the socket directory. Caddy origin or host checks SHALL NOT be treated as authentication for admin API callers.
 
-#### Scenario: Transport can register a crew dashboard server
-- **WHEN** the transport calls `PUT /config/apps/http/servers/crew-{crew_id}`
-  on the Caddy admin API with `Origin: http://ga-transport`
-- **THEN** Caddy accepts the request and the crew server is registered
+#### Scenario: Transport manages dashboard routes through the socket
+- **WHEN** Transport registers, removes, or reconciles a crew dashboard route
+- **THEN** its admin API request reaches Caddy through the shared Unix-domain socket and Caddy applies the change
 
-#### Scenario: Request from another container is rejected
-- **WHEN** a container other than `ga-transport` calls the Caddy admin API
-  with an `Origin` header that is not `http://ga-transport`
-- **THEN** Caddy returns 403 and does not apply the configuration change
+#### Scenario: Radar cannot reach the Caddy admin API
+- **WHEN** Radar attempts to connect to the Caddy admin API
+- **THEN** it has no mounted socket and no TCP admin listener is available to it
+- **THEN** the request cannot change Caddy configuration
 
-#### Scenario: Admin API is not host-published
-- **WHEN** `install.sh` generates `compose.yml`
-- **THEN** `compose.yml` does not contain a `2019:2019` port mapping for `ga-portal`
+#### Scenario: Public Caddy listeners remain available
+- **WHEN** the admin API is moved to a Unix-domain socket
+- **THEN** the portal listener and per-crew dashboard listeners remain available on their configured host ports
+
+#### Scenario: Admin API is not published to the host
+- **WHEN** the generated Compose configuration is inspected
+- **THEN** no host port mapping exposes the Caddy admin API

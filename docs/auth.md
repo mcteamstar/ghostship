@@ -266,4 +266,4 @@ To rotate `GA_API_KEY`: `./install.sh --api-key <new-key>`.
 
 ## Dashboard session auth
 
-Dashboard ports are session-gated via Portal (Caddy). See [portal.md](portal.md) for setup. `gs_session` cookies have a configurable TTL (`GA_PORTAL_SESSION_TTL_SECS`, default 24 h) and are in-memory — they reset on transport restart.
+Dashboard ports are session-gated at Portal (Caddy) and again at Transport's crew UI proxy. This second check also blocks direct internal callers that have the transport secret but no valid `gs_session`. See [portal.md](portal.md) for setup. `gs_session` cookies have a configurable TTL (`GA_PORTAL_SESSION_TTL_SECS`, default 24 h) and are in-memory — they reset on transport restart.

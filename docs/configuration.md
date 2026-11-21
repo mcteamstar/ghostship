@@ -95,6 +95,8 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 
 Crew and login containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` and `ga-radar` cannot reach crew containers by hostname. See `docs/architecture.md` for the full security model.
 
+Caddy's admin API is outside the network topology: it listens on a Unix socket in the dedicated `ga-portal-admin` volume, mounted read-write by `ga-portal` and read-only by `ga-transport`. `ga-radar` and crews do not mount the socket volume, and TCP port 2019 is neither listened on nor published.
+
 The disposable worker keeps stopped-crew reads on a read-only workspace mount. Upload processing uses the same image with the workspace volume writable as uid 1000; bundle Git work runs in a per-operation, size-limited tmpfs. To exercise rootless tmpfs enforcement after install on Linux and macOS, run `tests/manual/test_rootless_tmpfs_limit.sh` against the same Podman engine.
 
 > **Internal constant — not user-settable:**
