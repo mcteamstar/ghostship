@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
+from concurrent.futures import Future
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -151,6 +153,60 @@ class TestOnDemandRecoveryRestartExercise(unittest.TestCase):
                 self.monitors._captain_monitor()
             except StopIteration:
                 pass
+
+    def test_gateway_recovery_runs_real_launcher_enrollment_without_reentry(self):
+        crew_id = "gateway-only"
+        crew = dict(self.crews[crew_id])
+        path = "/api/spawn/recovering-task"
+        calls = []
+
+        def request(target, method, route, **kwargs):
+            calls.append((method, route))
+            if calls == [("GET", path)]:
+                raise ConnectionError("gateway unavailable")
+            if route == "/api/members/ghost/thread":
+                self.assertTrue(self.life._get_recovery_lock(crew_id).locked())
+                return {}
+            if route == path:
+                self.assertEqual(target["cookie"], "fresh-cookie")
+                return {"done": True}
+            return self._gateway_api(target, method, route, **kwargs)
+
+        client = self.life._gateway_client
+        result = Future()
+
+        def recover():
+            try:
+                result.set_result(
+                    self.life._crew_api_with_recovery(crew, crew_id, "GET", path)
+                )
+            except BaseException as exc:
+                result.set_exception(exc)
+
+        with (
+            patch.object(self.reg_mod, "_load_registry", return_value=self.backing),
+            patch.object(self.reg_mod, "_save_registry"),
+            patch.object(self.life, "_get_podman", return_value=self.podman),
+            patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 10),
+            patch.object(self.life._cred_store, "get", return_value={
+                "method": "api-key", "payload": b"synthetic-test-key",
+            }),
+            patch("transport.launcher._validate_static_credential"),
+            patch.object(self.life, "_wait_gateway", return_value=True),
+            patch.object(self.life, "_mint_cookie", return_value="fresh-cookie"),
+            patch.object(self.life, "_mint_internal_cookie", return_value=None),
+            patch.object(self.life, "_patch_crew_config"),
+            patch.object(self.life, "_deployed_agent_names", return_value=["ghost.json"]),
+            patch.object(client, "probe", return_value=False),
+            patch.object(client, "request", side_effect=request),
+        ):
+            threading.Thread(target=recover, daemon=True).start()
+            self.assertEqual(result.result(timeout=5), {"done": True})
+
+        self.assertIn(("POST", "/api/members/ghost/thread"), calls)
+        self.assertEqual(calls.count(("GET", path)), 2)
+        self.assertEqual(self.crews[crew_id]["enrolled_agents"], ["ghost"])
+        self.assertTrue(self.podman.calls_for("container_start"))
 
     def test_startup_and_on_demand_recovery_with_multiple_crews(self):
         recovery_api = MagicMock(return_value={})

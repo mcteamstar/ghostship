@@ -41,7 +41,7 @@ def _run_with_gateway(status: int, body: str):
         raise _status_error(status, body)
 
     with (
-        patch.object(lc, "_crew_api", side_effect=_always_fail),
+        patch.object(lc._gateway_client, "request", side_effect=_always_fail),
         patch.object(lc, "_refresh_cookie", return_value=True),
         patch.object(lc, "_ensure_crew_running", side_effect=lambda c, _id: c),
     ):
@@ -121,7 +121,7 @@ def test_transport_spawn_names_backend_even_on_refusal(backend):
         crew["acp_backend"] = backend
     body = {"task": "hello", "parent_session": "dashboard:member-raven"}
     refusal = _status_error(422, "Backend unavailable")
-    with patch.object(lc, "_crew_api", side_effect=refusal) as gateway:
+    with patch.object(lc._gateway_client, "request", side_effect=refusal) as gateway:
         with pytest.raises(httpx.HTTPStatusError) as raised:
             lc._crew_api_with_recovery(crew, "x", "POST", "/api/spawn", json=body)
 

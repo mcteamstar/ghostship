@@ -1581,23 +1581,22 @@ def nuke(crew_id: str, confirm: bool = False) -> dict:
     # Evict per-crew in-memory state so nuked crew_ids do not accumulate
     # indefinitely in long-running transport processes.
     #
-    # _recovery_locks / _startup_generation / _crew_restart_outcomes live in
+    # _startup_generation / _crew_restart_outcomes live in
     # lifecycle module-level dicts (and are mirrored in _launcher for the
     # restart path). _idle_skip_reasons lives in monitors.
     # These are all small objects (Lock, int, str, tuple) but grow without
     # bound across many launch+nuke cycles if not pruned here.
     try:
         from lifecycle import (  # container: flat /app/
-            _recovery_locks, _recovery_locks_lock,
+            _forget_gateway_crew,
             _startup_events_lock, _startup_generation, _crew_restart_outcomes,
         )
     except ModuleNotFoundError:
         from transport.lifecycle import (  # local dev
-            _recovery_locks, _recovery_locks_lock,
+            _forget_gateway_crew,
             _startup_events_lock, _startup_generation, _crew_restart_outcomes,
         )
-    with _recovery_locks_lock:
-        _recovery_locks.pop(crew_id, None)
+    _forget_gateway_crew(crew_id)
     with _startup_events_lock:
         _startup_generation.pop(crew_id, None)
         _crew_restart_outcomes.pop(crew_id, None)
