@@ -50,6 +50,7 @@ The crew-internal stop endpoint SHALL authenticate with the dashboard session co
 #### Scenario: Endpoint requires dashboard cookie auth
 - **WHEN** `POST /crews/{crew_id}/captain/stop` is called without a valid dashboard cookie
 - **THEN** the transport returns HTTP 401 or HTTP 403
+
 ### Requirement: captain stop always disables the schedule registry entry
 
 When `captain(action="stop")` is called, the ghostship schedule registry entry for the captain check-in job SHALL be updated to `enabled: false` unconditionally — regardless of the job's current state in the KiroCrew gateway. The registry update SHALL NOT be skipped when the gateway already reports the job as disabled.
@@ -97,6 +98,7 @@ When `GA_ORDERS_DIR` is unset or its path does not exist, the system SHALL use o
 #### Scenario: GA_ORDERS_DIR path does not exist
 - **WHEN** `GA_ORDERS_DIR` is set to a path that does not exist on the filesystem
 - **THEN** the system logs a warning and falls back to built-in templates only — no error is raised at transport startup or at template load time
+
 ### Requirement: Captain dispatch uses a compatible model on Claude-backend crews
 
 On Claude-backend crews, Captain check-ins SHALL use the crew's configured model unless an explicit order override is set; `raven.json`'s model SHALL apply only to non-Claude crews.
@@ -121,6 +123,7 @@ On Claude-backend crews, Captain check-ins SHALL use the crew's configured model
   Claude backend, with `model=None`
 - **THEN** the spawn request is built exactly as before (no `"model"` key from the
   crew registry is added; gateway picks the default)
+
 ### Requirement: Captain check-in defers under critical memory pressure
 
 Under critical host memory pressure, the transport SHALL skip `POST /api/spawn` until the next tick without changing `current_task_id` or `next_fire_at`. The result SHALL report `memory_pressure:` with available and threshold GB values.
@@ -143,6 +146,7 @@ If the memory probe returns no value or raises, the transport SHALL proceed with
 #### Scenario: Check-in proceeds when memory probe is unavailable (fail-open)
 - **WHEN** `_dispatch_captain_checkin` is called and the memory probe helper returns no value or raises
 - **THEN** the transport SHALL proceed with `POST /api/spawn` unconditionally
+
 ### Requirement: Captain schedule tracks consecutive pressure failures
 
 Each memory-pressure skip or gateway refusal SHALL increment `consecutive_memory_pressure_skips`; a successful dispatch SHALL reset it to zero, and a missing field SHALL count as zero.
@@ -166,6 +170,7 @@ At `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive failures (default 3), the tra
 #### Scenario: No re-escalation while pressure persists above the bound
 - **WHEN** more than `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive memory-pressure skips have occurred for a crew
 - **THEN** no additional escalation mail is sent (edge-triggered, not level-triggered)
+
 ### Requirement: Order templates preserve retry state after memory refusal
 
 The SDD and independent-review templates SHALL treat a memory-pressure refusal as a failed spawn: write no confirmation, keep the pending intent, do not retry in the same cycle, and retry on a later check-in.
@@ -183,6 +188,7 @@ Templates SHALL count consecutive memory-pressure refusals and, at the configure
 - **WHEN** Raven has observed `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive memory-pressure refusals for the same dispatch intent
 - **THEN** Raven mails `admiral@localhost` with subject `captain check-in deferred — sustained memory pressure <crew_id>` (substituting the actual crew id)
 - **THEN** Raven holds and does not attempt another spawn in the same cycle
+
 ### Requirement: Cron captain schedule evaluates first fire from cron expression
 
 When `_captain_do_order()` creates a new captain schedule with a cron expression,
@@ -221,3 +227,50 @@ catch clause.
 - **WHEN** a stored hash has extreme `n`/`r`/`p` values that exceed system scrypt limits
 - **THEN** `verify_password()` returns `False`
 - **THEN** no exception propagates to the caller
+
+### Requirement: Captain paces multiple task starts in a check-in
+
+Captain SHALL default to one task start per check-in. It SHALL start multiple independent tasks only when the standing order authorizes them, admit them sequentially, and reconcile each task identity, intent, and returned ID before the next start. A memory-pressure deferral or uncertain admission SHALL stop further starts for the check-in, with pending work reconciled before a later retry. Admitted tasks can continue in parallel.
+
+#### Scenario: One task is eligible
+- **WHEN** an order needs one next task
+- **THEN** Captain dispatches that task using the normal intent protocol
+
+#### Scenario: Several tasks are eligible
+- **WHEN** an order explicitly authorizes several independent work items
+- **THEN** Captain starts each authorized task sequentially and records its confirmed task ID before starting the next
+- **AND** earlier admitted tasks can continue in parallel with later starts
+
+#### Scenario: Memory pressure defers a dispatch
+- **WHEN** admission defers a start due to memory pressure
+- **THEN** Captain stops starting tasks for that check-in and leaves unconfirmed work pending
+- **AND** later check-ins reconcile prior intents and task IDs before retrying pending work
+
+#### Scenario: Admission outcome is uncertain
+- **WHEN** Captain cannot confirm whether a task start was accepted
+- **THEN** Captain stops further starts for that check-in and reconciles the intent and task ID before retrying on a later check-in
+
+### Requirement: Captain recovers from a confirmed Raven session restore failure
+
+Captain SHALL retire the failed Raven task reference and attempt one fresh check-in of the same enabled standing order when continuation reports a confirmed session restore failure.
+
+#### Scenario: Continuation fails after acceptance
+- **WHEN** the gateway accepts a continuation and its recorded Raven task later finishes with a confirmed session restore failure
+- **THEN** the next eligible check-in retires that task reference and attempts one fresh Raven check-in instead of continuing the failed task
+
+#### Scenario: Continuation immediately reports a restore failure
+- **WHEN** the continuation request explicitly reports a confirmed session restore failure
+- **THEN** Captain retires the failed task reference and attempts one fresh Raven check-in
+
+#### Scenario: Fresh Raven encounters previously accepted work
+- **WHEN** Raven starts after session recovery
+- **THEN** it reconciles the standing order, durable progress, mailbox and gateway task list before dispatching more work
+- **AND** it does not dispatch a duplicate for an already accepted work item or retry an intent whose outcome is uncertain
+
+#### Scenario: Gateway failure is ambiguous
+- **WHEN** the gateway is busy, task status is unavailable, or the error does not confirm a session restore failure
+- **THEN** Captain retains its existing handling and does not trigger a fresh check-in under this recovery rule
+
+#### Scenario: Recovery dispatch is deferred
+- **WHEN** normal admission controls defer the fresh check-in
+- **THEN** Captain leaves the failed reference retired and retries through the enabled schedule

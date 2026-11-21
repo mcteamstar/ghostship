@@ -37,7 +37,7 @@ After receiving all seven task reports, Raven SHALL produce one consolidated fin
 
 ### Requirement: independent-review uses three fixed test-coverage shards
 
-The test-coverage track SHALL admit exactly three Banshee tasks, one for each fixed shard: A (`transport/`), B (`tests/unit/`), and C (`tests/integration/` plus all other paths). Raven SHALL start the three shard tasks sequentially, recording each confirmed task ID before starting the next. Once admitted, the three shard reviews SHALL be allowed to execute concurrently. Raven SHALL collect all three shard reports before merging them into the consolidated Test Coverage section. The shard count is fixed for this order.
+The test-coverage track SHALL admit exactly three Banshee tasks, one for each fixed shard: A (`transport/`), B (`tests/unit/`), and C (`tests/integration/` plus all other paths). Raven SHALL start the three shard tasks sequentially, recording each confirmed task ID before starting the next. Admitted shard reviews SHALL be allowed to run concurrently. Raven SHALL collect all three shard reports before merging them into the consolidated Test Coverage section.
 
 #### Scenario: Three fixed test-coverage shards dispatch in parallel
 - **WHEN** the `independent-review` template fires
