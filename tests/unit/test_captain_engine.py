@@ -9,8 +9,8 @@ Covers:
 - _captain_do_stop: idempotency — second call does not raise.
 
 All tests use lightweight fakes or unittest.mock.patch — no full transport
-startup required.  Registry state is provided by mutating registry._reg inside
-a ``with registry:`` block (patched to no-op by the autouse conftest fixture).
+startup required. Registry state is provided by mutating registry._reg inside
+a ``with registry:`` block backed by the shared temporary data fixture.
 """
 
 from __future__ import annotations
@@ -18,10 +18,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-try:
-    import httpx2 as httpx
-except ModuleNotFoundError:
-    import httpx
+import httpx2 as httpx
 
 import transport.registry as _reg_mod
 from transport.registry import registry
@@ -487,17 +484,8 @@ class TestSteerCaptainCheckinFallback(unittest.TestCase):
         fake_lc._write_dashboard_cookie = MagicMock()
 
         # /continue raises httpx.HTTPStatusError 400 (TRN-285 M-4 classification)
-        try:
-            import httpx2 as httpx
-        except ModuleNotFoundError:
-            import httpx
-
-        bad_resp = MagicMock()
-        bad_resp.status_code = 400
-        bad_resp.text = "400 Bad Request"
-        bad_resp.json.return_value = {"code": "conversation_gone"}
-        bad_req = MagicMock()
-        bad_req.url.path = "/api/spawn/old-task-001/continue"
+        bad_req = httpx.Request("POST", "http://gateway.test/api/spawn/old-task-001/continue")
+        bad_resp = httpx.Response(400, request=bad_req, json={"code": "conversation_gone"})
         err_400 = httpx.HTTPStatusError(
             "400 Bad Request /continue",
             request=bad_req,
@@ -772,12 +760,16 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
         self.crew_dict_with_sched = dict(self.crew_dict)
         self.crew_dict_with_sched["schedules"] = [self._schedule]
 
-    def _make_httpx_error(self, status_code: int, url_path: str):
-        """Build a minimal httpx.HTTPStatusError with the given status and path."""
-        response = MagicMock()
-        response.status_code = status_code
-        request = MagicMock()
-        request.url.path = url_path
+    def _make_httpx_error(self, status_code: int, url_path: str, *, json_body=None, content=None):
+        """Build an HTTPStatusError with real request and response objects."""
+        request = httpx.Request("POST", f"http://gateway.test{url_path}")
+        if content is not None:
+            response = httpx.Response(status_code, request=request, content=content)
+        else:
+            response = httpx.Response(
+                status_code, request=request,
+                json=json_body or {"code": "conversation_gone"},
+            )
         return httpx.HTTPStatusError(
             f"HTTP {status_code}",
             request=request,
@@ -808,8 +800,7 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
 
     def test_missing_conversation_triggers_redispatch(self):
         """HTTPStatusError 400 on /continue triggers steer fallback (re-dispatch)."""
-        exc = self._make_httpx_error(400, f"/api/spawn/task-abc/continue")
-        exc.response.json.return_value = {"code": "conversation_gone"}
+        exc = self._make_httpx_error(400, "/api/spawn/task-abc/continue")
         new_task_id = "new-task-id"
 
         # On re-dispatch (after 400), _dispatch_captain_checkin will call
@@ -912,8 +903,10 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
     def test_explicit_continue_failure_starts_fresh_raven(self):
         from transport import captain_engine
 
-        exc = self._make_httpx_error(400, "/api/spawn/task-abc/continue")
-        exc.response.json.return_value = {"code": "spawn_rejected", "error": "resume_failed: restore"}
+        exc = self._make_httpx_error(
+            400, "/api/spawn/task-abc/continue",
+            json_body={"code": "spawn_rejected", "error": "resume_failed: restore"},
+        )
         with patch.object(captain_engine, "_dispatch_captain_checkin", return_value="fresh") as dispatch:
             result = self._call_steer(api_side_effect=[{}, exc])
         self.assertEqual(result, "fresh")
@@ -936,8 +929,9 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
     def test_busy_continuation_keeps_raven_id(self):
         from transport import captain_engine
 
-        exc = self._make_httpx_error(409, "/api/spawn/task-abc/continue")
-        exc.response.json.return_value = {"code": "conversation_busy"}
+        exc = self._make_httpx_error(
+            409, "/api/spawn/task-abc/continue", json_body={"code": "conversation_busy"},
+        )
         with patch.object(captain_engine, "_dispatch_captain_checkin") as dispatch:
             self.assertEqual(self._call_steer(api_side_effect=[{}, exc]), "task-abc")
             dispatch.assert_not_called()
@@ -945,8 +939,9 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
     def test_bare_400_on_continue_does_not_spawn(self):
         from transport import captain_engine
 
-        exc = self._make_httpx_error(400, "/api/spawn/task-abc/continue")
-        exc.response.json.side_effect = ValueError("malformed reply")
+        exc = self._make_httpx_error(
+            400, "/api/spawn/task-abc/continue", content=b"malformed reply",
+        )
         with patch.object(captain_engine, "_dispatch_captain_checkin") as dispatch:
             with self.assertRaises(httpx.HTTPStatusError):
                 self._call_steer(api_side_effect=[{}, exc])

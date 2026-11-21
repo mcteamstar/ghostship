@@ -13,16 +13,15 @@ steer". Now:
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import httpx2 as httpx
 
 _COOKIE = "eyJzZWNyZXQtY29va2llIn0.sig"
 
 
 def _status_error(status: int, body: str) -> httpx.HTTPStatusError:
-    response = SimpleNamespace(status_code=status, text=body)
-    return httpx.HTTPStatusError(f"HTTP {status}", request=None, response=response)
+    request = httpx.Request("POST", "http://gateway.test/api/spawn/task/steer")
+    response = httpx.Response(status, request=request, text=body)
+    return httpx.HTTPStatusError(f"HTTP {status}", request=request, response=response)
 
 
 _UNSUPPORTED = (

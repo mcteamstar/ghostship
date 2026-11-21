@@ -13,9 +13,9 @@ from transport.crew_gateway import CrewUnresponsiveError
 
 
 def gateway_refusal(status, body):
-    return httpx.HTTPStatusError(
-        f"HTTP {status}", request=None, response=SimpleNamespace(status_code=status, text=body),
-    )
+    request = httpx.Request("POST", "http://gateway.test/api/spawn")
+    response = httpx.Response(status, request=request, text=body)
+    return httpx.HTTPStatusError(f"HTTP {status}", request=request, response=response)
 
 
 @pytest.mark.parametrize(

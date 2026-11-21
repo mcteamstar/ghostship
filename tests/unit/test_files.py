@@ -6,8 +6,8 @@ Design notes:
   so _load_or_create_file_secret() picks up the fixed test value.
 - Tests access the module's private functions directly via monkeypatching or
   by importing the module with the env var already set.
-- All I/O dependencies (PodmanClient, lifecycle, httpx2) are already stubbed
-  by conftest.py's _install_transport_stubs call.
+- The shared pytest fixture supplies temporary persistence and blocks external
+  HTTP and Podman access while using the installed runtime libraries.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import hashlib
 import hmac
 import io
 import os
-import sys
 import time
 import threading
 import unittest
@@ -25,15 +24,6 @@ import unittest
 # returns the test value rather than reading /data/ or generating a random one.
 _TEST_FILE_SECRET = "test-file-secret-value-32chars!!"
 os.environ["GA_FILE_SECRET"] = _TEST_FILE_SECRET
-
-# Ensure transport stubs are installed (httpx2, starlette, etc.) before import.
-# conftest does this at session scope; when running this file standalone we
-# call it directly.
-try:
-    from tests.unit.conftest import _install_transport_stubs
-    _install_transport_stubs()
-except Exception:
-    pass
 
 try:
     import files as _files
@@ -256,14 +246,6 @@ def _async_run(coro):
         loop.close()
         # Restore a fresh running loop so asyncio.get_event_loop() keeps working.
         asyncio.set_event_loop(asyncio.new_event_loop())
-
-try:
-    from starlette.requests import Request as StarletteRequest
-except ImportError:
-    # stub already installed via conftest; get it directly
-    import sys as _sys
-    StarletteRequest = _sys.modules["starlette.requests"].Request
-
 
 class _FakeRequest:
     """Minimal request stub for _handle_file_get / _handle_file_put."""

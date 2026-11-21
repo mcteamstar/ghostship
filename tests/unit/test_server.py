@@ -11,7 +11,7 @@ Covers the pure utility functions in server.py and the minimal health endpoint:
 Design (see openspec/changes/trn-275-server-dashboard-unit-tests/design.md):
 - Import only the specific utility functions needed — ``from transport.server
   import _jwt_exp, ...`` — to avoid pulling in the full server startup path.
-  The conftest stubs are sufficient to import server.py in the test environment.
+  Tests use the installed Starlette, MCP, and Uvicorn dependencies.
 - Tests are pure-function or minimal ASGI invocations with no live server.
 - JWT payloads are constructed inline with base64 encoding — no real signing.
 

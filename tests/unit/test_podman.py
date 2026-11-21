@@ -14,62 +14,25 @@ Covers:
 from __future__ import annotations
 
 import inspect
-import types
 import unittest
 from unittest.mock import MagicMock, patch
 
-
-# ── Minimal httpx stub helpers ────────────────────────────────────────────────
-
-def _httpx():
-    """Return the stub httpx2/httpx module installed by conftest."""
-    import sys
-    return sys.modules.get("httpx2") or sys.modules.get("httpx")
+import httpx2 as httpx
 
 
-class _FakeResponse:
-    """Minimal HTTP response stub."""
-
-    def __init__(self, status_code: int, content: bytes = b"", json_data=None):
-        self.status_code = status_code
-        self.content = content
-        self._json_data = json_data
-        self.headers = {}
-
-    def json(self):
-        if self._json_data is not None:
-            return self._json_data
-        import json
-        return json.loads(self.content) if self.content else {}
-
-    def raise_for_status(self):
-        httpx = _httpx()
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                f"HTTP {self.status_code}",
-                request=None,
-                response=self,
-            )
-
-    @property
-    def text(self):
-        return self.content.decode("utf-8", errors="replace")
-
-    def iter_bytes(self, chunk_size=65536):
-        offset = 0
-        while offset < len(self.content):
-            yield self.content[offset:offset + chunk_size]
-            offset += chunk_size
-
-    def close(self):
-        pass
-
-    def read(self):
-        return self.content
+def _response(status_code: int, content: bytes = b"", json_data=None) -> httpx.Response:
+    """Build a real response with its request attached for raise_for_status()."""
+    request = httpx.Request("GET", "http://podman.test/v4.0.0")
+    if json_data is not None and not content:
+        return httpx.Response(status_code, request=request, json=json_data)
+    return httpx.Response(status_code, request=request, content=content)
 
 
-# ── Task 1.1: respx not available — confirmed in conftest setup ───────────────
-# respx is absent; tests use unittest.mock to patch httpx.Client.send / request.
+def _status_error(status_code: int, content: bytes = b"") -> httpx.HTTPStatusError:
+    response = _response(status_code, content)
+    return httpx.HTTPStatusError(
+        f"HTTP {status_code}", request=response.request, response=response,
+    )
 
 
 # ── TestContainerCreate ───────────────────────────────────────────────────────
@@ -91,7 +54,7 @@ class TestContainerCreate(unittest.TestCase):
     def test_container_create_success(self):
         """Successful create returns a dict with the container Id."""
         mock_client = MagicMock()
-        mock_resp = _FakeResponse(201, b'{"Id": "abc123"}', {"Id": "abc123"})
+        mock_resp = _response(201, b'{"Id": "abc123"}', {"Id": "abc123"})
         mock_client.request.return_value = mock_resp
         pc = self._make_client(mock_client)
         result = pc.container_create(
@@ -109,9 +72,8 @@ class TestContainerCreate(unittest.TestCase):
 
     def test_container_create_error_raises(self):
         """A 500 response from container_create raises HTTPStatusError."""
-        httpx = _httpx()
         mock_client = MagicMock()
-        err_resp = _FakeResponse(500, b"internal error")
+        err_resp = _response(500, b"internal error")
         mock_client.request.return_value = err_resp
         pc = self._make_client(mock_client)
         with self.assertRaises(httpx.HTTPStatusError):
@@ -176,7 +138,7 @@ class TestContainerExecStdin(unittest.TestCase):
         fake_sock.__exit__ = MagicMock(return_value=False)
 
         # Stub exec inspect: ExitCode=0
-        inspect_resp = _FakeResponse(200, b'{"ExitCode": 0}', {"ExitCode": 0})
+        inspect_resp = _response(200, b'{"ExitCode": 0}', {"ExitCode": 0})
         pc._c.get.return_value = inspect_resp
 
         with patch("socket.socket", return_value=fake_sock):
@@ -210,7 +172,7 @@ class TestContainerExecStdin(unittest.TestCase):
         fake_sock.shutdown = MagicMock()
         fake_sock.close = MagicMock()
 
-        inspect_resp = _FakeResponse(200, b'{"ExitCode": 1}', {"ExitCode": 1})
+        inspect_resp = _response(200, b'{"ExitCode": 1}', {"ExitCode": 1})
         pc._c.get.return_value = inspect_resp
 
         with patch("socket.socket", return_value=fake_sock):
@@ -241,7 +203,7 @@ class TestContainerArchive(unittest.TestCase):
     def test_archive_put_success(self):
         """archive_put: 200 OK should not raise."""
         pc = self._make_client()
-        put_resp = _FakeResponse(200, b"")
+        put_resp = _response(200, b"")
         put_resp.close = MagicMock()
         pc._c.request.return_value = put_resp
         # Should not raise
@@ -250,7 +212,7 @@ class TestContainerArchive(unittest.TestCase):
 
     def test_archive_put_stream_sets_content_length(self):
         pc = self._make_client()
-        put_resp = _FakeResponse(200, b"")
+        put_resp = _response(200, b"")
         put_resp.close = MagicMock()
         pc._c.request.return_value = put_resp
         pc.container_archive_put(
@@ -263,8 +225,7 @@ class TestContainerArchive(unittest.TestCase):
     def test_archive_get_success(self):
         """archive_get: 200 returns a streaming response."""
         pc = self._make_client()
-        get_resp = _FakeResponse(200, b"\x00tar\x00")
-        get_resp.stream = True
+        get_resp = _response(200, b"\x00tar\x00")
 
         # build_request returns a dummy; send returns get_resp
         pc._c.build_request = MagicMock(return_value=MagicMock())
@@ -276,7 +237,7 @@ class TestContainerArchive(unittest.TestCase):
     def test_archive_get_error_raises(self):
         """archive_get: non-200 raises RuntimeError."""
         pc = self._make_client()
-        err_resp = _FakeResponse(404, b"not found")
+        err_resp = _response(404, b"not found")
         err_resp.read = MagicMock(return_value=b"not found")
 
         pc._c.build_request = MagicMock(return_value=MagicMock())
@@ -343,8 +304,7 @@ class TestNetworkOps(unittest.TestCase):
     def test_network_create_409_idempotent(self):
         """network_create: 409 (already exists) is silently ignored."""
         pc = self._make_client()
-        httpx = _httpx()
-        err = httpx.HTTPStatusError("conflict", request=None, response=_FakeResponse(409))
+        err = _status_error(409)
         pc._req = MagicMock(side_effect=err)
         # Should not raise
         pc.network_create("ghost-net")
@@ -352,21 +312,21 @@ class TestNetworkOps(unittest.TestCase):
     def test_network_connect_success(self):
         """network_connect: 204 does not raise."""
         pc = self._make_client()
-        pc._c.post.return_value = _FakeResponse(204, b"")
+        pc._c.post.return_value = _response(204, b"")
         pc.network_connect("gs-test", "ghost-net")
         pc._c.post.assert_called_once()
 
     def test_network_connect_409_idempotent(self):
         """network_connect: 409 (already connected) is silently ignored."""
         pc = self._make_client()
-        pc._c.post.return_value = _FakeResponse(409, b"already connected")
+        pc._c.post.return_value = _response(409, b"already connected")
         # Should not raise
         pc.network_connect("gs-test", "ghost-net")
 
     def test_network_disconnect_success(self):
         """network_disconnect: 204 does not raise."""
         pc = self._make_client()
-        pc._c.post.return_value = _FakeResponse(204, b"")
+        pc._c.post.return_value = _response(204, b"")
         pc.network_disconnect("gs-test", "ghost-net")
         pc._c.post.assert_called_once()
 
@@ -395,29 +355,23 @@ class TestVolumeOps(unittest.TestCase):
 
     def test_volume_create_409_idempotent(self):
         """volume_create: 409 (already exists) is silently ignored."""
-        httpx = _httpx()
         pc = self._make_client()
-        err = httpx.HTTPStatusError("conflict", request=None, response=_FakeResponse(409))
+        err = _status_error(409)
         pc._req = MagicMock(side_effect=err)
         pc.volume_create("gs-vol-test")
 
     def test_volume_remove_success(self):
         """volume_remove: 200 does not raise."""
         pc = self._make_client()
-        del_resp = _FakeResponse(200, b"")
-        del_resp.raise_for_status = MagicMock()
+        del_resp = _response(200, b"")
         pc._c.delete.return_value = del_resp
         pc.volume_remove("gs-vol-test")
         pc._c.delete.assert_called_once()
 
     def test_volume_remove_404_idempotent(self):
         """volume_remove: 404 (already gone) is silently ignored."""
-        httpx = _httpx()
         pc = self._make_client()
-        err_resp = _FakeResponse(404, b"")
-        err = httpx.HTTPStatusError("not found", request=None, response=err_resp)
-        del_resp = MagicMock()
-        del_resp.raise_for_status.side_effect = err
+        del_resp = _response(404, b"")
         pc._c.delete.return_value = del_resp
         # Should not raise
         pc.volume_remove("gs-vol-missing")

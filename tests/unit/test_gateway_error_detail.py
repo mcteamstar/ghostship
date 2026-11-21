@@ -9,10 +9,9 @@ unchanged.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 import transport.lifecycle as lc
@@ -21,10 +20,9 @@ _COOKIE = "eyJsZWNyZXQtY29va2llIn0.sig"
 
 
 def _status_error(status: int, body: str) -> httpx.HTTPStatusError:
-    # A minimal response object: the unit-test httpx stub has no Request type,
-    # and the code under test only reads status_code and text.
-    response = SimpleNamespace(status_code=status, text=body)
-    return httpx.HTTPStatusError(f"HTTP {status}", request=None, response=response)
+    request = httpx.Request("GET", "http://gateway.test/api/spawn/task")
+    response = httpx.Response(status, request=request, text=body)
+    return httpx.HTTPStatusError(f"HTTP {status}", request=request, response=response)
 
 
 def _crew() -> dict:
