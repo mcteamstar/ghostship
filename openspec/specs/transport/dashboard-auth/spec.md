@@ -6,6 +6,18 @@ Provides a cookie-gated login flow that Caddy enforces via `forward_auth` before
 
 ## Requirements
 
+### Requirement: verify_password handles scrypt resource exceptions
+
+`verify_password()` SHALL return `False` (and not raise) when the scrypt hash
+verification raises `OSError` (maxmem exceeded) or `OverflowError` (parameter
+overflow). These exceptions join the existing `(ValueError, TypeError)` in the
+catch clause.
+
+#### Scenario: Extreme scrypt parameters return False, not exception
+- **WHEN** a stored hash has extreme `n`/`r`/`p` values that exceed system scrypt limits
+- **THEN** `verify_password()` returns `False`
+- **THEN** no exception propagates to the caller
+
 ### Requirement: forward_auth is the dashboard auth mechanism
 
 Each per-crew Caddy dashboard server SHALL gate requests with `forward_auth` to `GET /dashboard/auth`: 200 proxies and 401 redirects to `/dashboard/login`. This needs no plugin; basicauth or OIDC alternatives require only a Caddy-config change.
@@ -14,17 +26,6 @@ Each per-crew Caddy dashboard server SHALL gate requests with `forward_auth` to 
 - **WHEN** a browser requests a crew dashboard port
 - **THEN** Caddy first issues `GET /dashboard/auth` to the transport with the browser's cookies
 - **THEN** the crew gateway is reached only if that check returns 200
-### Requirement: Transport login endpoint issues session cookie
-The transport SHALL expose `POST /dashboard/login` that accepts a `ga_api_key` field, validates it against `GA_API_KEY` using constant-time comparison, and — on success — returns `Set-Cookie: gs_session=<token>; HttpOnly; SameSite=Lax; Secure; Path=/` with a cryptographically random 32-byte hex token recorded in a short-lived in-memory store (TTL configurable, default 24 h). On failure it SHALL return 401 with no cookie.
-
-#### Scenario: Valid API key returns session cookie
-- **WHEN** `POST /dashboard/login` is sent with a correct `ga_api_key`
-- **THEN** the response is 200 with a `Set-Cookie: gs_session=<token>` header
-- **THEN** the token is stored for future forward-auth checks
-
-#### Scenario: Invalid API key returns 401
-- **WHEN** `POST /dashboard/login` is sent with an incorrect `ga_api_key`
-- **THEN** the response is 401 with no Set-Cookie header
 
 ### Requirement: Forward-auth endpoint validates the session cookie and returns the crew cookie
 The transport SHALL expose `GET /dashboard/auth` that reads the `gs_session` cookie, and returns 200 if the token is valid and unexpired or 401 otherwise. On 200 it SHALL include an `X-Crew-Cookie` response header carrying the target crew's `mc_token_5476` session cookie value, which Caddy copies into the upstream request so the crew gateway authenticates the browser automatically. The target crew SHALL be identified from the incoming dashboard port (mapped to a crew via the registry).
@@ -38,14 +39,6 @@ The transport SHALL expose `GET /dashboard/auth` that reads the `gs_session` coo
 - **WHEN** a browser sends a request without a valid `gs_session` cookie
 - **THEN** `GET /dashboard/auth` returns 401
 - **THEN** Caddy redirects the browser to `/dashboard/login`
-
-### Requirement: Login UI served by transport
-The transport SHALL serve a minimal HTML login page at `GET /dashboard/login` (no authentication required) that submits `ga_api_key` to `POST /dashboard/login`. After a successful login the browser SHALL be redirected to the originally requested URL, preserved in a `next` query parameter.
-
-#### Scenario: Unauthenticated browser is shown login page
-- **WHEN** a browser hits a crew dashboard port with no session cookie
-- **THEN** it lands on `/dashboard/login?next=<original-url>`
-- **THEN** the response is a valid HTML page with a password form
 
 ### Requirement: MCP/API auth posture
 

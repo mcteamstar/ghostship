@@ -6,18 +6,187 @@ Defines the behaviour of the `captain` MCP tool — the control interface for ma
 
 ## Requirements
 
-### Requirement: captain tool description lists free-will as a built-in template
+### Requirement: One Captain check-in per crew
 
-The `captain` MCP tool description SHALL list `free-will` / `free` / `willy` as a
-built-in template alongside `spec-driven-development` / `sdd` / `specky` and
-`independent-review` / `indy`.
+The system SHALL represent a crew's Captain only as one recurring Raven check-in, with no alternate Captain mechanism.
 
-#### Scenario: captain tool docstring includes free-will
-- **WHEN** the `captain` tool description is read (e.g. via `/openapi.json` or the
-  MCP tool listing)
-- **THEN** the text includes `free-will` and its aliases `free` and `willy`
-- **THEN** the description explains that `free-will` is the open-ended autonomous
-  template
+#### Scenario: Admiral stops the Captain
+- **WHEN** `captain(crew_id, action="stop")` is called for a crew with a standing-orders check-in loop running
+- **THEN** the system pauses the recurring check-in job without deleting it; any persona task already dispatched and running is left to finish on its own, and the mailbox and job history are left as-is for a future `order` to resume from
+
+### Requirement: Captain exposes an explicit action contract
+
+The MCP tool SHALL accept `captain(crew_id, action, message=None, template=None, change_name=None, cron=None, every_secs=None)`, with actions `order`, `stop`, or `status`. `order` SHALL require exactly one of `message` or `template`; `change_name` only substitutes a template value.
+
+#### Scenario: Ordering with both or neither message and template
+- **WHEN** `captain(crew_id, action="order", ...)` is called with both `message` and `template` set, or with neither set
+- **THEN** the system returns an error and takes no action
+
+### Requirement: Captain status surfaces both mail directions
+The system SHALL make `captain(crew_id, action="status")` report unread-message counts for both directions of Captain communication: the existing `unread_mail` field SHALL count the crew's `captain@localhost` standing-order mailbox, and a separate `unread_admiral_mail` field SHALL count the `admiral@localhost` escalation mailbox. The response SHALL identify both mailbox addresses explicitly. This is a pull/fetch-only status surface; it SHALL NOT add a push notification or live-alert mechanism.
+
+#### Scenario: Captain status reports orders and escalations
+- **WHEN** `captain(crew_id, action="status")` is called for a crew with unread orders, unread escalations, or both
+- **THEN** the response reports the count for `captain@localhost` and the count for `admiral@localhost` separately, including zero when either mailbox is empty or absent
+
+### Requirement: Captain orders are stored as mail
+
+For `action="order"`, the transport SHALL write a formatted message to the crew's `captain@localhost` mailbox from outside the crew; the mailbox SHALL be the sole record of standing orders.
+
+#### Scenario: First standing order for a crew
+- **WHEN** `captain(crew_id, action="order", message=<text>, every_secs=<n>)` (or `cron=<expr>`) is called for a crew with no existing check-in job
+- **THEN** the system writes `<text>` as mail to `captain@localhost` inside the crew, creates a recurring job dispatching `raven` on the given schedule, and returns the new job's identifier
+
+#### Scenario: Updated standing order for a crew already checking in
+- **WHEN** `captain(crew_id, action="order", message=<text>)` is called for a crew with an existing, enabled check-in job
+- **THEN** the system writes `<text>` as a new mail message to `captain@localhost`, leaves the existing job's schedule and identifier unchanged, and does not require `every_secs`/`cron` to be repeated
+
+### Requirement: Ordering ensures a recurring Raven check-in
+
+An order SHALL ensure a Raven check-in job exists, creating it only when absent and preserving an existing schedule.
+
+#### Scenario: A schedule is required only when no check-in job exists yet
+- **WHEN** `captain(crew_id, action="order", message=<text>)` is called for a crew with no existing check-in job, and neither `every_secs` nor `cron` is given
+- **THEN** the system returns an error and writes no mail, since a brand-new check-in loop has nothing to schedule against
+
+### Requirement: Raven evaluates orders on each check-in
+
+Each recurring check-in SHALL dispatch Raven to assess current crew state against all standing orders and take one action within its authority: dispatch a sanctioned persona, steer an in-flight task, hold, or escalate to the Admiral.
+
+#### Scenario: Raven dispatches the next step
+- **WHEN** a check-in finds standing orders not yet met and a clear next atomic step within its authority
+- **THEN** Raven dispatches one of the five sanctioned personas for that step via an authenticated `POST` to the crew gateway's own `/api/spawn`, without any ghostship transport code parsing or re-issuing that dispatch
+
+#### Scenario: Raven steers an in-flight worker instead of waiting
+- **WHEN** new standing orders arrive while a previously-dispatched persona task is still running
+- **THEN** Raven sends the new context to that running task via an authenticated `POST` to the gateway's `/api/spawn/{task_id}/steer`, rather than holding until the task finishes and addressing the new orders only on a later cycle
+
+#### Scenario: Raven holds
+- **WHEN** a check-in finds no new orders and no outstanding work needing action
+- **THEN** Raven takes no dispatching action that cycle, and the job's next firing proceeds on its existing schedule
+
+#### Scenario: Raven escalates instead of guessing
+- **WHEN** a check-in encounters a decision or a permission that is outside Raven's own authority to resolve
+- **THEN** Raven sends a message to the Admiral's address rather than guessing or unilaterally proceeding, and continues to hold on that point until a reply arrives in a later check-in
+
+#### Scenario: Raven cannot be steered by the Admiral
+- **WHEN** an Admiral wants to change a standing-orders crew's direction
+- **THEN** the only supported channel is a further `captain(action="order", ...)` call — `steer` has no applicable `task_id` for a check-in job, since it is a recurring `schedule` resource, not a `dispatch`-created task; this is unrelated to Raven's own ability to steer the persona tasks it dispatches
+
+#### Scenario: Each check-in reassesses the standing orders
+- **WHEN** a recurring Captain check-in fires for a crew with standing orders
+- **THEN** Raven reads orders since the prior check-in, assesses the crew's current state against the orders as a whole, and uses the job's persistent session for continuity whether the orders came from a template or free-form message
+
+### Requirement: Raven prevents duplicate persona dispatch
+
+Before dispatch, Raven SHALL check pending and confirmed mailbox intents, matching task descriptions, then the asynchronously populated agent field, in that order. It SHALL write a unique pending intent before spawning, confirm the returned task ID after success, and hold or elect one intent when a signal indicates overlap.
+
+#### Scenario: Raven records an intent before spawning when the gateway ID is not yet known
+- **WHEN** Raven determines a persona dispatch is needed and all three layers report clear
+- **THEN** Raven generates a unique local `intent_id`, prefixes the worker task description with `SDD dispatch <change> <persona> <intent_id>`, writes `dispatching <persona> <intent_id>` to `raven@localhost` BEFORE calling `/api/spawn`, and does not invent the gateway's future task ID
+
+#### Scenario: Raven confirms the server-assigned ID after spawning
+- **WHEN** the authenticated `/api/spawn` call succeeds and returns `spawn_task_id`
+- **THEN** Raven writes a confirmation to `raven@localhost` with subject `dispatching <persona> <spawn_task_id>` and links it to the pre-spawn `intent_id` in the body
+
+#### Scenario: Subsequent check-in finds a pending dispatch-intent
+- **WHEN** a Raven check-in scans `raven@localhost` and finds `dispatching ghost abc123` as an unconfirmed pending intent with no completed confirmation check yet
+- **THEN** Raven treats Ghost as already dispatched and holds, even if `kirocrew spawn list` shows no `agent: ghost` entry (due to async population lag)
+
+#### Scenario: Layered check prevents duplicate dispatch on async agent-field lag
+- **WHEN** two Raven check-ins fire in close succession after a long-running task completes, and the `agent` field on spawn-list entries is still empty for the new dispatch
+- **THEN** the pending/confirmed mailbox signal or the stable task-description signal prevents the second check-in from dispatching a duplicate, even though the agent-field signal alone would have permitted it
+
+#### Scenario: Overlapping check-ins elect one pending marker
+- **WHEN** two check-ins write unconfirmed pending intents for the same persona before either has spawned
+- **THEN** the check-in with the oldest Maildir arrival/`Date` (then `Message-ID` for a tie) proceeds and the other holds, so at most one `/api/spawn` call is made for that persona
+
+#### Scenario: Pending intent with no spawn is stale after confirmation check
+- **WHEN** a pending intent has survived one full subsequent check-in and `kirocrew spawn list` has no task carrying its intent token and no matching worker in flight
+- **THEN** Raven treats that pending intent as stale and may retry if the standing order still requires the dispatch
+
+#### Scenario: Confirmed intent with completed task is stale
+- **WHEN** a Raven check-in finds `dispatching ghost abc123` as a confirmed intent AND `kirocrew spawn list` shows task `abc123` as completed or the task no longer appears
+- **THEN** Raven treats that confirmed intent as stale/resolved and does not hold on its account — the persona may be dispatched again if orders require it
+
+#### Scenario: All three signals clear — dispatch proceeds
+- **WHEN** Raven finds no active pending or confirmed intent for the target persona, no matching task description in `kirocrew spawn list`, and no matching agent field
+- **THEN** Raven writes a new tokenized pending intent, elects it if necessary, and only then proceeds with the authenticated dispatch
+
+### Requirement: Persona mailboxes provide supplemental crew context
+
+Raven SHOULD read the five sanctioned personas' mailboxes as context, but SHALL use `spawn list` to establish whether work has completed.
+
+#### Scenario: Raven skims persona mailboxes for context
+- **WHEN** a check-in assesses the crew's current state
+- **THEN** Raven reads each of the five sanctioned personas' own mailboxes directly, in addition to `kirocrew spawn list`/`cron list`, and treats what it finds there as supplementary context rather than a substitute for confirming task completion via `spawn list`
+
+### Requirement: Raven uses the CLI and gateway API for distinct operations
+
+Dispatched sessions SHALL expose no native subagent-control MCP surface. Raven SHALL use `kirocrew` for task and cron listing or pause/resume, and authenticated gateway REST for named dispatch, task detail, steering, or continuation; the IPC credential SHALL be used only in `X-Internal-Secret` and never reported.
+
+#### Scenario: Raven checks status via the CLI, not a credential
+- **WHEN** a check-in needs to know whether previously-spawned work has finished, or the state of its own check-in job
+- **THEN** Raven runs `kirocrew spawn list` and `kirocrew cron list` — commands that authenticate themselves — and never reads or passes the gateway's IPC credential for these routine checks
+
+#### Scenario: The gateway credential never appears in anything Raven reports
+- **WHEN** Raven reads the gateway's local IPC credential file to authenticate a REST call
+- **THEN** its actual value never appears in Raven's commentary, reasoning text, task result, or any `pickup`/`bridge`/radio report — it is piped directly from the file into the request header and nowhere else
+
+#### Scenario: CLI and gateway REST divide routine and task control
+- **WHEN** Raven needs routine task or cron state, or needs per-task detail or to continue finished work
+- **THEN** it uses authenticated `kirocrew` CLI commands for task and cron listing or pause/resume, and the crew gateway REST API for per-task detail and continuation, with the IPC credential passed only in `X-Internal-Secret`
+
+### Requirement: Raven prompts use ghostship-spawn for gateway work
+
+Every Raven prompt source SHALL direct named dispatch, task detail, steering, and continuation through `ghostship-spawn`, not hand-built REST calls, and SHALL omit gateway secrets, cookie paths, and curl data-file arguments.
+
+#### Scenario: All prompt sources agree
+- **WHEN** a Captain check-in is dispatched, combining the persona prompt, the check-in orientation and a resolved order template
+- **THEN** every source tells Raven to use `ghostship-spawn` for gateway operations, and none describes an alternative authentication method or a hand-built `curl` call
+
+#### Scenario: Template dispatch step uses the skill
+- **WHEN** the `spec-driven-development` or `independent-review` template reaches a dispatch step
+- **THEN** it tells Raven to dispatch with `ghostship-spawn <persona>` after writing the pending intent marker, and to record the gateway response's `id` field as the task ID in the confirmation marker
+
+#### Scenario: Claude-backend Raven dispatches without a refusal
+- **WHEN** Raven on a claude-backend crew dispatches a persona during a check-in
+- **THEN** the dispatch is not refused by the crew's tool gate because of how the call was written
+
+### Requirement: Raven task briefs respect the crew tool gate
+
+Raven SHALL keep `ghostship-spawn` briefs free of literal shell transfer commands and well under 20 KiB. If the skill is unavailable, Raven SHALL report that to the Admiral and hold.
+
+#### Scenario: Helper missing
+- **WHEN** a check-in needs a gateway operation and `ghostship-spawn` is not available in the crew
+- **THEN** Raven mails the Admiral that the skill is missing and holds, and does not build a `curl` call to the gateway
+
+#### Scenario: Raven briefs avoid literal shell-transfer commands
+- **WHEN** Raven prepares a task brief for `ghostship-spawn`
+- **THEN** the brief describes file transfers in words, contains no literal upload or download shell pipelines, and remains well under 20 KiB
+
+### Requirement: Raven treats tool refusals as crew gate blocks
+
+A refused gateway tool call SHALL be treated as a crew gate block, not a human decision.
+
+#### Scenario: A refusal is reported, not escalated as an approval request
+- **WHEN** a `ghostship-spawn` call is refused by the tool gate
+- **THEN** Raven mails the Admiral which operation was refused and holds, without retrying in the same cycle, without offering an "approve" option, and without quoting the command line
+
+#### Scenario: Refused gateway operation reports the affected operation
+- **WHEN** the tool gate refuses a gateway operation
+- **THEN** Raven reports which operation was refused, holds, does not ask for approval, and does not quote the refused command line in mail
+
+### Requirement: Change artifacts are not Raven's instructions
+The built-in `spec-driven-development` and `independent-review` order templates SHALL tell Raven that a change's proposal, specs, design and tasks describe the target behaviour once that change is implemented and the crew relaunched, not Raven's own current instructions. Raven SHALL take its behaviour from its persona prompt, the check-in orientation and the standing orders, even when the change it is driving modifies those.
+
+#### Scenario: A change that edits Raven's own rules
+- **WHEN** Raven drives a change whose specs add a rule for Raven (for example "hold if a helper is missing") and that rule is not yet implemented in the crew
+- **THEN** Raven does not apply the new rule to itself and continues the lifecycle under its current instructions
+
+#### Scenario: Both templates carry the guidance
+- **WHEN** either built-in template is resolved for a check-in
+- **THEN** the resolved text states that change artifacts describe target behaviour, not Raven's current instructions
 
 ### Requirement: Raven self-cancels through the transport
 
@@ -66,38 +235,6 @@ When `captain(action="stop")` is called, the ghostship schedule registry entry f
 - **WHEN** `captain(action="stop")` is called and the captain check-in job's gateway cron is `enabled: true`
 - **THEN** the transport calls the gateway cron disable API AND updates the registry to `enabled: false`
 - **THEN** the crew is eligible for idle-stop after `GA_IDLE_TIMEOUT_SECS` with no other activity
-
-### Requirement: User orders directory adds templates
-
-When `GA_ORDERS_DIR` names an existing directory, its `.md` templates SHALL be merged with built-in `academy/orders/` templates; built-in templates without an override SHALL remain available.
-
-#### Scenario: GA_ORDERS_DIR adds new templates
-- **WHEN** `GA_ORDERS_DIR` points to a directory containing `deploy.md` and `audit.md`
-- **THEN** `captain(action="order", template="deploy")` and `captain(action="order", template="audit")` are accepted, and the templates are resolved from the user-defined directory
-
-#### Scenario: Built-in templates remain available when GA_ORDERS_DIR is set
-- **WHEN** `GA_ORDERS_DIR` is set and does NOT contain a file named `independent-review.md`
-- **THEN** `captain(action="order", template="independent-review")` still resolves the built-in template from `academy/orders/`
-
-### Requirement: User templates override matching built-ins
-
-A user-defined template whose filename stem matches a built-in name SHALL take precedence over that built-in.
-
-#### Scenario: User-defined template overrides a built-in
-- **WHEN** `GA_ORDERS_DIR` points to a directory containing `sdd.md`
-- **THEN** `captain(action="order", template="sdd")` resolves the user-defined `sdd.md` instead of the built-in `academy/orders/sdd.md`
-
-### Requirement: Missing user orders directory preserves defaults
-
-When `GA_ORDERS_DIR` is unset or its path does not exist, the system SHALL use only built-in `academy/orders/` templates.
-
-#### Scenario: GA_ORDERS_DIR unset — behaviour unchanged
-- **WHEN** `GA_ORDERS_DIR` is not set
-- **THEN** only the built-in `academy/orders/` templates are available, and all existing captain behaviour is preserved
-
-#### Scenario: GA_ORDERS_DIR path does not exist
-- **WHEN** `GA_ORDERS_DIR` is set to a path that does not exist on the filesystem
-- **THEN** the system logs a warning and falls back to built-in templates only — no error is raised at transport startup or at template load time
 
 ### Requirement: Captain dispatch uses a compatible model on Claude-backend crews
 
@@ -171,24 +308,6 @@ At `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive failures (default 3), the tra
 - **WHEN** more than `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive memory-pressure skips have occurred for a crew
 - **THEN** no additional escalation mail is sent (edge-triggered, not level-triggered)
 
-### Requirement: Order templates preserve retry state after memory refusal
-
-The SDD and independent-review templates SHALL treat a memory-pressure refusal as a failed spawn: write no confirmation, keep the pending intent, do not retry in the same cycle, and retry on a later check-in.
-
-#### Scenario: Raven holds and retries on a memory-pressure refusal
-- **WHEN** Raven issues `POST /api/spawn` and receives a memory-pressure refusal (HTTP 503 or 429 whose body names memory pressure)
-- **THEN** Raven writes no dispatch confirmation and leaves the pending intent marker active
-- **THEN** Raven does NOT treat the cycle as a completed dispatch
-
-### Requirement: Order templates escalate sustained memory refusals
-
-Templates SHALL count consecutive memory-pressure refusals and, at the configured threshold, mail the Admiral with the sustained-pressure subject and actual crew ID before holding.
-
-#### Scenario: Raven escalates after sustained memory-pressure refusals
-- **WHEN** Raven has observed `GA_SPAWN_PRESSURE_ESCALATE_CYCLES` consecutive memory-pressure refusals for the same dispatch intent
-- **THEN** Raven mails `admiral@localhost` with subject `captain check-in deferred — sustained memory pressure <crew_id>` (substituting the actual crew id)
-- **THEN** Raven holds and does not attempt another spawn in the same cycle
-
 ### Requirement: Cron captain schedule evaluates first fire from cron expression
 
 When `_captain_do_order()` creates a new captain schedule with a cron expression,
@@ -203,31 +322,6 @@ continue to use the 60-second initial delay.
 #### Scenario: Interval schedule retains 60s initial delay
 - **WHEN** `captain(action="order", interval=3600)` is called
 - **THEN** the first `next_fire_at` is approximately `now + 60s`
-
-### Requirement: _steer_captain_checkin classifies errors by HTTP status code
-
-Captain SHALL use structured gateway outcomes for continuation. A bare HTTP 400 SHALL NOT trigger another write. A busy outcome SHALL preserve the tracked task ID.
-
-#### Scenario: 400 on /continue path triggers follow-up steer
-- **WHEN** continuation returns HTTP 400
-- **THEN** Captain starts recovery only if the response confirms a missing session or restore failure; otherwise it surfaces the rejection
-
-#### Scenario: Continuation acceptance is unknown
-- **WHEN** Captain cannot establish whether a continuation or replacement spawn was accepted
-- **THEN** Captain adopts an existing task ID only when unique correlation identifies that attempt
-- **AND** Captain exposes a hold to the operator without replaying the request when correlation is inconclusive
-
-### Requirement: verify_password handles scrypt resource exceptions
-
-`verify_password()` SHALL return `False` (and not raise) when the scrypt hash
-verification raises `OSError` (maxmem exceeded) or `OverflowError` (parameter
-overflow). These exceptions join the existing `(ValueError, TypeError)` in the
-catch clause.
-
-#### Scenario: Extreme scrypt parameters return False, not exception
-- **WHEN** a stored hash has extreme `n`/`r`/`p` values that exceed system scrypt limits
-- **THEN** `verify_password()` returns `False`
-- **THEN** no exception propagates to the caller
 
 ### Requirement: Captain paces multiple task starts in a check-in
 
@@ -275,3 +369,59 @@ Captain SHALL retire the failed Raven task reference and attempt one fresh check
 #### Scenario: Recovery dispatch is deferred
 - **WHEN** normal admission controls defer the fresh check-in
 - **THEN** Captain leaves the failed reference retired and retries through the enabled schedule
+
+### Requirement: Captain standing-orders check-in
+The `captain(action="order")` call SHALL accept `interval` (in seconds, replacing `every_secs`) and `fire_immediately` with the same defaulting logic as `schedule()`. When `fire_immediately` is true and the Captain check-in is newly created (not resumed from a previously paused state), the system SHALL dispatch Raven immediately after registering the job.
+
+#### Scenario: Captain order with interval and default fire_immediately
+- **WHEN** `captain(action="order")` is called with `interval` set and `fire_immediately` not specified
+- **THEN** the system defaults `fire_immediately` to `true`, registers the recurring Captain check-in, and dispatches Raven immediately
+
+#### Scenario: Captain order resumed does not fire immediately
+- **WHEN** `captain(action="order")` is called to resume a previously paused Captain check-in
+- **THEN** the system does not dispatch immediately regardless of `fire_immediately`, since this is a resume not a new creation
+
+#### Scenario: Captain order with every_secs is rejected
+- **WHEN** `captain(action="order")` is called with `every_secs` as the parameter name
+- **THEN** the system returns a validation error indicating the parameter has been renamed to `interval`
+
+### Requirement: Captain standing-orders check-in supports model override
+
+`captain(action="order")` SHALL accept an optional model for new check-in jobs and propagate it to immediate, monitor-fired, and restart-reseeded runs. It SHALL validate the value on every call, including resume; invalid values fail, while a valid value on resume leaves the existing pin unchanged.
+
+#### Scenario: Captain order with a model override on a new check-in
+- **WHEN** `captain(crew_id="my-crew", action="order", template="sdd", change_name="...", interval=300, model="claude-opus-5")` creates a new check-in job
+- **THEN** the system forwards `model: "claude-opus-5"` in the `/api/crons` request body for that job
+
+#### Scenario: Captain order with a valid model override on a resumed check-in
+- **WHEN** `captain(action="order", model="claude-opus-5")` is called to resume a previously paused check-in
+- **THEN** the system resumes the existing job unchanged and does not apply the `model` parameter, since no new job is created
+
+#### Scenario: Captain order with an invalid model override on a resumed check-in
+- **WHEN** `captain(action="order", model="bad model!")` is called to resume a previously paused check-in
+- **THEN** the system returns an error and does not resume the job, since the parameter's format is still validated regardless of action
+
+#### Scenario: Captain order model applies to the immediate Raven run
+- **WHEN** a new Captain check-in is created with `interval=300`, `fire_immediately=true`, and `model="claude-opus-5"`
+- **THEN** the cron creation request and the immediate Raven `/api/spawn` request both carry `model: "claude-opus-5"`
+
+### Requirement: Captain classifies continuation outcomes
+
+Captain SHALL use structured gateway outcomes for continuation. A status code alone SHALL NOT trigger another write. A busy outcome SHALL preserve the tracked task ID.
+
+#### Scenario: Continuation confirms that the previous session is gone
+- **WHEN** the continuation returns a structured rejection confirming a missing session or restore failure
+- **THEN** Captain starts recovery by spawning a replacement check-in and tracking its accepted ID
+
+#### Scenario: Continuation returns an unclassified HTTP 400
+- **WHEN** the continuation returns HTTP 400 without a supported missing-session or restore-failure reason
+- **THEN** Captain surfaces the rejection without another write
+
+#### Scenario: Continuation is busy
+- **WHEN** the gateway reports that the current Raven session is busy
+- **THEN** Captain retains the tracked task ID
+
+#### Scenario: Continuation acceptance is unknown
+- **WHEN** Captain cannot establish whether a continuation or replacement spawn was accepted
+- **THEN** Captain adopts an existing task ID only when unique correlation identifies that attempt
+- **AND** Captain exposes a hold to the operator without replaying the request when correlation is inconclusive

@@ -51,37 +51,6 @@ The system SHALL accept a `--port` flag controlling the MCP listener port (defau
 - **WHEN** `install.sh` runs without `--public-url`
 - **THEN** `GA_HOST_URL` defaults to `http://localhost:{PORT}`
 
-### Requirement: Config file resolution
-Configuration SHALL deep-merge built-in defaults, repo `config/ghostship.yaml`, then XDG override; `--config <path>` replaces the latter two layers. Resolve Kiro identity provider and region from merged config, then CLI flags, then an interactive prompt when available.
-
-#### Scenario: Repo config sets identity provider
-- **WHEN** `config/ghostship.yaml` sets `backends.kiro.identity_provider` and `backends.kiro.region`
-- **AND** no `--identity-provider` flag is passed
-- **THEN** install.sh uses the config values
-
-#### Scenario: XDG override sets identity provider
-- **WHEN** the XDG override file sets `backends.kiro.identity_provider`
-- **AND** `config/ghostship.yaml` does not set it
-- **THEN** install.sh uses the XDG value
-
-#### Scenario: --config flag replaces implicit resolution
-- **WHEN** `--config /path/to/custom.yaml` is passed
-- **THEN** only that file and built-in defaults are used; repo and XDG files are ignored
-
-### Requirement: Auto-migration from ghostship.conf on install
-When install.sh finds `config/ghostship.conf` with no `config/ghostship.yaml`, it
-SHALL automatically convert the conf to YAML, write `config/ghostship.yaml`, rename
-the old file to `config/ghostship.conf.bak`, and print a clear migration notice
-before proceeding with the install.
-
-#### Scenario: Auto-migration runs on upgrade
-- **WHEN** `config/ghostship.conf` exists and `config/ghostship.yaml` does not
-- **THEN** install.sh prints a migration notice, writes `config/ghostship.yaml`, and renames `config/ghostship.conf` to `config/ghostship.conf.bak`
-
-#### Scenario: Install proceeds after migration
-- **WHEN** auto-migration completes
-- **THEN** install.sh continues with the migrated `config/ghostship.yaml` and completes normally
-
 ### Requirement: Wizard generates ghostship.yaml
 The first-install or `--wizard` flow SHALL write operator values and template comments to `config/ghostship.yaml`, never `ghostship.conf`. After health succeeds, it SHALL run `ghostship setup` without prompting to wire skills and register MCP for detected clients.
 
@@ -182,15 +151,6 @@ The health check in `install.sh` SHALL use a bounded retry probe against the tra
 
 - **WHEN** the transport container's MCP endpoint does not respond within the retry window
 - **THEN** `install.sh` reports a health-check failure with diagnostic output
-
-### Requirement: install.sh config source trust documentation
-
-The `source "$CONFIG_FILE"` invocation in `install.sh` SHALL have an adjacent comment documenting that it executes arbitrary shell code from the user-supplied path and that this is an intentional trust assumption.
-
-#### Scenario: Config file source comment present
-
-- **WHEN** a developer reads the `source "$CONFIG_FILE"` line in `install.sh`
-- **THEN** a comment immediately above or beside it explains the arbitrary-code-execution trust model
 
 ### Requirement: GA_API_KEY is delivered to the transport container via Podman secret
 When an API key is configured, install SHALL create Podman secret `ga-api-key`; transport receives it as a mounted secret and reads `/run/secrets/ga-api-key`. It SHALL NOT pass `GA_API_KEY` as a container environment variable. Without a flag or persisted key, create no secret and start unauthenticated.

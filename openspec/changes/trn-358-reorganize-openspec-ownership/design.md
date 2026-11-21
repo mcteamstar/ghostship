@@ -21,4 +21,4 @@ Verify the repository's actual path consumers, including OpenSpec CLI discovery,
 
 ## Risks / Trade-offs
 
-Capability path changes can orphan deltas or make old specs reappear on sync. Deep nesting also makes browsing harder when the folders do not represent real ownership. Prefer shallow groups and keep a map through the migration. Resolve any policy conflict in a dedicated change.
+Capability path changes can orphan deltas or make old specs reappear on sync. Deep nesting also makes browsing harder when the folders do not represent real ownership. Prefer shallow groups and keep a map through the migration. For the six consolidation areas recorded in the migration inventory, use current runtime contracts to correct stale wording and preserve distinct scenarios. Record any other unresolved policy conflict for follow-up.

@@ -4,7 +4,7 @@ OpenSpec 2 discovers nested capability paths, and Ghostship already uses nested 
 
 ## What Changes
 
-Organise the live capability tree around subsystem ownership. Move cohesive specs into feature folders and split mixed specs by requirement ownership. Record the old-to-new paths and keep active changes and maintained references aligned with the new layout.
+Organise the live capability tree around subsystem ownership. Move cohesive specs into feature folders and split mixed specs by requirement ownership. Record the old-to-new paths and keep active changes and maintained references aligned with the new layout. Consolidate the identified overlaps against current behavior for task scheduling, gateway and Raven recovery, task pickup and dispatch, startup coordination, and credential profile scope.
 
 ## Capabilities
 

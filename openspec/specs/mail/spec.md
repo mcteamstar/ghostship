@@ -88,25 +88,6 @@ Inter-agent subjects SHALL carry complete status, handoff, and request messages 
 - **WHEN** Raven reads mailboxes during any task — Captain-loop or direct dispatch
 - **THEN** it reads subject lines from all 8 mailboxes (`/var/mail/ghost`, `/var/mail/spectre`, `/var/mail/banshee`, `/var/mail/wraith`, `/var/mail/reaper`, `/var/mail/raven`, `/var/mail/captain`, `/var/mail/admiral`) to build situational awareness, only opening message bodies when the subject alone is insufficient to understand what action is needed
 
-### Requirement: `pickup` surfaces mail subjects for full situational awareness
-Every `pickup` SHALL return unread subjects and counts only. A task-specific call reads that agent's, Captain's, and Admiral's mailboxes; a crew-wide call reads all persona, Captain, and Admiral mailboxes. Bodies are not read, and mailbox files are not modified.
-
-#### Scenario: pickup on a specific task returns agent, captain, and admiral subjects
-- **WHEN** `pickup` is called with a `task_id` for a Ghost task and all three mailboxes have unread mail
-- **THEN** the response includes `ghost_mail: N, ghost_subjects: [...]`, `captain_mail: N, captain_subjects: [...]`, and `admiral_mail: N, admiral_subjects: [...]`
-
-#### Scenario: crew-wide pickup returns all persona, captain, and admiral subjects
-- **WHEN** `pickup` is called without a `task_id`
-- **THEN** the response includes subject line summaries for every persona mailbox that has unread mail, plus captain and admiral, so the Admiral can assess the full crew state at a glance
-
-#### Scenario: empty mailboxes omitted or shown as zero
-- **WHEN** `pickup` is called and a mailbox has no unread messages
-- **THEN** that mailbox contributes a zero count and an empty subjects list (or is omitted) — no change to response shape when mailboxes are empty
-
-#### Scenario: pickup with no unread mail anywhere
-- **WHEN** `pickup` is called and all mailboxes are empty
-- **THEN** the response is the same shape as today with all mail counts at zero
-
 ### Requirement: Mail addressing and reading conventions
 The system SHALL document and enforce (via STANDING_ORDERS and the mail skill) a consistent set of conventions for how agents send, address, and read mail within a crew.
 
