@@ -267,6 +267,16 @@ class TestScheduleMonitorIteration(unittest.TestCase):
         live_sched = next((s for s in live_scheds if s.get("job_id") == "job-1"), sched)
         self.assertGreater(live_sched["next_fire_at"], old_nfa)
 
+    def test_lost_spawn_response_advances_tick_without_replay(self):
+        from transport.crew_gateway import GatewayAcceptanceUnknown
+
+        sched = self._make_sched()
+        old_fire = sched["next_fire_at"]
+        self._crew_api_with_recovery.side_effect = GatewayAcceptanceUnknown("response lost")
+        self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
+        self._crew_api_with_recovery.assert_called_once()
+        self.assertGreater(sched["next_fire_at"], old_fire)
+
     def test_not_yet_due_job_not_fired(self):
         """next_fire_at in future → _crew_api_with_recovery not called."""
         sched = self._make_sched(next_fire_at=self.NOW + 9999)

@@ -1872,6 +1872,9 @@ def schedule(
             r = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
         except (CrewUnresponsiveError, RuntimeError) as e:
             return {"error": str(e)}
+        except httpx.HTTPStatusError as exc:
+            detail, _ = _gateway_error_detail(exc, crew)
+            return {"error": f"crew gateway rejected schedule creation.{detail}"}
 
         # Write one-shot entry to registry
         schedule_entry = {
@@ -1912,6 +1915,9 @@ def schedule(
         r = _crew_api_with_recovery(crew, crew_id, "POST", "/api/crons", json=body)
     except (CrewUnresponsiveError, RuntimeError) as e:
         return {"error": str(e)}
+    except httpx.HTTPStatusError as exc:
+        detail, _ = _gateway_error_detail(exc, crew)
+        return {"error": f"crew gateway rejected schedule creation.{detail}"}
 
     # Write schedule entry to transport registry
     schedule_entry = {
@@ -2230,6 +2236,9 @@ def dispatch(
         )
     except CrewUnresponsiveError as e:
         return {"error": str(e)}
+    except httpx.HTTPStatusError as exc:
+        detail, _ = _gateway_error_detail(exc, crew)
+        return {"error": f"crew gateway rejected dispatch.{detail}"}
 
     task_id = result.get("id")
     if not task_id:

@@ -11,6 +11,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from enum import Enum
 from typing import Any
 
 import httpx2 as httpx
@@ -50,6 +51,65 @@ _FORBIDDEN_INTERNAL_HEADERS = ("X-Internal-Secret", "X-Session-Key")
 class CrewUnresponsiveError(RuntimeError):
     """Raised when all recovery attempts for a crew have been exhausted."""
     pass
+
+
+class GatewayAcceptanceUnknown(CrewUnresponsiveError):
+    """The gateway may have executed a write whose response was unusable."""
+
+
+class GatewayRefusal(Enum):
+    REJECTED = "rejected"
+    STALE_CREDENTIAL = "stale_credential"
+    BUSY = "busy"
+    SESSION_GONE = "session_gone"
+    RESTORE_FAILED = "restore_failed"
+    STEER_UNSUPPORTED = "steer_unsupported"
+    SESSION_STARTING = "session_starting"
+
+
+def classify_gateway_refusal(exc: httpx.HTTPStatusError) -> GatewayRefusal:
+    try:
+        body = exc.response.json()
+    except (AttributeError, ValueError):
+        body = None
+    status = exc.response.status_code
+    if not isinstance(body, dict):
+        return GatewayRefusal.REJECTED
+
+    code, reason = body.get("code"), body.get("error")
+    if (status in (401, 403) and code == "forbidden"
+            and getattr(exc.response, "headers", {}).get("X-Auth-Required") == "true"
+            and reason in (
+        "token expired", "invalid signature", "token superseded", "no active sessions",
+        "session revoked", "session ended at gateway restart", "IP mismatch", "no token",
+    )):
+        return GatewayRefusal.STALE_CREDENTIAL
+    if status == 409 and code == "conversation_busy":
+        return GatewayRefusal.BUSY
+    if status in (400, 404) and code == "conversation_gone":
+        return GatewayRefusal.SESSION_GONE
+    if status == 502 and code == "steer_failed" and isinstance(reason, str):
+        if reason.startswith("steer_unsupported"):
+            return GatewayRefusal.STEER_UNSUPPORTED
+    if status == 503 and code == "session_starting":
+        return GatewayRefusal.SESSION_STARTING
+    if code == "resume_failed" or (
+        code == "spawn_rejected" and isinstance(reason, str)
+        and reason.startswith(("resume_failed:", "RuntimeError: resume_failed:"))
+    ):
+        return GatewayRefusal.RESTORE_FAILED
+    return GatewayRefusal.REJECTED
+
+
+_NETWORK_ERRORS = (
+    getattr(httpx, "RequestError", httpx.ConnectError),
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    OSError,
+)
+_REQUEST_OR_DECODE_ERRORS = (*_NETWORK_ERRORS, ValueError)
+_NETWORK_OR_RESTORE_ERRORS = (*_NETWORK_ERRORS, RuntimeError)
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 # Upper bound on how much of a gateway error body is echoed back to callers.
@@ -177,252 +237,76 @@ class CrewGatewayClient:
         except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
             return False
 
-    def _phase0_transient_503(
-        self,
-        crew: dict,
-        method: str,
-        path: str,
-        **kw: Any,
-    ) -> Any:
-        """Phase 0: task still spawning — short bounded retry on 503.
+    def _restore(self, crew: dict, crew_id: str) -> dict:
+        restored = self._restore_crew(crew, crew_id)
+        if restored is self._removed_crew:
+            raise CrewUnresponsiveError(f"crew {crew_id} was removed during gateway recovery.")
+        return restored
 
-        On 503 from a per-task /api/spawn/* route, KiroCrew's own task record
-        already reports elapsed > 0 before the agent process has finished
-        forking/registering enough to serve the route.  Short bounded retry —
-        this is transient and self-resolving within a couple of seconds.
-
-        Re-raises the last 503 error if all retries are exhausted.
-        Raises any non-503 HTTPStatusError immediately without retrying.
-
-        Note (D6): a 503 here means the task process is still starting and has not
-        served the route yet — the request was not acted upon, so retrying is safe
-        for any method (including POST). The idempotency guard D6 adds is for a
-        connection reset (_phase2_dead_gateway), not this transient-503 path.
-        """
-        last_exc: Exception | None = None
-        for _attempt in range(4):
-            time.sleep(1.0)
-            try:
-                return self.request(crew, method, path, **kw)
-            except httpx.HTTPStatusError as retry_exc:
-                if retry_exc.response.status_code != 503:
+    def _attempt(self, crew: dict, method: str, path: str, **kw: Any) -> Any:
+        try:
+            response = self.request(crew, method, path, **kw)
+        except httpx.HTTPStatusError as exc:
+            if method not in _READ_METHODS and exc.response.status_code >= 500:
+                refusal = classify_gateway_refusal(exc)
+                if method == "POST" and path.endswith("/steer") and refusal in (
+                    GatewayRefusal.STEER_UNSUPPORTED, GatewayRefusal.SESSION_STARTING,
+                ):
                     raise
-                last_exc = retry_exc
-        raise last_exc
+                detail, _ = _gateway_error_detail(exc, crew)
+                raise GatewayAcceptanceUnknown(
+                    f"crew gateway write acceptance is unknown.{detail}"
+                ) from None
+            raise
+        except _REQUEST_OR_DECODE_ERRORS:
+            if method not in _READ_METHODS:
+                raise GatewayAcceptanceUnknown(
+                    "crew gateway write acceptance is unknown; reconcile before retrying."
+                ) from None
+            raise
 
-    def _phase1_stale_cookie(
-        self,
-        crew: dict,
-        crew_id: str,
-        method: str,
-        path: str,
-        *,
-        trigger_exc: BaseException | None = None,
-        **kw: Any,
-    ) -> Any:
-        """Phase 1: stale cookie — attempt cookie refresh then retry once.
-
-        On 400/401/403 from a running container, refreshes the session cookie
-        and retries the request.  If the refresh fails or the retry fails,
-        escalates to Phase 2 (full gateway restart).
-
-        Returns the API result on success.
-        Raises CrewUnresponsiveError if Phase 2 restart also fails.
-
-        Note (D6): a stale-cookie failure is a 400/401/403 — the gateway REJECTED
-        the request at auth and did not act on it, so retrying after a cookie
-        refresh cannot duplicate a side effect even for a POST. The idempotency
-        guard that D6 adds lives in _phase2_dead_gateway (a connection reset, where
-        the request MAY have been accepted before the socket dropped), not here.
-        """
-        logger.info(
-            "Crew %s stale-cookie phase — attempting cookie refresh",
-            crew_id,
-        )
-        last_exc: BaseException | None = trigger_exc
-        if self._refresh_cookie(crew, crew_id):
-            try:
-                return self.request(crew, method, path, **kw)
-            except Exception as _retry_exc:
-                last_exc = _retry_exc
-                logger.warning(
-                    "Crew %s phase-1 retry failed after cookie refresh: %s — "
-                    "escalating to full restart",
-                    crew_id, _retry_exc,
+        if method == "POST" and (path == "/api/spawn" or path.endswith("/continue")):
+            task_id = response.get("id") if isinstance(response, dict) else None
+            if not isinstance(task_id, str) or not task_id:
+                raise GatewayAcceptanceUnknown(
+                    "crew gateway accepted the request without a usable task ID; reconcile before retrying."
                 )
-
-        # Phase 1 failed — escalate to full restart
-        logger.info(
-            "Crew %s cookie refresh failed or retry failed — "
-            "escalating to full restart",
-            crew_id,
-        )
-        try:
-            crew = self._restore_crew(crew, crew_id)
-        except RuntimeError:
-            raise _unresponsive_error(
-                crew_id,
-                "transport attempted cookie refresh and container restart but "
-                "the gateway did not recover",
-                crew, last_exc,
-            )
-        # TRN-238 QA-2: crew was nuked during the restart — the registry entry is
-        # gone, so there is nothing to call the API against. Surface a clear error.
-        if crew is self._removed_crew:
-            raise CrewUnresponsiveError(
-                f"crew {crew_id} was removed (nuked) during restart — no longer exists."
-            )
-        try:
-            return self.request(crew, method, path, **kw)
-        except Exception as final_exc:
-            raise _unresponsive_error(
-                crew_id,
-                "transport attempted cookie refresh and container restart but "
-                "the gateway did not recover",
-                crew,
-                final_exc if isinstance(final_exc, httpx.HTTPStatusError) else last_exc,
-            )
-
-    def _phase2_dead_gateway(
-        self,
-        crew: dict,
-        crew_id: str,
-        method: str,
-        path: str,
-        **kw: Any,
-    ) -> Any:
-        """Phase 2: connection error — probe then restart only if dead.
-
-        On a connection error from a running container, first probes liveness.
-        If the gateway is alive (transient error), retries directly.
-        If the gateway is dead, restarts via _ensure_crew_running and retries.
-
-        Returns the API result on success.
-        Raises CrewUnresponsiveError if the gateway cannot be recovered.
-
-        Non-idempotent methods (POST, PATCH, DELETE) are NOT retried after a
-        gateway restart — the request may have been accepted before the connection
-        was cut, and a blind retry would duplicate the side-effect.  The caller
-        receives a CrewUnresponsiveError and can choose to retry explicitly.
-        """
-        _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "OPTIONS"})
-        logger.info(
-            "Crew %s connection-error phase — probing gateway liveness",
-            crew_id,
-        )
-        crew_url = _crew_url(crew)
-        if self.probe(crew_url):
-            # Gateway is actually alive — transient error, retry directly
-            try:
-                return self.request(crew, method, path, **kw)
-            except Exception as retry_exc:
-                raise _unresponsive_error(
-                    crew_id,
-                    "gateway responded to liveness probe but API call failed twice",
-                    crew, retry_exc,
-                )
-        logger.info(
-            "Crew %s gateway confirmed dead — restarting",
-            crew_id,
-        )
-        try:
-            crew = self._restore_crew(crew, crew_id)
-        except RuntimeError:
-            raise CrewUnresponsiveError(
-                f"crew {crew_id} is unresponsive — transport attempted "
-                f"container restart but the gateway did not recover. "
-                f"Suggestion: check crew status with crews() or try "
-                f"again in a moment."
-            )
-        # TRN-238 QA-2: crew was nuked during the restart — nothing to call against.
-        if crew is self._removed_crew:
-            raise CrewUnresponsiveError(
-                f"crew {crew_id} was removed (nuked) during restart — no longer exists."
-            )
-        if method.upper() not in _IDEMPOTENT_METHODS:
-            raise CrewUnresponsiveError(
-                f"crew {crew_id} gateway restarted after a connection reset on a "
-                f"{method} request — not retrying a non-idempotent call to avoid "
-                f"duplicating side-effects. Re-issue the request to proceed."
-            )
-        try:
-            return self.request(crew, method, path, **kw)
-        except Exception as retry_exc:
-            raise _unresponsive_error(
-                crew_id,
-                "transport attempted container restart but the gateway did not recover",
-                crew, retry_exc,
-            )
+        return response
 
     def request_with_recovery(
-        self,
-        crew: dict,
-        crew_id: str,
-        method: str,
-        path: str,
-        **kw: Any,
+        self, crew: dict, crew_id: str, method: str, path: str, **kw: Any,
     ) -> Any:
-        """Wrap _crew_api with three-phase recovery logic.
+        """Retry once after a recoverable read failure or explicit auth refusal.
 
-        Phase 0 (task still spawning): On 503 from a per-task /api/spawn/*
-        route, KiroCrew's own task record already reports elapsed > 0 before
-        the agent process has finished forking/registering enough to serve
-        the route. Short bounded retry — this is transient and self-resolving
-        within a couple of seconds, not a dead gateway.
-
-        Phase 1 (stale cookie): On 400/401/403 from a running container,
-        attempt cookie refresh then retry once.
-
-        Phase 2 (dead gateway): On connection error from a running container,
-        confirm via liveness probe then restart via _ensure_crew_running and
-        retry once.
-
-        If phase 1 cookie refresh fails, escalates to phase 2.
-        At most one retry per failure class — no infinite loops.
-
-        NON-REENTRANT CONTRACT (D1 — do not reintroduce the deadlock):
-        This function holds ``_get_recovery_lock(crew_id)`` for the entire call,
-        INCLUDING any phase-1/phase-2 sub-call into ``_ensure_crew_running``. The
-        per-crew recovery lock is a plain ``threading.Lock`` (non-reentrant), so a
-        code path reached *while this lock is held* must NOT call
-        ``_crew_api_with_recovery`` again for the same crew — doing so blocks
-        forever trying to re-acquire the lock. Concretely: ``_ensure_crew_running``
-        (reached via phase 2) calls ``_enroll_crew_members``, which therefore uses
-        ``_crew_api`` DIRECTLY (best-effort, its own try/except) and never
-        ``_crew_api_with_recovery``. Any new caller of ``_enroll_crew_members`` — or
-        any new sub-call added under this lock — must preserve that: route
-        gateway calls through ``_crew_api``, not through recovery, so the lock is
-        never re-entered. See design.md D1.
+        Hold the per-crew lock across recovery. Restoration must use one-shot
+        gateway requests during enrollment to avoid re-entering the lock.
         """
+        method = method.upper()
         if method == "POST" and path == "/api/spawn":
             kw["json"] = {**kw["json"], "backend": _spawn_backend(crew)}
 
-        lock = self.recovery_lock(crew_id)
-        with lock:
-            # First attempt
+        with self.recovery_lock(crew_id):
             try:
-                return self.request(crew, method, path, **kw)
-            except httpx.HTTPStatusError as e:
-                status = e.response.status_code
-                if status == 503:
-                    # ── Phase 0: transient 503 while task process is still starting ──
-                    return self._phase0_transient_503(crew, method, path, **kw)
-                if status not in (400, 401, 403):
+                return self._attempt(crew, method, path, **kw)
+            except httpx.HTTPStatusError as exc:
+                if classify_gateway_refusal(exc) is GatewayRefusal.STALE_CREDENTIAL:
+                    try:
+                        if not self._refresh_cookie(crew, crew_id):
+                            crew = self._restore(crew, crew_id)
+                    except RuntimeError:
+                        raise _unresponsive_error(crew_id, "credential recovery failed", crew, exc) from None
+                elif method != "GET" or exc.response.status_code != 503:
                     raise
-                # ── TRN-230: 400 on /continue means session is gone, not a stale cookie.
-                # Phase-1 cookie refresh cannot recover a finished session — re-raise so
-                # the caller (_steer_captain_checkin) can handle it as "session gone".
-                # TRN-238 QA-3: match only a path whose final segment is "continue"
-                # (path.endswith("/continue")), not any path merely containing the
-                # substring "continue". A route like /api/continue-session/abc or
-                # /api/foo?note=continue must NOT trigger this session-gone bypass.
-                if status == 400 and path.endswith("/continue"):
-                    raise
-                # ── Phase 1: stale cookie ─────────────────────────────────────────
-                return self._phase1_stale_cookie(
-                    crew, crew_id, method, path, trigger_exc=e, **kw
-                )
+                else:
+                    time.sleep(1)
+            except _NETWORK_ERRORS as exc:
+                try:
+                    if not self.probe(_crew_url(crew)):
+                        crew = self._restore(crew, crew_id)
+                except _NETWORK_OR_RESTORE_ERRORS:
+                    raise _unresponsive_error(crew_id, "gateway restoration failed", crew, exc) from None
 
-            except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
-                # ── Phase 2: connection error / dead gateway ──────────────────────
-                return self._phase2_dead_gateway(crew, crew_id, method, path, **kw)
+            try:
+                return self._attempt(crew, method, path, **kw)
+            except _NETWORK_ERRORS as exc:
+                raise _unresponsive_error(crew_id, "gateway call failed after recovery", crew, exc) from None

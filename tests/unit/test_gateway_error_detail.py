@@ -31,27 +31,12 @@ def _crew() -> dict:
     return {"container": "gs-x", "cookie": _COOKIE, "status": "running"}
 
 
-def _run_with_gateway(status: int, body: str):
-    """Drive _crew_api_with_recovery against a gateway that always errors."""
-    crew = _crew()
-    calls = {"api": 0}
-
-    def _always_fail(*_a, **_kw):
-        calls["api"] += 1
-        raise _status_error(status, body)
-
-    with (
-        patch.object(lc._gateway_client, "request", side_effect=_always_fail),
-        patch.object(lc, "_refresh_cookie", return_value=True),
-        patch.object(lc, "_ensure_crew_running", side_effect=lambda c, _id: c),
-    ):
-        with pytest.raises(lc.CrewUnresponsiveError) as excinfo:
-            lc._crew_api_with_recovery(crew, "x", "POST", "/api/spawn", json={"agent": "ghost"})
-    return str(excinfo.value), calls["api"]
+def _format_gateway_failure(status: int, body: str) -> str:
+    return str(lc._unresponsive_error("x", "gateway request failed", _crew(), _status_error(status, body)))
 
 
 def test_unknown_persona_reason_reaches_caller() -> None:
-    message, _ = _run_with_gateway(400, '{"error": "Agent \'ghost\' not found; refusing spawn."}')
+    message = _format_gateway_failure(400, '{"error": "Agent \'ghost\' not found; refusing spawn."}')
     assert "unresponsive" in message
     assert "HTTP 400" in message
     assert "Agent 'ghost' not found" in message
@@ -61,18 +46,12 @@ def test_unknown_persona_reason_reaches_caller() -> None:
 
 def test_body_is_redacted_and_truncated() -> None:
     body = f"cookie={_COOKIE} mc_token_5476=othertoken " + ("x" * 2000)
-    message, _ = _run_with_gateway(403, body)
+    message = _format_gateway_failure(403, body)
     assert _COOKIE not in message
     assert "othertoken" not in message
     detail = message.split("Last gateway response: HTTP 403: ", 1)[1]
     gateway_body = detail.split(" The crew gateway rejected", 1)[0]
     assert len(gateway_body) <= lc._GATEWAY_DETAIL_LIMIT
-
-
-def test_recovery_attempts_unchanged() -> None:
-    """First call, retry after cookie refresh, retry after restart: three calls."""
-    _, api_calls = _run_with_gateway(400, "bad request")
-    assert api_calls == 3
 
 
 def test_server_error_keeps_crew_status_suggestion() -> None:
@@ -93,7 +72,7 @@ def test_no_http_error_keeps_original_message() -> None:
 def test_bearer_token_is_redacted() -> None:
     """Authorization: Bearer <token> in the gateway body is redacted."""
     body = "Authorization: Bearer supersecrettoken123 some other text"
-    message, _ = _run_with_gateway(400, body)
+    message = _format_gateway_failure(400, body)
     assert "supersecrettoken123" not in message
     assert "Bearer [redacted]" in message
 
@@ -101,7 +80,7 @@ def test_bearer_token_is_redacted() -> None:
 def test_gs_session_is_redacted() -> None:
     """gs_session=<value> in the gateway body is redacted."""
     body = "gs_session=mysessionvalue123; other cookie data"
-    message, _ = _run_with_gateway(400, body)
+    message = _format_gateway_failure(400, body)
     assert "mysessionvalue123" not in message
     assert "gs_session=[redacted]" in message
 
@@ -109,7 +88,7 @@ def test_gs_session_is_redacted() -> None:
 def test_gs_csrf_is_redacted() -> None:
     """gs_csrf=<value> in the gateway body is redacted."""
     body = "gs_csrf=mycsrftoken456; path=/"
-    message, _ = _run_with_gateway(400, body)
+    message = _format_gateway_failure(400, body)
     assert "mycsrftoken456" not in message
     assert "gs_csrf=[redacted]" in message
 

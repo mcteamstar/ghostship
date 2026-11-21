@@ -90,6 +90,12 @@ except ModuleNotFoundError:
     )
 
 # ── lifecycle bindings (injected, NOT imported — see below) ───────────────────
+try:
+    from crew_gateway import GatewayAcceptanceUnknown
+except ModuleNotFoundError:
+    from .crew_gateway import GatewayAcceptanceUnknown
+
+
 # monitors needs a handful of runtime functions and constants from lifecycle
 # (_ensure_crew_running, _crew_api, _crew_api_with_recovery, _mint_cookie and
 # the loop constants). We deliberately do NOT import them at module load: doing
@@ -245,7 +251,7 @@ def _schedule_monitor() -> None:
                         # Fail-open: proceed to fire if gateway unreachable after wake.
 
                     # Fire the tick
-                    fired = False
+                    advance_tick = False
                     try:
                         tick_body: dict[str, Any] = {
                             "task": sched.get("message", ""),
@@ -257,15 +263,21 @@ def _schedule_monitor() -> None:
                         _crew_api_with_recovery(
                             crew, crew_id, "POST", "/api/spawn", json=tick_body,
                         )
-                        fired = True
+                        advance_tick = True
+                    except GatewayAcceptanceUnknown:
+                        advance_tick = True
+                        logger.warning(
+                            "Schedule monitor: acceptance unknown for job %s on crew %s; advancing tick",
+                            sched.get("job_id"), crew_id,
+                        )
                     except Exception as e:
                         logger.error(
                             "Schedule monitor: tick dropped — failed to fire job %s on crew %s: %s",
                             sched.get("job_id"), crew_id, e,
                         )
 
-                    if fired:
-                        # Advance next_fire_at in registry only on success
+                    if advance_tick:
+                        # An ambiguous write cannot safely replay the same tick.
                         # Write last_checkin_at for captain check-ins
                         _advance_next_fire_at(sched)
                         with registry:

@@ -35,6 +35,11 @@ except ModuleNotFoundError:
     import httpx  # local dev / test stub
 
 try:
+    from crew_gateway import GatewayAcceptanceUnknown, GatewayRefusal, classify_gateway_refusal
+except ModuleNotFoundError:
+    from .crew_gateway import GatewayAcceptanceUnknown, GatewayRefusal, classify_gateway_refusal
+
+try:
     from config import Config  # container: flat /app/
 except ImportError:
     from transport.config import Config  # local dev
@@ -329,45 +334,15 @@ def _dispatch_captain_checkin(
             f"{_MEMORY_PRESSURE_MARKER} host at {low_gb}GB free "
             f"(< {GA_RESOURCE_CRITICAL_GB}GB critical) — check-in deferred"
         )
-    # A gateway-side memory-pressure refusal (one that slipped past the probe
-    # because the gateway threshold is stricter) is re-raised as the same typed
-    # skip and NOT routed through _crew_api_with_recovery's in-cycle retries.
-    #
-    # Note: _crew_api_with_recovery's _phase0_transient_503 retries all 503
-    # responses up to 4× before re-raising. When the gateway returns a
-    # memory-pressure 503, phase0 will retry it 4× (~4 s) before the error
-    # propagates here for classification. The probe (D3) prevents this in the
-    # common case (same threshold on both sides); the retry overhead only occurs
-    # in the narrow window where the gateway's threshold is stricter than
-    # GA_RESOURCE_CRITICAL_GB. Fixing this properly requires a body-check inside
-    # _phase0_transient_503 (lifecycle.py), which is outside this change's
-    # declared footprint; tracked as a follow-on for lifecycle.py.
     try:
         import kiro_signin as _kiro_signin  # container (flat /app layout)
     except ModuleNotFoundError:
         from transport import kiro_signin as _kiro_signin  # local dev
     if (denied := _kiro_signin.dispatch_guard(crew_id, crew)) is not None:
         raise RuntimeError(denied["message"])
-    try:
-        lifecycle = _lc()
-        if recovering:
-            # A lost response may still have admitted Raven. Do not replay this POST.
-            spawn_body["backend"] = lifecycle._spawn_backend(crew)
-            result = lifecycle._crew_api(crew, "POST", "/api/spawn", json=spawn_body)
-        else:
-            result = lifecycle._crew_api_with_recovery(
-                crew, crew_id, "POST", "/api/spawn", json=spawn_body
-            )
-    except httpx.HTTPStatusError as exc:
-        if _is_memory_pressure_refusal(exc.response):
-            logger.warning(
-                "Captain check-in for crew %s refused by gateway under memory pressure",
-                crew_id,
-            )
-            raise _MemoryPressureSkip(
-                f"{_MEMORY_PRESSURE_MARKER} gateway refused spawn under memory pressure"
-            ) from exc
-        raise
+    result = _lc()._crew_api_with_recovery(
+        crew, crew_id, "POST", "/api/spawn", json=spawn_body
+    )
     task_id = result.get("id") if isinstance(result, dict) else None
     if not task_id:
         raise RuntimeError(
@@ -394,21 +369,36 @@ def _recover_raven_checkin(crew, crew_id, schedule, failed_id, model) -> str | N
     except _MemoryPressureSkip:
         _record_raven_recovery(crew_id, current, None)
         raise
+    except httpx.HTTPStatusError:
+        _record_raven_recovery(crew_id, current, None, state="rejected")
+        raise
     # Uncertain spawn acceptance leaves the marker in place.
     _record_raven_recovery(crew_id, current, task_id)
     return task_id
 
 
-def _record_raven_recovery(crew_id, expected, task_id):
+def _record_raven_recovery(crew_id, expected, task_id, *, state="deferred"):
     with registry:
         for schedule in registry.get_schedules(crew_id):
-            if schedule == expected:
+            if (schedule.get("type") == "captain"
+                    and schedule.get("current_task_id") == expected.get("current_task_id")
+                    and schedule.get("restore_recovery") == expected.get("restore_recovery")):
                 if task_id is None:
-                    schedule["restore_recovery"] = "deferred"
+                    schedule["restore_recovery"] = state
                 else:
                     schedule["current_task_id"] = task_id
                     schedule.pop("restore_recovery", None)
                 break
+
+
+def _hold_unknown_checkin(crew_id: str, expected: dict | None) -> None:
+    with registry:
+        for schedule in registry.get_schedules(crew_id):
+            if (expected is not None and schedule.get("type") == "captain"
+                    and schedule.get("current_task_id") == expected.get("current_task_id")):
+                # A stop can update enabled while the write is in flight.
+                schedule["restore_recovery"] = "awaiting_acceptance"
+                return
 
 
 def _steer_captain_checkin(
@@ -416,18 +406,12 @@ def _steer_captain_checkin(
     crew_id: str,
     model: str | None = None,
 ) -> str | None:
-    """Continue or re-dispatch the Captain check-in for crew_id.
+    """Serialize a scheduled check-in with standing-order updates."""
+    with _captain_order_lock(crew_id):
+        return _checkin_under_order_lock(crew, crew_id, model)
 
-    Reads current_task_id from the registry and calls POST /api/spawn/{id}/continue.
-    Updates current_task_id in the registry on success.
 
-    Recovery paths:
-    - conversation_gone (404): falls back to _dispatch_captain_checkin()
-    - conversation_busy (409): logs warning, returns existing task_id unchanged
-    - Other errors: re-raises after logging
-
-    Returns the (possibly new) task_id.
-    """
+def _checkin_under_order_lock(crew, crew_id: str, model: str | None) -> str | None:
     with registry:
         schedules = registry.get_schedules(crew_id)
     captain_sched = next(
@@ -435,19 +419,27 @@ def _steer_captain_checkin(
         None,
     )
     current_task_id = captain_sched.get("current_task_id") if captain_sched else None
+    if captain_sched is not None and not captain_sched.get("enabled"):
+        return current_task_id
     saved_model = captain_sched.get("model") if captain_sched else None
     effective_model = model or saved_model
 
     recovery_state = captain_sched.get("restore_recovery") if captain_sched else None
-    if recovery_state == "awaiting_acceptance":
-        logger.warning("Captain recovery for %s awaits spawn reconciliation", crew_id)
+    if recovery_state in ("awaiting_acceptance", "rejected"):
+        logger.warning("Captain recovery for %s awaits operator review", crew_id)
         return current_task_id
     if recovery_state == "deferred" and not current_task_id:
         return _recover_raven_checkin(crew, crew_id, captain_sched, None, effective_model)
 
     if not current_task_id:
-        # No task yet — fresh dispatch
-        return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+        try:
+            task_id = _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+        except GatewayAcceptanceUnknown:
+            _hold_unknown_checkin(crew_id, captain_sched)
+            raise
+        if captain_sched is not None:
+            _record_raven_recovery(crew_id, captain_sched, task_id)
+        return task_id
 
     path = f"/api/spawn/{current_task_id}"
     try:
@@ -474,7 +466,6 @@ def _steer_captain_checkin(
     except Exception as exc:
         logger.warning("Captain steer: could not refresh .dashboard_cookie for crew %s: %s", crew_id, exc)
 
-    # Try to continue the existing session
     continue_body: dict[str, Any] = {"task": _CAPTAIN_CHECKIN_TASK}
     if effective_model:
         continue_body["model"] = effective_model
@@ -483,87 +474,22 @@ def _steer_captain_checkin(
             crew, crew_id, "POST", f"/api/spawn/{current_task_id}/continue",
             json=continue_body,
         )
-    except httpx.HTTPStatusError as exc:
-        status_code = exc.response.status_code
-        if exc.request.url.path.endswith("/continue"):
-            try:
-                error = exc.response.json()
-            except ValueError:
-                error = None
-            if _is_raven_restore_failure(error):
-                return _recover_raven_checkin(
-                    crew, crew_id, captain_sched, current_task_id, effective_model
-                )
-        # TRN-285 M-4: classify by inspecting exc.response.status_code and
-        # exc.request.url.path directly — not by string-sniffing the message.
-        #
-        # /continue returns 400 Bad Request when the Raven task has completed
-        # and its session is gone. Treat it the same as 404: fall back to a
-        # fresh dispatch and clear the stale current_task_id.
-        if status_code == 400 and exc.request.url.path.endswith("/continue"):
-            logger.info(
-                "Captain check-in: session %s gone for crew %s (400 on /continue) — re-dispatching",
-                current_task_id, crew_id,
-            )
-            try:
-                with registry:
-                    for s in registry.get_schedules(crew_id):
-                        if s.get("type") == "captain":
-                            s["current_task_id"] = None
-                            break
-            except Exception as clear_exc:
-                logger.warning(
-                    "Captain check-in: could not clear current_task_id for crew %s: %s",
-                    crew_id, clear_exc,
-                )
-            return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
-        if status_code == 409 and exc.request.url.path.endswith("/continue"):
-            return current_task_id
-        # Any other HTTPStatusError (e.g. 500) is propagated to the caller.
+    except GatewayAcceptanceUnknown:
+        _hold_unknown_checkin(crew_id, captain_sched)
         raise
-    except Exception as exc:
-        err_str = str(exc)
-        if _is_raven_restore_failure(err_str):
+    except httpx.HTTPStatusError as exc:
+        refusal = classify_gateway_refusal(exc)
+        if refusal is GatewayRefusal.BUSY:
+            return current_task_id
+        if refusal in (GatewayRefusal.SESSION_GONE, GatewayRefusal.RESTORE_FAILED):
             return _recover_raven_checkin(
                 crew, crew_id, captain_sched, current_task_id, effective_model
             )
-        # /continue returns 404 with code "conversation_gone" when the session
-        # is no longer available (container restart, etc.).
-        if "conversation_gone" in err_str or "404" in err_str:
-            logger.info(
-                "Captain check-in: session %s gone for crew %s (404) — re-dispatching",
-                current_task_id, crew_id,
-            )
-            # Clear the stale current_task_id so the next monitor tick doesn't
-            # retry this dead session.
-            try:
-                with registry:
-                    for s in registry.get_schedules(crew_id):
-                        if s.get("type") == "captain":
-                            s["current_task_id"] = None
-                            break
-            except Exception as clear_exc:
-                logger.warning(
-                    "Captain check-in: could not clear current_task_id for crew %s: %s",
-                    crew_id, clear_exc,
-                )
-            return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
-        # /continue returns 409 with code "conversation_busy" when mid-turn
-        if "conversation_busy" in err_str or "409" in err_str:
-            logger.warning(
-                "Captain check-in: session %s busy for crew %s — skipping this tick",
-                current_task_id, crew_id,
-            )
-            return current_task_id
         raise
 
-    # /continue returns a new id for the continuation run
     new_task_id = result.get("id") if isinstance(result, dict) else None
     if not new_task_id:
-        logger.warning(
-            "Captain check-in: /continue for crew %s returned no id — keeping %s",
-            crew_id, current_task_id,
-        )
+        _hold_unknown_checkin(crew_id, captain_sched)
         return current_task_id
 
     # Persist the new task_id
@@ -700,6 +626,8 @@ def _captain_do_order(
             "current_task_id": existing_entry.get("current_task_id") if existing_entry else None,
         }
 
+        if existing_entry and existing_entry.get("restore_recovery") == "awaiting_acceptance":
+            schedule_entry["restore_recovery"] = "awaiting_acceptance"
         try:
             with registry:
                 registry.upsert_schedule(crew_id, schedule_entry)
@@ -740,6 +668,9 @@ def _captain_do_order(
             # Resume: fire immediately only if explicitly requested
             should_fire = fire_immediately is True
 
+        if schedule_entry.get("restore_recovery") == "awaiting_acceptance":
+            result["restore_recovery"] = "awaiting_acceptance"
+            should_fire = False
         if should_fire:
             try:
                 new_task_id = _dispatch_captain_checkin(crew, crew_id, model=effective_model)
@@ -761,6 +692,9 @@ def _captain_do_order(
                             s["last_checkin_at"] = _dt.now(_tz.utc).isoformat()
                             break
                 result["current_task_id"] = new_task_id
+            except GatewayAcceptanceUnknown as exc:
+                _hold_unknown_checkin(crew_id, schedule_entry)
+                result["immediate_dispatch_error"] = str(exc)
             except _MemoryPressureSkip as exc:
                 # Memory-pressure skip/refusal: do NOT advance current_task_id
                 # (so the dispatch is retried on a later cycle), count the cycle,

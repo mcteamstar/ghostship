@@ -466,7 +466,7 @@ class TestSteerCaptainCheckinFallback(unittest.TestCase):
         self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
         self.crew_obj.enrolled_agents = ["raven"]
 
-    def test_400_on_continue_triggers_redispatch(self):
+    def test_missing_conversation_triggers_redispatch(self):
         """When /continue returns 400, _steer_captain_checkin falls back to
         _dispatch_captain_checkin (fresh dispatch)."""
         from transport.captain_engine import _steer_captain_checkin
@@ -495,6 +495,7 @@ class TestSteerCaptainCheckinFallback(unittest.TestCase):
         bad_resp = MagicMock()
         bad_resp.status_code = 400
         bad_resp.text = "400 Bad Request"
+        bad_resp.json.return_value = {"code": "conversation_gone"}
         bad_req = MagicMock()
         bad_req.url.path = "/api/spawn/old-task-001/continue"
         err_400 = httpx.HTTPStatusError(
@@ -805,9 +806,10 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
             from transport.captain_engine import _steer_captain_checkin
             return _steer_captain_checkin(self.crew_dict_with_sched, self.crew_id)
 
-    def test_400_on_continue_triggers_redispatch(self):
+    def test_missing_conversation_triggers_redispatch(self):
         """HTTPStatusError 400 on /continue triggers steer fallback (re-dispatch)."""
         exc = self._make_httpx_error(400, f"/api/spawn/task-abc/continue")
+        exc.response.json.return_value = {"code": "conversation_gone"}
         new_task_id = "new-task-id"
 
         # On re-dispatch (after 400), _dispatch_captain_checkin will call
@@ -889,7 +891,7 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
         lifecycle = MagicMock()
         lifecycle._to_crew.return_value = self.crew_obj
         lifecycle._spawn_backend.return_value = "codex"
-        lifecycle._crew_api.return_value = {"id": "fresh"}
+        lifecycle._crew_api_with_recovery.return_value = {"id": "fresh"}
         with (
             patch.object(captain_engine, "_lc", return_value=lifecycle),
             patch.object(captain_engine, "_check_in_memory_pressure", return_value=None),
@@ -902,16 +904,16 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
                 self.crew_dict_with_sched, self.crew_id, recovering=True,
             )
         self.assertEqual(result, "fresh")
-        prompt = lifecycle._crew_api.call_args.kwargs["json"]["task"]
+        prompt = lifecycle._crew_api_with_recovery.call_args.kwargs["json"]["task"]
         self.assertLessEqual(len(prompt), 5000)
         self.assertIn("Reconcile durable progress", prompt)
-        lifecycle._crew_api_with_recovery.assert_not_called()
+        lifecycle._crew_api.assert_not_called()
 
     def test_explicit_continue_failure_starts_fresh_raven(self):
         from transport import captain_engine
 
-        exc = self._make_httpx_error(500, "/api/spawn/task-abc/continue")
-        exc.response.json.return_value = {"error": {"code": "resume_failed"}}
+        exc = self._make_httpx_error(400, "/api/spawn/task-abc/continue")
+        exc.response.json.return_value = {"code": "spawn_rejected", "error": "resume_failed: restore"}
         with patch.object(captain_engine, "_dispatch_captain_checkin", return_value="fresh") as dispatch:
             result = self._call_steer(api_side_effect=[{}, exc])
         self.assertEqual(result, "fresh")
@@ -930,6 +932,130 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
         saved = self.crew_dict_with_sched["schedules"][0]
         self.assertIsNone(saved["current_task_id"])
         self.assertEqual(saved["restore_recovery"], "deferred")
+
+    def test_busy_continuation_keeps_raven_id(self):
+        from transport import captain_engine
+
+        exc = self._make_httpx_error(409, "/api/spawn/task-abc/continue")
+        exc.response.json.return_value = {"code": "conversation_busy"}
+        with patch.object(captain_engine, "_dispatch_captain_checkin") as dispatch:
+            self.assertEqual(self._call_steer(api_side_effect=[{}, exc]), "task-abc")
+            dispatch.assert_not_called()
+
+    def test_bare_400_on_continue_does_not_spawn(self):
+        from transport import captain_engine
+
+        exc = self._make_httpx_error(400, "/api/spawn/task-abc/continue")
+        exc.response.json.side_effect = ValueError("malformed reply")
+        with patch.object(captain_engine, "_dispatch_captain_checkin") as dispatch:
+            with self.assertRaises(httpx.HTTPStatusError):
+                self._call_steer(api_side_effect=[{}, exc])
+            dispatch.assert_not_called()
+
+    def test_unknown_continuation_holds_across_ticks(self):
+        from transport import captain_engine
+
+        with patch.object(captain_engine, "_dispatch_captain_checkin") as dispatch:
+            with self.assertRaises(captain_engine.GatewayAcceptanceUnknown):
+                self._call_steer(api_side_effect=[
+                    {"done": True}, captain_engine.GatewayAcceptanceUnknown("reply lost"),
+                ])
+            saved = self.crew_dict_with_sched["schedules"][0]
+            self.assertEqual(saved["current_task_id"], "task-abc")
+            self.assertEqual(saved["restore_recovery"], "awaiting_acceptance")
+            with (
+                patch.object(_reg_mod, "_load_registry", return_value={
+                    "crews": {self.crew_id: self.crew_dict_with_sched},
+                }),
+                patch.object(_reg_mod, "_save_registry"),
+                patch.object(captain_engine, "_lc") as lifecycle,
+            ):
+                self.assertEqual(captain_engine._steer_captain_checkin({}, self.crew_id), "task-abc")
+                lifecycle.assert_not_called()
+            dispatch.assert_not_called()
+
+    def test_order_update_waits_for_uncertain_continuation_hold(self):
+        import copy
+        import threading
+        from concurrent.futures import Future
+        from transport import captain_engine
+
+        persisted = {"crews": {self.crew_id: self.crew_dict_with_sched}}
+        entered_write = threading.Event()
+        release_write = threading.Event()
+        order_attempted = threading.Event()
+        order_result = Future()
+        checkin_result = Future()
+        actual_lock = captain_engine._captain_order_lock(self.crew_id)
+
+        def api(_crew, _crew_id, method, path, **_kwargs):
+            if method == "GET":
+                return {"done": True}
+            self.assertTrue(path.endswith("/continue"))
+            entered_write.set()
+            self.assertTrue(release_write.wait(timeout=5))
+            raise captain_engine.GatewayAcceptanceUnknown("response lost")
+
+        class ObservedOrderLock:
+            def __enter__(self):
+                if threading.current_thread() is order_thread:
+                    order_attempted.set()
+                actual_lock.acquire()
+
+            def __exit__(self, *_):
+                actual_lock.release()
+
+        def checkin():
+            try:
+                checkin_result.set_result(
+                    captain_engine._steer_captain_checkin(self.crew_dict_with_sched, self.crew_id)
+                )
+            except BaseException as exc:
+                checkin_result.set_exception(exc)
+
+        def reorder():
+            try:
+                order_result.set_result(captain_engine._captain_do_order(
+                    crew_id=self.crew_id, message="updated order", template=None,
+                    change_name=None, cron=None, interval=120, timezone="UTC",
+                    fire_immediately=True, model=None,
+                ))
+            except BaseException as exc:
+                order_result.set_exception(exc)
+
+        order_thread = threading.Thread(target=reorder, daemon=True)
+        lifecycle = MagicMock()
+        lifecycle._require_crew.return_value = self.crew_dict_with_sched
+        lifecycle._ensure_crew_running.return_value = self.crew_dict_with_sched
+        lifecycle._to_crew.return_value = self.crew_obj
+        lifecycle._crew_api_with_recovery.side_effect = api
+        with (
+            patch.object(_reg_mod, "_load_registry", side_effect=lambda: copy.deepcopy(persisted)),
+            patch.object(_reg_mod, "_save_registry", side_effect=persisted.update),
+            patch.object(captain_engine, "_lc", return_value=lifecycle),
+            patch.object(captain_engine, "_captain_order_lock", return_value=ObservedOrderLock()),
+            patch.object(captain_engine, "_get_podman", return_value=self.podman),
+            patch.object(captain_engine, "_append_captain_mail"),
+            patch.object(captain_engine, "_delete_sentinel_file"),
+        ):
+            threading.Thread(target=checkin, daemon=True).start()
+            try:
+                self.assertTrue(entered_write.wait(timeout=2))
+                order_thread.start()
+                self.assertTrue(order_attempted.wait(timeout=2))
+                self.assertFalse(order_result.done())
+            finally:
+                release_write.set()
+            with self.assertRaises(captain_engine.GatewayAcceptanceUnknown):
+                checkin_result.result(timeout=2)
+            self.assertEqual(order_result.result(timeout=2)["restore_recovery"], "awaiting_acceptance")
+            self.assertEqual(captain_engine._steer_captain_checkin({}, self.crew_id), "task-abc")
+
+        saved = persisted["crews"][self.crew_id]["schedules"][0]
+        self.assertEqual(saved["interval_secs"], 120)
+        self.assertEqual(saved["restore_recovery"], "awaiting_acceptance")
+        posts = [call for call in lifecycle._crew_api_with_recovery.call_args_list if call.args[2] == "POST"]
+        self.assertEqual(len(posts), 1)
 
     def test_500_on_continue_is_propagated(self):
         """HTTPStatusError 500 is NOT treated as continue-400; it propagates."""
