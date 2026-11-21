@@ -243,9 +243,14 @@ class FakePodmanClient:
         return ""
 
     def container_archive_put(
-        self, name: str, workspace_path: str, tar_body: bytes
+        self,
+        name: str,
+        workspace_path: str,
+        tar_body: bytes,
+        content_length: int | None = None,
     ) -> None:
-        self.calls.append(("container_archive_put", name, workspace_path, len(tar_body)))
+        size = content_length if content_length is not None else len(tar_body)
+        self.calls.append(("container_archive_put", name, workspace_path, size))
 
     def container_archive_get(
         self, name: str, workspace_path: str
@@ -279,9 +284,18 @@ class FakePodmanClient:
         self._secrets.pop(name, None)
 
     def worker_run(
-        self, volume_name: str, cmd: list[str], timeout: float = 60.0
+        self,
+        volume_name: str,
+        cmd: list[str],
+        timeout: float = 60.0,
+        *,
+        env: dict | None = None,
+        writable: bool = False,
+        tmpfs_size_bytes: int | None = None,
     ) -> bytes:
-        self.calls.append(("worker_run", volume_name, cmd))
+        self.calls.append((
+            "worker_run", volume_name, cmd, timeout, env, writable, tmpfs_size_bytes
+        ))
         return b""
 
     def volume_name_for_crew(self, crew_id: str) -> str:

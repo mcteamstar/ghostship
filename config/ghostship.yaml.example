@@ -120,6 +120,24 @@ crew:
     # Consecutive tight-pressure cycles before the Admiral is mailed.
     spawn_pressure_escalate_cycles: 3
 
+# ── File transfers ────────────────────────────────────────────────────────────
+
+transfer:
+  # Maximum request body size for all supply upload modes (bytes, 256 MiB).
+  max_upload_bytes: 268435456
+
+  # Maximum total extracted regular-file bytes from an uploaded archive (1 GiB).
+  max_archive_bytes: 1073741824
+
+  # Maximum archive members parsed during staging.
+  max_archive_members: 100000
+
+  # Hard tmpfs ceiling for each bundle checkout, including Git data and files
+  # checked out before the staged copy is published (bytes, 2 GiB). Rootless
+  # Podman applies this in a disposable worker; uploads fail before Git runs if
+  # the size-limited mount cannot be confirmed.
+  max_bundle_storage_bytes: 2147483648
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 model:

@@ -104,6 +104,11 @@ DEFAULTS: dict[str, str] = {
     "GA_RESOURCE_PRESSURE_GB": "2.0",
     "GA_RESOURCE_CRITICAL_GB": "1.0",
     "GA_SPAWN_PRESSURE_ESCALATE_CYCLES": "3",
+    # ── file-transfer resource budgets ──
+    "GA_MAX_UPLOAD_BYTES": "268435456",
+    "GA_MAX_ARCHIVE_BYTES": "1073741824",
+    "GA_MAX_ARCHIVE_MEMBERS": "100000",
+    "GA_MAX_BUNDLE_STORAGE_BYTES": "2147483648",
     # ── model (global fallback only; no global override — TRN-257) ──
     "KC_MODEL_DEFAULT": "",
     # ── git identity ──
@@ -192,6 +197,11 @@ _KEY_MAP: dict[tuple[str, ...], str] = {
     ("crew", "memory", "resource_pressure_gb"): "GA_RESOURCE_PRESSURE_GB",
     ("crew", "memory", "resource_critical_gb"): "GA_RESOURCE_CRITICAL_GB",
     ("crew", "memory", "spawn_pressure_escalate_cycles"): "GA_SPAWN_PRESSURE_ESCALATE_CYCLES",
+    # file transfers
+    ("transfer", "max_upload_bytes"): "GA_MAX_UPLOAD_BYTES",
+    ("transfer", "max_archive_bytes"): "GA_MAX_ARCHIVE_BYTES",
+    ("transfer", "max_archive_members"): "GA_MAX_ARCHIVE_MEMBERS",
+    ("transfer", "max_bundle_storage_bytes"): "GA_MAX_BUNDLE_STORAGE_BYTES",
     # model (global fallback only — no global override as of TRN-257)
     ("model", "default"): "KC_MODEL_DEFAULT",
     # backends

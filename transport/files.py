@@ -21,9 +21,10 @@ import posixpath
 import re
 import secrets
 import tarfile
+import tempfile
 import time
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
 from urllib.parse import quote
 
 import httpx2 as httpx
@@ -44,6 +45,7 @@ except ImportError:
 try:
     from podman import (  # container: flat /app/
         KIRO_WORKSPACE_ROOT,
+        BUNDLE_STORAGE_ROOT,
         WORKER_MOUNT,
         PodmanClient,
         WorkerCommandError,
@@ -53,6 +55,7 @@ try:
 except ModuleNotFoundError:
     from transport.podman import (  # local dev
         KIRO_WORKSPACE_ROOT,
+        BUNDLE_STORAGE_ROOT,
         WORKER_MOUNT,
         PodmanClient,
         WorkerCommandError,
@@ -88,6 +91,21 @@ CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
 # SEC-01 — ref parameter validation
 _REF_RE = re.compile(r"^[a-zA-Z0-9_./:@^~\-]+$")
+
+
+class UploadTooLarge(ValueError):
+    """An HTTP request exceeded its configured upload budget."""
+
+
+class UploadBodyReadError(ValueError):
+    """The request body could not be read to completion."""
+
+
+class UploadBudgetExceeded(ValueError):
+    """A confined transfer exceeded an archive or bundle storage budget."""
+
+
+_TRANSFER_BUDGET_PREFIX = "TRANSFER_BUDGET_EXCEEDED:"
 
 
 def _validate_ref(ref: str) -> str:
@@ -236,24 +254,72 @@ def _sign_upload_url(crew_id: str, path: str, unpack: bool = False, bundle: bool
 # ── Staged uploads ────────────────────────────────────────────────────────────
 
 def _build_outer_transfer_tar(
-    body: bytes,
+    body: bytes | BinaryIO,
     workspace: str,
-) -> tuple[str, str, bytes]:
-    """Wrap upload bytes in one generated regular-file tar member."""
+    body_size: int | None = None,
+) -> tuple[str, str, BinaryIO, int]:
+    """Wrap a disk-backed upload in a generated regular-file tar member."""
     transfer_id = secrets.token_hex(16)
     stage_name = f".kirocrew-transfer-{transfer_id}"
     workspace_root = workspace.rstrip("/")
     stage_dir = f"{workspace_root}/{stage_name}"
     member_name = f"{stage_name}/payload"
 
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        member = tarfile.TarInfo(member_name)
-        member.size = len(body)
-        member.mode = 0o600
-        member.mtime = 0
-        archive.addfile(member, io.BytesIO(body))
-    return stage_dir, f"{stage_dir}/payload", buffer.getvalue()
+    source: BinaryIO
+    if isinstance(body, bytes):
+        source = io.BytesIO(body)
+        body_size = len(body)
+    else:
+        source = body
+    if body_size is None:
+        current = source.tell()
+        source.seek(0, os.SEEK_END)
+        body_size = source.tell()
+        source.seek(current)
+
+    outer_tar = tempfile.TemporaryFile(mode="w+b")
+    try:
+        source.seek(0)
+        with tarfile.open(fileobj=outer_tar, mode="w") as archive:
+            member = tarfile.TarInfo(member_name)
+            member.size = body_size
+            member.mode = 0o600
+            member.uid = 1000
+            member.gid = 1000
+            member.mtime = 0
+            archive.addfile(member, source)
+        outer_tar.flush()
+        outer_tar_size = outer_tar.tell()
+        outer_tar.seek(0)
+        return stage_dir, f"{stage_dir}/payload", outer_tar, outer_tar_size
+    except Exception:
+        outer_tar.close()
+        raise
+
+
+async def _stream_request_body(request: Request, output: BinaryIO, max_bytes: int) -> int:
+    """Receive an HTTP body into a temporary file without unbounded memory use."""
+    total = 0
+    stream = request.stream()
+    try:
+        async for chunk in stream:
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise UploadTooLarge(f"Upload exceeds the {max_bytes}-byte request limit")
+            output.write(chunk)
+    except UploadTooLarge:
+        raise
+    except Exception as exc:
+        raise UploadBodyReadError(f"Could not read request body: {exc}") from exc
+    finally:
+        close_stream = getattr(stream, "aclose", None)
+        if close_stream is not None:
+            await close_stream()
+    output.flush()
+    output.seek(0)
+    return total
 
 
 def _cleanup_transfer_stage(
@@ -276,23 +342,49 @@ def _cleanup_transfer_stage(
         pass
 
 
+def _worker_workspace_path(path: str, workspace: str) -> str:
+    """Translate an absolute crew workspace path into the worker mount path."""
+    relative = os.path.relpath(path, workspace)
+    if relative == ".":
+        return WORKER_MOUNT
+    if relative == ".." or relative.startswith(f"..{os.sep}"):
+        raise ValueError(f"Transfer path is outside the workspace: {path!r}")
+    return posixpath.join(WORKER_MOUNT, *relative.split(os.sep))
+
+
 def _transfer_upload(
     podman: PodmanClient,
     container: str,
     workspace: str,
     destination: str,
-    body: bytes,
+    body: bytes | BinaryIO,
     unpack: bool,
     bundle: bool = False,
     force: bool = False,
+    *,
+    body_size: int | None = None,
+    volume_name: str | None = None,
 ) -> str:
     """Stage and write one upload without putting its bytes in exec inputs."""
-    stage_dir, staged_file, outer_tar = _build_outer_transfer_tar(body, workspace)
+    stage_dir, staged_file, outer_tar, outer_tar_size = _build_outer_transfer_tar(
+        body, workspace, body_size
+    )
     try:
-        podman.container_archive_put(container, workspace, outer_tar)
+        def chunks() -> Iterator[bytes]:
+            while True:
+                chunk = outer_tar.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+
+        podman.container_archive_put(
+            container, workspace, chunks(), content_length=outer_tar_size
+        )
     except Exception:
         _cleanup_transfer_stage(podman, container, stage_dir, workspace)
         raise
+    finally:
+        outer_tar.close()
 
     cmd = ["python3", f"{SCRIPTS_DIR}/transfer_raw.py"]
     if unpack:
@@ -302,16 +394,30 @@ def _transfer_upload(
     if force:
         cmd.append("--force")
     try:
-        return podman.container_exec_checked(
-            container,
+        result = podman.worker_run(
+            volume_name or podman.volume_name_for_crew(container.removeprefix("gs-")),
             cmd,
             env={
-                "GA_TRANSFER_SOURCE": staged_file,
-                "GA_TRANSFER_DEST": destination,
-                "GA_TRANSFER_STAGE": stage_dir,
-                "GA_TRANSFER_WORKSPACE": workspace,
+                "GA_TRANSFER_SOURCE": _worker_workspace_path(staged_file, workspace),
+                "GA_TRANSFER_DEST": _worker_workspace_path(destination, workspace),
+                "GA_TRANSFER_STAGE": _worker_workspace_path(stage_dir, workspace),
+                "GA_TRANSFER_WORKSPACE": WORKER_MOUNT,
+                "GA_TRANSFER_MAX_ARCHIVE_BYTES": str(cfg.ga_max_archive_bytes),
+                "GA_TRANSFER_MAX_ARCHIVE_MEMBERS": str(cfg.ga_max_archive_members),
+                "GA_TRANSFER_BUNDLE_STORAGE_ROOT": BUNDLE_STORAGE_ROOT,
+                "GA_TRANSFER_BUNDLE_STORAGE_LIMIT_BYTES": str(
+                    cfg.ga_max_bundle_storage_bytes
+                ),
             },
+            writable=True,
+            tmpfs_size_bytes=cfg.ga_max_bundle_storage_bytes if bundle else None,
         )
+        return result.decode("utf-8", errors="replace")
+    except WorkerCommandError as exc:
+        _cleanup_transfer_stage(podman, container, stage_dir, workspace)
+        if exc.output.strip().startswith(_TRANSFER_BUDGET_PREFIX):
+            raise UploadBudgetExceeded(exc.output.strip()) from exc
+        raise
     except Exception:
         _cleanup_transfer_stage(podman, container, stage_dir, workspace)
         raise
@@ -745,37 +851,68 @@ async def _handle_file_put(request: Request) -> Response:
     clean = path.lstrip("/")
 
     try:
-        crew = _lifecycle._ensure_crew_running(_lifecycle._require_crew(crew_id), crew_id)
+        crew = _lifecycle._require_crew(crew_id)
     except (ValueError, KeyError, RuntimeError) as e:
         return PlainTextResponse(str(e), status_code=404)
 
-    body = await request.body()
-    if not body:
-        return PlainTextResponse("Empty body", status_code=400)
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except (TypeError, ValueError):
+            return PlainTextResponse("Invalid Content-Length", status_code=400)
+        if declared_length < 0:
+            return PlainTextResponse("Invalid Content-Length", status_code=400)
+        if declared_length > cfg.ga_max_upload_bytes:
+            return PlainTextResponse(
+                f"Upload exceeds the {cfg.ga_max_upload_bytes}-byte request limit",
+                status_code=413,
+            )
 
-    podman = _get_podman()
-    ws = KIRO_WORKSPACE_ROOT
-    if unpack:
-        destination = f"{ws}/{clean}".rstrip("/") if clean and clean != "." else ws
-        fallback = f"unpacked to {destination}"
-    else:
-        destination = f"{ws}/{clean}" if clean else ws
-        fallback = f"cloned to {destination}" if bundle else f"wrote to {destination}"
+    with tempfile.TemporaryFile(mode="w+b") as body_file:
+        try:
+            body_size = await _stream_request_body(
+                request, body_file, cfg.ga_max_upload_bytes
+            )
+        except UploadTooLarge as e:
+            return PlainTextResponse(str(e), status_code=413)
+        except UploadBodyReadError as e:
+            return PlainTextResponse(str(e), status_code=400)
+        if body_size == 0:
+            return PlainTextResponse("Empty body", status_code=400)
 
-    try:
-        result = _transfer_upload(
-            podman,
-            _lifecycle._to_crew(crew_id, crew).container,
-            ws,
-            destination,
-            body,
-            unpack,
-            bundle,
-            force,
-        )
-        return PlainTextResponse(result.strip() or fallback)
-    except Exception as e:
-        return PlainTextResponse(str(e), status_code=500)
+        try:
+            crew = _lifecycle._ensure_crew_running(crew, crew_id)
+        except (ValueError, KeyError, RuntimeError) as e:
+            return PlainTextResponse(str(e), status_code=404)
+
+        podman = _get_podman()
+        ws = KIRO_WORKSPACE_ROOT
+        if unpack:
+            destination = f"{ws}/{clean}".rstrip("/") if clean and clean != "." else ws
+            fallback = f"unpacked to {destination}"
+        else:
+            destination = f"{ws}/{clean}" if clean else ws
+            fallback = f"cloned to {destination}" if bundle else f"wrote to {destination}"
+
+        try:
+            result = _transfer_upload(
+                podman,
+                _lifecycle._to_crew(crew_id, crew).container,
+                ws,
+                destination,
+                body_file,
+                unpack,
+                bundle,
+                force,
+                body_size=body_size,
+                volume_name=podman.volume_name_for_crew(crew_id),
+            )
+            return PlainTextResponse(result.strip() or fallback)
+        except UploadBudgetExceeded as e:
+            return PlainTextResponse(str(e), status_code=413)
+        except Exception as e:
+            return PlainTextResponse(str(e), status_code=500)
 
 
 file_routes = [

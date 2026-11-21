@@ -53,6 +53,14 @@ def _env_int(name: str, default: str) -> int:
         ) from None
 
 
+def _env_positive_int(name: str, default: str) -> int:
+    """Read an integer environment value that must be greater than zero."""
+    value = _env_int(name, default)
+    if value <= 0:
+        raise ConfigError(f"Environment variable {name}={value!r} must be a positive integer")
+    return value
+
+
 def _env_float(name: str, default: str) -> float:
     """Read a float env var, raising ConfigError with a clear message on failure."""
     raw = os.environ.get(name, default)
@@ -310,6 +318,12 @@ class Config:
     # ── Storage / runtime ────────────────────────────────────────────────────
     podman_socket: str = "/run/user/1000/podman/podman.sock"
 
+    # ── File-transfer resource budgets ───────────────────────────────────────
+    ga_max_upload_bytes: int = 268_435_456
+    ga_max_archive_bytes: int = 1_073_741_824
+    ga_max_archive_members: int = 100_000
+    ga_max_bundle_storage_bytes: int = 2_147_483_648
+
     # ── Images ───────────────────────────────────────────────────────────────
     kc_image: str = "localhost/spec-ops:latest"
     # Upstream base image used for ephemeral containers that only need kiro-cli
@@ -537,6 +551,12 @@ class Config:
             ga_api_key_disabled=_env_bool_default_off("GA_API_KEY_DISABLED"),
             podman_socket=os.environ.get(
                 "PODMAN_SOCKET", "/run/user/1000/podman/podman.sock"
+            ),
+            ga_max_upload_bytes=_env_positive_int("GA_MAX_UPLOAD_BYTES", "268435456"),
+            ga_max_archive_bytes=_env_positive_int("GA_MAX_ARCHIVE_BYTES", "1073741824"),
+            ga_max_archive_members=_env_positive_int("GA_MAX_ARCHIVE_MEMBERS", "100000"),
+            ga_max_bundle_storage_bytes=_env_positive_int(
+                "GA_MAX_BUNDLE_STORAGE_BYTES", "2147483648"
             ),
             kc_image=os.environ.get("KC_IMAGE", "localhost/spec-ops:latest"),
             kc_base_image=os.environ.get("KC_BASE_IMAGE", cls.kc_base_image),

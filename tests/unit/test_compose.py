@@ -101,6 +101,19 @@ class TestMinimalConfig:
         env = doc["services"]["ga-transport"]["environment"]
         assert env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"] == "false"
 
+    def test_transfer_budgets_are_passed_to_transport(self) -> None:
+        doc = _parsed(_minimal_config(
+            ga_max_upload_bytes="1234",
+            ga_max_archive_bytes="2345",
+            ga_max_archive_members="3456",
+            ga_max_bundle_storage_bytes="4567",
+        ))
+        env = doc["services"]["ga-transport"]["environment"]
+        assert env["GA_MAX_UPLOAD_BYTES"] == "1234"
+        assert env["GA_MAX_ARCHIVE_BYTES"] == "2345"
+        assert env["GA_MAX_ARCHIVE_MEMBERS"] == "3456"
+        assert env["GA_MAX_BUNDLE_STORAGE_BYTES"] == "4567"
+
     def test_service_order(self) -> None:
         """Service insertion order must be ga-transport, ga-radar, ga-portal."""
         doc = _parsed(_minimal_config())

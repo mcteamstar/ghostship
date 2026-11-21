@@ -432,6 +432,10 @@ def main() -> None:
         ga_resource_pressure_gb=_g("GA_RESOURCE_PRESSURE_GB", "2.0"),
         ga_resource_critical_gb=_g("GA_RESOURCE_CRITICAL_GB", "1.0"),
         ga_spawn_pressure_escalate_cycles=_g("GA_SPAWN_PRESSURE_ESCALATE_CYCLES", "3"),
+        ga_max_upload_bytes=_g("GA_MAX_UPLOAD_BYTES", "268435456"),
+        ga_max_archive_bytes=_g("GA_MAX_ARCHIVE_BYTES", "1073741824"),
+        ga_max_archive_members=_g("GA_MAX_ARCHIVE_MEMBERS", "100000"),
+        ga_max_bundle_storage_bytes=_g("GA_MAX_BUNDLE_STORAGE_BYTES", "2147483648"),
         ga_git_author_name=_g("GA_GIT_AUTHOR_NAME"),
         ga_git_author_email=_g("GA_GIT_AUTHOR_EMAIL"),
         ga_rate_limit_enabled=_g("GA_RATE_LIMIT_ENABLED", "true"),
@@ -706,11 +710,27 @@ def _build_images(
             ]
             subprocess.run(cmd, check=True)
         elif name == "gs-worker":
-            subprocess.run([
-                *podman_cmd, "build", "-t", f"localhost/{name}:latest",
-                "--build-arg", f"VERSION={version}",
-                str(Path(ghostship_dir) / "crews" / "_worker"),
-            ], check=True)
+            ctx = tempfile.mkdtemp()
+            try:
+                shutil.copytree(
+                    str(Path(ghostship_dir) / "crews" / "_worker"),
+                    ctx,
+                    dirs_exist_ok=True,
+                )
+                scripts_dst = Path(ctx) / "container_scripts"
+                scripts_dst.mkdir(exist_ok=True)
+                for script_name in ("transfer_raw.py", "transfer_paths.py"):
+                    shutil.copy2(
+                        Path(ghostship_dir) / "transport" / "container_scripts" / script_name,
+                        scripts_dst / script_name,
+                    )
+                subprocess.run([
+                    *podman_cmd, "build", "-t", f"localhost/{name}:latest",
+                    "--build-arg", f"VERSION={version}",
+                    ctx,
+                ], check=True)
+            finally:
+                shutil.rmtree(ctx, ignore_errors=True)
         else:  # ga-radar
             subprocess.run([
                 *podman_cmd, "build", "-t", f"localhost/{name}:latest",

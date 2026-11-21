@@ -18,6 +18,12 @@ RUN apt-get update -qq && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# The disposable worker also applies confined uploads. Transfer scripts are
+# copied into this build context by install.sh so bundle processing uses the
+# current bounded implementation even for older crew containers.
+COPY --chown=root:root container_scripts/*.py /scripts/
+RUN chmod 755 /scripts/*.py && install -d -o root -g root -m 1777 /tmp/ga-bundle-storage
+
 ARG VERSION=0.0.0-dev
 LABEL org.ghostship.version=$VERSION
 

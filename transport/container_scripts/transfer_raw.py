@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import os
+import errno
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 
 from transfer_paths import (
     UnsafeTransferPath,
@@ -24,11 +27,26 @@ from transfer_paths import (
 )
 
 
-def _archive_entries(archive: tarfile.TarFile) -> list[tuple[tarfile.TarInfo, list[str], str]]:
+class TransferBudgetExceeded(ValueError):
+    """An upload exceeded an operator-configured output/storage budget."""
+
+
+def _archive_entries(
+    archive: tarfile.TarFile,
+    max_members: int,
+    max_output_bytes: int,
+) -> list[tuple[tarfile.TarInfo, list[str], str]]:
     """Validate every member name and type before extracting any member."""
+    if max_members <= 0 or max_output_bytes <= 0:
+        raise ValueError("archive budgets must be positive")
     entries: list[tuple[tarfile.TarInfo, list[str], str]] = []
     kinds: dict[tuple[str, ...], str] = {}
-    for member in archive.getmembers():
+    output_bytes = 0
+    for member_count, member in enumerate(archive, start=1):
+        if member_count > max_members:
+            raise TransferBudgetExceeded(
+                f"archive exceeds the {max_members}-member limit"
+            )
         if member.name.startswith("/"):
             raise UnsafeTransferPath(f"Archive member is absolute: {member.name!r}")
         parts = [part for part in member.name.split("/") if part not in ("", ".")]
@@ -40,6 +58,14 @@ def _archive_entries(archive: tarfile.TarFile) -> list[tuple[tarfile.TarInfo, li
             kind = "file"
         else:
             raise UnsafeTransferPath(f"Unsupported archive member type: {member.name!r}")
+        if kind == "file":
+            if member.size < 0:
+                raise ValueError(f"Archive member has a negative size: {member.name!r}")
+            output_bytes += member.size
+            if output_bytes > max_output_bytes:
+                raise TransferBudgetExceeded(
+                    f"archive output exceeds the {max_output_bytes}-byte limit"
+                )
         if not parts and kind != "directory":
             raise UnsafeTransferPath("Archive root member must be a directory")
         if parts:
@@ -58,11 +84,39 @@ def _archive_entries(archive: tarfile.TarFile) -> list[tuple[tarfile.TarInfo, li
     return entries
 
 
-def _stage_archive(root_fd: int, source_fd: int, stage_parts: list[str], destination_parts: list[str]):
+class _ArchiveBudgetReader:
+    """Count decompressed member data while it is copied to staging."""
+
+    def __init__(self, source, total: list[int], limit: int) -> None:
+        self._source = source
+        self._total = total
+        self._limit = limit
+        self.count = 0
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._source.read(size)
+        if chunk:
+            self.count += len(chunk)
+            self._total[0] += len(chunk)
+            if self._total[0] > self._limit:
+                raise TransferBudgetExceeded(
+                    f"archive output exceeds the {self._limit}-byte limit"
+                )
+        return chunk
+
+
+def _stage_archive(
+    root_fd: int,
+    source_fd: int,
+    stage_parts: list[str],
+    destination_parts: list[str],
+    max_members: int,
+    max_output_bytes: int,
+):
     """Validate and fully stage archive contents before destination mutation."""
     with os.fdopen(os.dup(source_fd), "rb") as source:
         with tarfile.open(fileobj=source, mode="r:*") as archive:
-            entries = _archive_entries(archive)
+            entries = _archive_entries(archive, max_members, max_output_bytes)
             preflight_path(root_fd, destination_parts, "directory")
             for _, member_parts, kind in entries:
                 if member_parts:
@@ -70,6 +124,7 @@ def _stage_archive(root_fd: int, source_fd: int, stage_parts: list[str], destina
 
             stage_fd = open_dir_chain(root_fd, stage_parts)
             extraction_name = f".unpack-{secrets.token_hex(12)}"
+            actual_output_bytes = [0]
             try:
                 os.mkdir(extraction_name, 0o700, dir_fd=stage_fd)
                 extraction_fd = open_dir_chain(stage_fd, [extraction_name])
@@ -85,7 +140,19 @@ def _stage_archive(root_fd: int, source_fd: int, stage_parts: list[str], destina
                         if extracted is None:
                             raise ValueError(f"Could not read archive member: {member.name!r}")
                         with extracted:
-                            atomic_write(extraction_fd, member_parts, extracted, member.mode & 0o777)
+                            budget_reader = _ArchiveBudgetReader(
+                                extracted, actual_output_bytes, max_output_bytes
+                            )
+                            atomic_write(
+                                extraction_fd,
+                                member_parts,
+                                budget_reader,
+                                member.mode & 0o777,
+                            )
+                            if budget_reader.count != member.size:
+                                raise ValueError(
+                                    f"Archive member ended early: {member.name!r}"
+                                )
                 finally:
                     os.close(extraction_fd)
             finally:
@@ -131,8 +198,17 @@ def _apply_archive(root_fd: int, stage_parts: list[str], extraction_name: str,
             os.close(directory_fd)
 
 
-def _run_git(args: list[str], cwd_fd: int, source_fd: int | None = None, check: bool = True):
+def _run_git(
+    args: list[str],
+    cwd_fd: int,
+    source_fd: int | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+):
     pass_fds = (cwd_fd,) if source_fd is None else (cwd_fd, source_fd)
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     completed = subprocess.run(
         ["git", *args],
         cwd=f"/proc/self/fd/{cwd_fd}",
@@ -140,6 +216,7 @@ def _run_git(args: list[str], cwd_fd: int, source_fd: int | None = None, check: 
         check=False,
         capture_output=True,
         text=True,
+        env=run_env,
     )
     if check and completed.returncode:
         detail = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
@@ -147,8 +224,44 @@ def _run_git(args: list[str], cwd_fd: int, source_fd: int | None = None, check: 
     return completed
 
 
+def _bundle_storage_capacity(storage_root: str, configured_limit_bytes: int) -> int:
+    """Return the confirmed tmpfs capacity, failing closed without a bounded mount."""
+    if configured_limit_bytes <= 0:
+        raise RuntimeError("bundle storage limit must be positive")
+    try:
+        root = os.path.realpath(storage_root)
+        stat = os.statvfs(root)
+        block_size = stat.f_frsize or stat.f_bsize
+        capacity = stat.f_blocks * block_size
+    except OSError as exc:
+        raise RuntimeError("bounded bundle storage is unavailable") from exc
+    if not os.path.isdir(root) or capacity <= 0 or capacity > configured_limit_bytes:
+        raise RuntimeError("bounded bundle storage is unavailable")
+
+    # Crew containers run Linux under Podman on both supported host platforms.
+    # Confirm that this exact path is a tmpfs mount; statvfs alone cannot prove
+    # that an ordinary, unbounded workspace directory was supplied.
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
+            for line in mounts:
+                before, separator, after = line.partition(" - ")
+                if not separator:
+                    continue
+                fields = before.split()
+                filesystem = after.split()
+                if len(fields) < 5 or not filesystem:
+                    continue
+                mountpoint = fields[4].replace("\\040", " ").replace("\\011", "\t")
+                if mountpoint == root and filesystem[0] == "tmpfs":
+                    return capacity
+    except OSError as exc:
+        raise RuntimeError("cannot verify bounded bundle storage mount") from exc
+    raise RuntimeError("bounded bundle storage is unavailable")
+
+
 def _transfer_bundle(root_fd: int, source_fd: int, destination_parts: list[str],
-                     force: bool, destination: str) -> str:
+                     force: bool, destination: str, storage_root: str,
+                     storage_capacity: int) -> str:
     if not destination_parts:
         raise UnsafeTransferPath("A bundle must be cloned below the workspace root")
     existing = preflight_path(root_fd, destination_parts, "any")
@@ -167,22 +280,66 @@ def _transfer_bundle(root_fd: int, source_fd: int, destination_parts: list[str],
     clone_name = f".kirocrew-clone-{secrets.token_hex(12)}"
     clone_installed = False
     clone_identity: tuple[int, int] | None = None
+
+    def run_bounded_git(args: list[str], cwd_fd: int, check: bool = True):
+        try:
+            return _run_git(
+                args,
+                cwd_fd,
+                check=check,
+                env={"TMPDIR": storage_root},
+            )
+        except RuntimeError as exc:
+            detail = str(exc).lower()
+            if "no space left on device" in detail or "disk quota exceeded" in detail:
+                raise TransferBudgetExceeded(
+                    f"bundle Git storage exceeds the {storage_capacity}-byte limit"
+                ) from exc
+            raise
+
+    git_clone_dir: str | None = None
+    bundle_input_path: str | None = None
     try:
+        try:
+            bundle_fd, bundle_input_path = tempfile.mkstemp(
+                prefix="ga-bundle-input-", suffix=".bundle", dir=storage_root
+            )
+            with os.fdopen(bundle_fd, "wb") as bundle_input:
+                os.lseek(source_fd, 0, os.SEEK_SET)
+                with os.fdopen(os.dup(source_fd), "rb") as source:
+                    shutil.copyfileobj(source, bundle_input, length=1024 * 1024)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                raise TransferBudgetExceeded(
+                    f"bundle Git storage exceeds the {storage_capacity}-byte limit"
+                ) from exc
+            raise
+        try:
+            git_clone_dir = tempfile.mkdtemp(prefix="ga-bundle-", dir=storage_root)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                raise TransferBudgetExceeded(
+                    f"bundle Git storage exceeds the {storage_capacity}-byte limit"
+                ) from exc
+            raise
         current = preflight_path(root_fd, destination_parts, "any")
         if (existing is None) != (current is None):
             raise UnsafeTransferPath("Bundle destination changed during validation")
         if existing is not None and current is not None:
             if (existing.st_dev, existing.st_ino) != (current.st_dev, current.st_ino):
                 raise UnsafeTransferPath("Bundle destination changed during validation")
-        os.mkdir(clone_name, 0o700, dir_fd=parent_fd)
-        clone_fd = open_dir_chain(root_fd, destination_parts[:-1] + [clone_name])
+        clone_fd = os.open(
+            git_clone_dir,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
         try:
-            os.lseek(source_fd, 0, os.SEEK_SET)
-            clone = _run_git(["clone", f"/proc/self/fd/{source_fd}", "."], clone_fd, source_fd)
+            clone = run_bounded_git(
+                ["clone", bundle_input_path, "."], clone_fd
+            )
 
-            head = _run_git(["rev-parse", "HEAD"], clone_fd, check=False)
+            head = run_bounded_git(["rev-parse", "HEAD"], clone_fd, check=False)
             if head.returncode:
-                branches = _run_git(["branch", "-r"], clone_fd)
+                branches = run_bounded_git(["branch", "-r"], clone_fd)
                 branch = ""
                 for line in branches.stdout.splitlines():
                     stripped = line.strip()
@@ -190,11 +347,25 @@ def _transfer_bundle(root_fd: int, source_fd: int, destination_parts: list[str],
                         branch = stripped.removeprefix("origin/").strip()
                         break
                 if branch:
-                    _run_git(["checkout", "-b", branch, f"origin/{branch}"], clone_fd)
-            clone_stat = os.fstat(clone_fd)
-            clone_identity = (clone_stat.st_dev, clone_stat.st_ino)
+                    run_bounded_git(
+                        ["checkout", "-b", branch, f"origin/{branch}"], clone_fd
+                    )
         finally:
             os.close(clone_fd)
+
+        os.mkdir(clone_name, 0o700, dir_fd=parent_fd)
+        staged_fd = open_dir_chain(root_fd, destination_parts[:-1] + [clone_name])
+        try:
+            shutil.copytree(
+                git_clone_dir,
+                f"/proc/self/fd/{staged_fd}",
+                symlinks=True,
+                dirs_exist_ok=True,
+            )
+            staged_stat = os.fstat(staged_fd)
+            clone_identity = (staged_stat.st_dev, staged_stat.st_ino)
+        finally:
+            os.close(staged_fd)
 
         staged_clone = os.stat(clone_name, dir_fd=parent_fd, follow_symlinks=False)
         if not stat.S_ISDIR(staged_clone.st_mode) or clone_identity != (staged_clone.st_dev, staged_clone.st_ino):
@@ -244,11 +415,22 @@ def _transfer_bundle(root_fd: int, source_fd: int, destination_parts: list[str],
                 remove_entry_at(parent_fd, clone_name)
             except FileNotFoundError:
                 pass
+        if git_clone_dir is not None:
+            shutil.rmtree(git_clone_dir, ignore_errors=True)
+        if bundle_input_path is not None:
+            try:
+                os.unlink(bundle_input_path)
+            except FileNotFoundError:
+                pass
         os.close(parent_fd)
 
 
 def transfer(source: str, destination: str, stage: str, unpack: bool, workspace: str,
-             bundle: bool = False, force: bool = False) -> str:
+             bundle: bool = False, force: bool = False,
+             max_archive_bytes: int = 1_073_741_824,
+             max_archive_members: int = 100_000,
+             bundle_storage_root: str | None = None,
+             bundle_storage_limit_bytes: int | None = None) -> str:
     """Apply one staged upload inside the workspace and always clean its stage."""
     root_fd = open_workspace(workspace)
     operation_failed = False
@@ -263,9 +445,29 @@ def transfer(source: str, destination: str, stage: str, unpack: bool, workspace:
         source_fd = open_regular_file(root_fd, source_parts)
         try:
             if bundle:
-                return _transfer_bundle(root_fd, source_fd, destination_parts, force, destination)
+                if not bundle_storage_root or bundle_storage_limit_bytes is None:
+                    raise RuntimeError("bounded bundle storage configuration is unavailable")
+                capacity = _bundle_storage_capacity(
+                    bundle_storage_root, bundle_storage_limit_bytes
+                )
+                return _transfer_bundle(
+                    root_fd,
+                    source_fd,
+                    destination_parts,
+                    force,
+                    destination,
+                    bundle_storage_root,
+                    capacity,
+                )
             if unpack:
-                extraction_name, entries = _stage_archive(root_fd, source_fd, stage_parts, destination_parts)
+                extraction_name, entries = _stage_archive(
+                    root_fd,
+                    source_fd,
+                    stage_parts,
+                    destination_parts,
+                    max_archive_members,
+                    max_archive_bytes,
+                )
                 _apply_archive(root_fd, stage_parts, extraction_name, destination_parts, entries)
                 return f"unpacked to {destination}"
             preflight_path(root_fd, destination_parts, "file")
@@ -289,15 +491,31 @@ def transfer(source: str, destination: str, stage: str, unpack: bool, workspace:
 
 
 def main(argv: list[str]) -> int:
-    result = transfer(
-        os.environ["GA_TRANSFER_SOURCE"],
-        os.environ["GA_TRANSFER_DEST"],
-        os.environ["GA_TRANSFER_STAGE"],
-        "--unpack" in argv[1:],
-        os.environ["GA_TRANSFER_WORKSPACE"],
-        bundle="--bundle" in argv[1:],
-        force="--force" in argv[1:],
-    )
+    if argv[1:] == ["--verify-bundle-storage"]:
+        configured_limit = int(os.environ["GA_TRANSFER_BUNDLE_STORAGE_LIMIT_BYTES"])
+        storage_root = os.environ["GA_TRANSFER_BUNDLE_STORAGE_ROOT"]
+        capacity = _bundle_storage_capacity(storage_root, configured_limit)
+        print(f"bundle-storage-ready:{capacity}")
+        return 0
+    try:
+        result = transfer(
+            os.environ["GA_TRANSFER_SOURCE"],
+            os.environ["GA_TRANSFER_DEST"],
+            os.environ["GA_TRANSFER_STAGE"],
+            "--unpack" in argv[1:],
+            os.environ["GA_TRANSFER_WORKSPACE"],
+            bundle="--bundle" in argv[1:],
+            force="--force" in argv[1:],
+            max_archive_bytes=int(os.environ["GA_TRANSFER_MAX_ARCHIVE_BYTES"]),
+            max_archive_members=int(os.environ["GA_TRANSFER_MAX_ARCHIVE_MEMBERS"]),
+            bundle_storage_root=os.environ.get("GA_TRANSFER_BUNDLE_STORAGE_ROOT"),
+            bundle_storage_limit_bytes=int(
+                os.environ["GA_TRANSFER_BUNDLE_STORAGE_LIMIT_BYTES"]
+            ),
+        )
+    except TransferBudgetExceeded as exc:
+        print(f"TRANSFER_BUDGET_EXCEEDED: {exc}", file=sys.stderr)
+        return 3
     print(result)
     return 0
 

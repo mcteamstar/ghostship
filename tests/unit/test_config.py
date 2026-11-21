@@ -149,6 +149,12 @@ class TestConfigDefaults(unittest.TestCase):
     def test_ga_idle_timeout_default(self):
         self.assertEqual(self.cfg.ga_idle_timeout_secs, 300)
 
+    def test_transfer_budget_defaults(self):
+        self.assertEqual(self.cfg.ga_max_upload_bytes, 268_435_456)
+        self.assertEqual(self.cfg.ga_max_archive_bytes, 1_073_741_824)
+        self.assertEqual(self.cfg.ga_max_archive_members, 100_000)
+        self.assertEqual(self.cfg.ga_max_bundle_storage_bytes, 2_147_483_648)
+
     def test_ga_min_free_mem_gb_default(self):
         self.assertAlmostEqual(self.cfg.ga_min_free_mem_gb, 2.0)
 
@@ -249,6 +255,20 @@ class TestConfigFromEnv(unittest.TestCase):
             cfg = Config.from_env()
         self.assertEqual(cfg.ga_portal_tls_mode, "internal")
 
+    def test_transfer_budgets_from_env(self):
+        env = {
+            "GA_MAX_UPLOAD_BYTES": "1234",
+            "GA_MAX_ARCHIVE_BYTES": "2345",
+            "GA_MAX_ARCHIVE_MEMBERS": "3456",
+            "GA_MAX_BUNDLE_STORAGE_BYTES": "4567",
+        }
+        with patch.dict("os.environ", env):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_max_upload_bytes, 1234)
+        self.assertEqual(cfg.ga_max_archive_bytes, 2345)
+        self.assertEqual(cfg.ga_max_archive_members, 3456)
+        self.assertEqual(cfg.ga_max_bundle_storage_bytes, 4567)
+
     def test_retired_backend_flag_raises(self):
         with patch.dict("os.environ", {"GA_INCLUDE_CLAUDE_AGENT": "true"}):
             with self.assertRaises(ConfigError):
@@ -294,6 +314,17 @@ class TestConfigFromEnvErrors(unittest.TestCase):
 
     def test_ga_max_active_crews_invalid(self):
         self._assert_config_error("GA_MAX_ACTIVE_CREWS", "x")
+
+    def test_transfer_budgets_must_be_positive_integers(self):
+        for name in (
+            "GA_MAX_UPLOAD_BYTES",
+            "GA_MAX_ARCHIVE_BYTES",
+            "GA_MAX_ARCHIVE_MEMBERS",
+            "GA_MAX_BUNDLE_STORAGE_BYTES",
+        ):
+            with self.subTest(name=name):
+                self._assert_config_error(name, "0")
+                self._assert_config_error(name, "-1")
 
     def test_ga_idle_timeout_secs_invalid(self):
         self._assert_config_error("GA_IDLE_TIMEOUT_SECS", "long")

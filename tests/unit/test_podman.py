@@ -248,6 +248,18 @@ class TestContainerArchive(unittest.TestCase):
         pc.container_archive_put("gs-test", "/workspace", b"\x00tar\x00")
         pc._c.request.assert_called_once()
 
+    def test_archive_put_stream_sets_content_length(self):
+        pc = self._make_client()
+        put_resp = _FakeResponse(200, b"")
+        put_resp.close = MagicMock()
+        pc._c.request.return_value = put_resp
+        pc.container_archive_put(
+            "gs-test", "/workspace", iter((b"first", b"second")), content_length=11
+        )
+        kwargs = pc._c.request.call_args.kwargs
+        self.assertEqual(kwargs["headers"]["Content-Length"], "11")
+        self.assertEqual(b"".join(kwargs["content"]), b"firstsecond")
+
     def test_archive_get_success(self):
         """archive_get: 200 returns a streaming response."""
         pc = self._make_client()
@@ -272,6 +284,36 @@ class TestContainerArchive(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             pc.container_archive_get("gs-test", "/missing")
+
+
+class TestWorkerRun(unittest.TestCase):
+    def test_writable_bundle_worker_has_capped_tmpfs_and_no_network(self):
+        try:
+            from podman import BUNDLE_STORAGE_ROOT, PodmanClient
+        except ModuleNotFoundError:
+            from transport.podman import BUNDLE_STORAGE_ROOT, PodmanClient
+        pc = PodmanClient.__new__(PodmanClient)
+        pc._c = MagicMock()
+        pc._c.post.return_value = MagicMock(json=MagicMock(return_value=0), content=b"")
+        pc._c.get.return_value = MagicMock(status_code=200, content=b"")
+        with patch.object(pc, "_image_exists", return_value=True), \
+             patch.object(pc, "_req") as create, \
+             patch.object(pc, "container_start"), \
+             patch.object(pc, "_demux_stdout", return_value=b"done"):
+            result = pc.worker_run(
+                "gs-vol-test", ["python3", "/scripts/transfer_raw.py"],
+                env={"GA_TRANSFER_SOURCE": "/workspace/.stage/payload"},
+                writable=True,
+                tmpfs_size_bytes=16 * 1024 * 1024,
+            )
+        self.assertEqual(result, b"done")
+        spec = create.call_args.kwargs["json"]
+        self.assertEqual(spec["user"], "1000:1000")
+        self.assertEqual(spec["env"]["GA_TRANSFER_SOURCE"], "/workspace/.stage/payload")
+        self.assertEqual(spec["netns"], {"nsmode": "none"})
+        self.assertEqual(spec["mounts"][0]["type"], "tmpfs")
+        self.assertEqual(spec["mounts"][0]["destination"], BUNDLE_STORAGE_ROOT)
+        self.assertIn("size=16777216", spec["mounts"][0]["options"])
 
 
 # ── TestNetworkOps ────────────────────────────────────────────────────────────

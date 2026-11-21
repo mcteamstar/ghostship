@@ -11,6 +11,7 @@ import atexit
 import asyncio
 import json
 import logging
+import os
 import secrets
 import socket
 import sys
@@ -18,7 +19,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import httpx2 as httpx
 
@@ -38,6 +39,7 @@ KIRO_WORKSPACE_ROOT = "/home/kirocrew/workplace/kirocrew-workspace"
 # mounted read-only at WORKER_MOUNT; worker commands operate under that path.
 WORKER_IMAGE = "localhost/gs-worker:latest"
 WORKER_MOUNT = "/workspace"
+BUNDLE_STORAGE_ROOT = "/tmp/ga-bundle-storage"
 
 # CREW_VOLUME_PREFIX canonical home is transport/constants.py.
 # constants.py is a zero-dependency leaf, so importing it here is cycle-safe.
@@ -156,7 +158,11 @@ class ContainerRuntime(ABC):
 
     @abstractmethod
     def container_archive_put(
-        self, name: str, workspace_path: str, tar_body: bytes
+        self,
+        name: str,
+        workspace_path: str,
+        tar_body: bytes | Iterable[bytes],
+        content_length: int | None = None,
     ) -> None: ...
 
     @abstractmethod
@@ -176,7 +182,14 @@ class ContainerRuntime(ABC):
 
     @abstractmethod
     def worker_run(
-        self, volume_name: str, cmd: list[str], timeout: float = 60.0
+        self,
+        volume_name: str,
+        cmd: list[str],
+        timeout: float = 60.0,
+        *,
+        env: dict | None = None,
+        writable: bool = False,
+        tmpfs_size_bytes: int | None = None,
     ) -> bytes: ...
 
     @abstractmethod
@@ -472,15 +485,21 @@ class PodmanClient(ContainerRuntime):
         self,
         name: str,
         workspace_path: str,
-        tar_body: bytes,
+        tar_body: bytes | Iterable[bytes],
+        content_length: int | None = None,
     ) -> None:
         """Copy a generated tar stream into a container workspace."""
+        headers = {"Content-Type": "application/x-tar"}
+        if isinstance(tar_body, bytes):
+            content_length = len(tar_body)
+        if content_length is not None:
+            headers["Content-Length"] = str(content_length)
         response = self._c.request(
             "PUT",
             f"/libpod/containers/{name}/archive",
             params={"path": workspace_path, "pause": "false"},
             content=tar_body,
-            headers={"Content-Type": "application/x-tar"},
+            headers=headers,
         )
         try:
             self._check_response(response, "Podman archive PUT")
@@ -738,13 +757,22 @@ class PodmanClient(ContainerRuntime):
         return r.status_code == 204
 
     def worker_run(
-        self, volume_name: str, cmd: list[str], timeout: float = 60.0
+        self,
+        volume_name: str,
+        cmd: list[str],
+        timeout: float = 60.0,
+        *,
+        env: dict | None = None,
+        writable: bool = False,
+        tmpfs_size_bytes: int | None = None,
     ) -> bytes:
         """Run one command in a disposable worker container and return stdout.
 
         Spins up ``localhost/gs-worker:latest`` with ``volume_name`` mounted
-        read-only at ``/workspace``, runs ``cmd``, waits for exit, and always
-        removes the container. Equivalent to::
+        at ``/workspace``, runs ``cmd``, waits for exit, and always removes
+        the container. The default mount is read-only; writable commands can
+        request the crew's uid and a per-operation bounded tmpfs. Equivalent
+        to::
 
             podman run --rm -v {volume_name}:/workspace:ro \
                 localhost/gs-worker:latest {cmd}
@@ -755,9 +783,9 @@ class PodmanClient(ContainerRuntime):
             command exits non-zero;
           * ``RuntimeError`` for any other Podman/infra failure.
 
-        The container mounts the volume ``:ro`` and joins no network. Because
-        it is short-lived and read-only, concurrent workers on the same volume
-        are safe and need no coordination.
+        The container joins no network. Writable mode runs as uid/gid 1000,
+        matching the crew workspace owner. A requested tmpfs is size-capped by
+        Podman and is isolated to this disposable operation.
         """
         if not self._image_exists(WORKER_IMAGE):
             raise WorkerImageMissing(
@@ -766,23 +794,40 @@ class PodmanClient(ContainerRuntime):
             )
 
         name = f"gs-worker-{secrets.token_hex(8)}"
+        volume = {"name": volume_name, "dest": WORKER_MOUNT}
+        if not writable:
+            volume["options"] = ["ro"]
         spec = {
             "name": name,
             "image": WORKER_IMAGE,
             "command": cmd,
             "remove": True,  # auto-remove on exit (--rm)
             "netns": {"nsmode": "none"},
-            "volumes": [
-                {
-                    "name": volume_name,
-                    "dest": WORKER_MOUNT,
-                    "options": ["ro"],
-                },
-            ],
+            "volumes": [volume],
             # Prevent privilege escalation and drop high-risk capabilities.
             "no_new_privileges": True,
             "cap_drop": ["CAP_NET_RAW", "CAP_SYS_ADMIN"],
         }
+        if writable:
+            spec["user"] = "1000:1000"
+        if env:
+            spec["env"] = env
+        if tmpfs_size_bytes is not None:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            if tmpfs_size_bytes <= 0:
+                raise ValueError("tmpfs size must be positive")
+            bounded_size = tmpfs_size_bytes // page_size * page_size
+            if bounded_size <= 0:
+                raise ValueError(f"tmpfs size must be at least {page_size} bytes")
+            spec["mounts"] = [{
+                "type": "tmpfs",
+                "source": "tmpfs",
+                "destination": BUNDLE_STORAGE_ROOT,
+                "options": [
+                    "rw", "nosuid", "nodev", "noexec", "mode=1777",
+                    f"size={bounded_size}",
+                ],
+            }]
 
         created = False
         try:

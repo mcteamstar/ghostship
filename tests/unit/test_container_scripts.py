@@ -21,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 # Add container_scripts to sys.path so inject_policy / transfer_raw import cleanly.
 _SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "transport" / "container_scripts"
@@ -151,6 +152,77 @@ class TestTransferRaw(unittest.TestCase):
             extracted_file = pathlib.Path(dest_path) / "readme.txt"
             self.assertTrue(extracted_file.exists())
             self.assertEqual(extracted_file.read_bytes(), b"archive content")
+
+    def test_archive_exact_member_and_output_budgets_succeed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source, stage = self._stage(
+                str(workspace), "stage_exact_archive", _make_tar({"exact.txt": b"1234"})
+            )
+            destination = workspace / "out"
+            _transfer_raw.transfer(
+                source,
+                str(destination),
+                stage,
+                unpack=True,
+                workspace=str(workspace),
+                max_archive_bytes=4,
+                max_archive_members=1,
+            )
+            self.assertEqual((destination / "exact.txt").read_bytes(), b"1234")
+
+    def test_archive_output_over_budget_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            destination = workspace / "out"
+            destination.mkdir(parents=True)
+            preserved = destination / "keep.txt"
+            preserved.write_bytes(b"keep this")
+            source, stage = self._stage(
+                str(workspace), "stage_over_archive_bytes", _make_tar({"large.txt": b"12345"})
+            )
+            with self.assertRaises(_transfer_raw.TransferBudgetExceeded):
+                _transfer_raw.transfer(
+                    source,
+                    str(destination),
+                    stage,
+                    unpack=True,
+                    workspace=str(workspace),
+                    max_archive_bytes=4,
+                    max_archive_members=1,
+                )
+            self.assertEqual(preserved.read_bytes(), b"keep this")
+            self.assertFalse((destination / "large.txt").exists())
+            self.assertFalse(os.path.exists(stage))
+
+    def test_archive_member_count_over_budget_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source, stage = self._stage(
+                str(workspace),
+                "stage_over_archive_members",
+                _make_tar({"one.txt": b"1", "two.txt": b"2"}),
+            )
+            destination = workspace / "out"
+            with self.assertRaises(_transfer_raw.TransferBudgetExceeded):
+                _transfer_raw.transfer(
+                    source,
+                    str(destination),
+                    stage,
+                    unpack=True,
+                    workspace=str(workspace),
+                    max_archive_bytes=2,
+                    max_archive_members=1,
+                )
+            self.assertFalse(destination.exists())
+            self.assertFalse(os.path.exists(stage))
+
+    def test_bundle_storage_rejects_unbounded_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(RuntimeError):
+                _transfer_raw._bundle_storage_capacity(tmpdir, 1024 * 1024)
 
     def test_stage_cleaned_on_error(self):
         """Stage directory is removed even when transfer fails."""
@@ -309,6 +381,21 @@ class TestTransferRaw(unittest.TestCase):
             stdout=subprocess.DEVNULL,
         )
 
+    def _transfer_bundle(self, source: str, destination: pathlib.Path, stage: str,
+                         workspace: pathlib.Path, force: bool = False) -> str:
+        with patch.object(_transfer_raw, "_bundle_storage_capacity", return_value=16 * 1024 * 1024):
+            return _transfer_raw.transfer(
+                source,
+                str(destination),
+                stage,
+                unpack=False,
+                workspace=str(workspace),
+                bundle=True,
+                force=force,
+                bundle_storage_root=str(workspace.parent),
+                bundle_storage_limit_bytes=16 * 1024 * 1024,
+            )
+
     def test_bundle_clone_accepts_nested_destination(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = pathlib.Path(tmpdir) / "workspace"
@@ -316,14 +403,7 @@ class TestTransferRaw(unittest.TestCase):
             source, stage = self._stage(str(workspace), "stage_bundle", b"")
             self._make_bundle(pathlib.Path(tmpdir) / "source-repo", pathlib.Path(source))
             destination = workspace / "nested" / "repo"
-            result = _transfer_raw.transfer(
-                source,
-                str(destination),
-                stage,
-                unpack=False,
-                workspace=str(workspace),
-                bundle=True,
-            )
+            result = self._transfer_bundle(source, destination, stage, workspace)
             self.assertIn("cloned to", result)
             self.assertEqual((destination / "README.txt").read_text(), "bundle content\n")
             self.assertFalse(os.path.exists(stage))
@@ -337,15 +417,7 @@ class TestTransferRaw(unittest.TestCase):
             (destination / "old.txt").write_text("preserve until clone succeeds")
             source, stage = self._stage(str(workspace), "stage_force_bundle", b"")
             self._make_bundle(pathlib.Path(tmpdir) / "force-source", pathlib.Path(source))
-            _transfer_raw.transfer(
-                source,
-                str(destination),
-                stage,
-                unpack=False,
-                workspace=str(workspace),
-                bundle=True,
-                force=True,
-            )
+            self._transfer_bundle(source, destination, stage, workspace, force=True)
             self.assertFalse((destination / "old.txt").exists())
             self.assertEqual((destination / "README.txt").read_text(), "bundle content\n")
             self.assertFalse(os.path.exists(stage))
@@ -359,15 +431,39 @@ class TestTransferRaw(unittest.TestCase):
             preserved.write_bytes(b"keep this")
             source, stage = self._stage(str(workspace), "stage_bad_bundle", b"not a git bundle")
             with self.assertRaises(RuntimeError):
-                _transfer_raw.transfer(
-                    source,
-                    str(destination),
-                    stage,
-                    unpack=False,
-                    workspace=str(workspace),
-                    bundle=True,
-                    force=True,
-                )
+                self._transfer_bundle(source, destination, stage, workspace, force=True)
+            self.assertEqual(preserved.read_bytes(), b"keep this")
+            self.assertFalse(os.path.exists(stage))
+
+    def test_wire_acceptable_bundle_over_storage_budget_preserves_forced_destination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            destination = workspace / "repo"
+            destination.mkdir(parents=True)
+            preserved = destination / "old.txt"
+            preserved.write_bytes(b"keep this")
+            source, stage = self._stage(str(workspace), "stage_full_bundle", b"")
+            self._make_bundle(pathlib.Path(tmpdir) / "limited-source", pathlib.Path(source))
+            self.assertLess(pathlib.Path(source).stat().st_size, 256 * 1024 * 1024)
+            with patch.object(
+                _transfer_raw, "_bundle_storage_capacity", return_value=8
+            ), patch.object(
+                _transfer_raw,
+                "_run_git",
+                side_effect=RuntimeError("fatal: No space left on device"),
+            ):
+                with self.assertRaises(_transfer_raw.TransferBudgetExceeded):
+                    _transfer_raw.transfer(
+                        source,
+                        str(destination),
+                        stage,
+                        unpack=False,
+                        workspace=str(workspace),
+                        bundle=True,
+                        force=True,
+                        bundle_storage_root=tmpdir,
+                        bundle_storage_limit_bytes=8,
+                    )
             self.assertEqual(preserved.read_bytes(), b"keep this")
             self.assertFalse(os.path.exists(stage))
 
