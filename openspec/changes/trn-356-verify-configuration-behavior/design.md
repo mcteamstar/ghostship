@@ -16,6 +16,6 @@ A helper-only assertion can miss a disconnected caller. Exercise tool or startup
 
 - `configuration/yaml` covers configuration precedence and explicit overrides.
 - `transport/proxy-hosting` covers public URLs and crew CORS origin wiring.
-- `transport/bind-guard` covers startup authentication admission.
+- `installation` covers non-loopback API-key startup enforcement and the explicit opt-out.
 - `file-transfer/supply` covers presigned upload URLs.
 - `file-transfer/evac` covers presigned download URLs.
