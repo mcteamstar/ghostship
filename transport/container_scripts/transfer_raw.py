@@ -31,6 +31,52 @@ class TransferBudgetExceeded(ValueError):
     """An upload exceeded an operator-configured output/storage budget."""
 
 
+# tarfile consumes extended headers before yielding a member to the caller.
+_ARCHIVE_METADATA_BYTES = 4 * 1024 * 1024
+_ARCHIVE_METADATA_READ_BYTES = 64 * 1024
+_ARCHIVE_METADATA_DEPTH = 16
+_ARCHIVE_EXTENSION_TYPES = {
+    tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK, tarfile.GNUTYPE_SPARSE,
+}
+
+
+class _ArchiveMetadataReader:
+    def __init__(self, source) -> None:
+        self.source = source
+        self.remaining = _ARCHIVE_METADATA_BYTES
+        self.depth = 0
+
+    def read(self, size: int) -> bytes:
+        if not 0 <= size <= min(self.remaining, _ARCHIVE_METADATA_READ_BYTES):
+            raise TransferBudgetExceeded("archive extended metadata exceeds its byte limit")
+        data = self.source.read(size)
+        self.remaining -= len(data)
+        return data
+
+    def __getattr__(self, name: str):
+        return getattr(self.source, name)
+
+
+class _BoundedTarInfo(tarfile.TarInfo):
+    def _proc_member(self, archive):
+        if self.type not in _ARCHIVE_EXTENSION_TYPES:
+            return super()._proc_member(archive)
+        previous = archive.fileobj
+        reader = getattr(archive, "_transfer_metadata_reader", None)
+        if reader is None:
+            reader = archive._transfer_metadata_reader = _ArchiveMetadataReader(previous)
+        if reader.depth >= _ARCHIVE_METADATA_DEPTH:
+            raise TransferBudgetExceeded("archive extended headers are nested too deeply")
+        reader.depth += 1
+        archive.fileobj = reader
+        try:
+            return super()._proc_member(archive)
+        finally:
+            archive.fileobj = previous
+            reader.depth -= 1
+
+
 def _archive_entries(
     archive: tarfile.TarFile,
     max_members: int,
@@ -47,6 +93,8 @@ def _archive_entries(
             raise TransferBudgetExceeded(
                 f"archive exceeds the {max_members}-member limit"
             )
+        # The parser has already applied these fields to the member.
+        member.pax_headers = {}
         if member.name.startswith("/"):
             raise UnsafeTransferPath(f"Archive member is absolute: {member.name!r}")
         parts = [part for part in member.name.split("/") if part not in ("", ".")]
@@ -115,7 +163,7 @@ def _stage_archive(
 ):
     """Validate and fully stage archive contents before destination mutation."""
     with os.fdopen(os.dup(source_fd), "rb") as source:
-        with tarfile.open(fileobj=source, mode="r:*") as archive:
+        with tarfile.open(fileobj=source, mode="r:*", tarinfo=_BoundedTarInfo) as archive:
             entries = _archive_entries(archive, max_members, max_output_bytes)
             preflight_path(root_fd, destination_parts, "directory")
             for _, member_parts, kind in entries:

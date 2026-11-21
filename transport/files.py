@@ -23,11 +23,13 @@ import secrets
 import tarfile
 import tempfile
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
 from urllib.parse import quote
 
 import httpx2 as httpx
+from anyio.to_thread import run_sync
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -308,7 +310,7 @@ async def _stream_request_body(request: Request, output: BinaryIO, max_bytes: in
             total += len(chunk)
             if total > max_bytes:
                 raise UploadTooLarge(f"Upload exceeds the {max_bytes}-byte request limit")
-            output.write(chunk)
+            await run_sync(output.write, chunk)
     except UploadTooLarge:
         raise
     except Exception as exc:
@@ -317,8 +319,7 @@ async def _stream_request_body(request: Request, output: BinaryIO, max_bytes: in
         close_stream = getattr(stream, "aclose", None)
         if close_stream is not None:
             await close_stream()
-    output.flush()
-    output.seek(0)
+    await run_sync(output.seek, 0)
     return total
 
 
@@ -882,7 +883,7 @@ async def _handle_file_put(request: Request) -> Response:
             return PlainTextResponse("Empty body", status_code=400)
 
         try:
-            crew = _lifecycle._ensure_crew_running(crew, crew_id)
+            crew = await run_sync(_lifecycle._ensure_crew_running, crew, crew_id)
         except (ValueError, KeyError, RuntimeError) as e:
             return PlainTextResponse(str(e), status_code=404)
 
@@ -896,7 +897,8 @@ async def _handle_file_put(request: Request) -> Response:
             fallback = f"cloned to {destination}" if bundle else f"wrote to {destination}"
 
         try:
-            result = _transfer_upload(
+            result = await run_sync(partial(
+                _transfer_upload,
                 podman,
                 _lifecycle._to_crew(crew_id, crew).container,
                 ws,
@@ -907,7 +909,7 @@ async def _handle_file_put(request: Request) -> Response:
                 force,
                 body_size=body_size,
                 volume_name=podman.volume_name_for_crew(crew_id),
-            )
+            ))
             return PlainTextResponse(result.strip() or fallback)
         except UploadBudgetExceeded as e:
             return PlainTextResponse(str(e), status_code=413)

@@ -18,6 +18,7 @@ import io
 import os
 import sys
 import time
+import threading
 import unittest
 
 # Fix GA_FILE_SECRET before any files.py import so _load_or_create_file_secret
@@ -667,7 +668,10 @@ class TestFilePutHandler(unittest.TestCase):
         fake_crew_obj = MagicMock()
         fake_crew_obj.container = "gs-test-crew"
 
+        request_thread = threading.get_ident()
+
         def capture_upload(*args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), request_thread)
             self.assertEqual(args[4].read(), b"1234")
             self.assertEqual(kwargs["body_size"], 4)
             return "ok"

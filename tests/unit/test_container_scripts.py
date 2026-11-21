@@ -172,6 +172,27 @@ class TestTransferRaw(unittest.TestCase):
             )
             self.assertEqual((destination / "exact.txt").read_bytes(), b"1234")
 
+    def test_compressed_pax_metadata_is_bounded_before_parsing(self):
+        for value_size in (16, 128 * 1024):
+            with self.subTest(value_size=value_size), tempfile.TemporaryDirectory() as workspace:
+                data = io.BytesIO()
+                with tarfile.open(fileobj=data, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
+                    member = tarfile.TarInfo("file.txt")
+                    member.pax_headers = {"comment": "x" * value_size}
+                    member.size = 1
+                    archive.addfile(member, io.BytesIO(b"x"))
+                source, stage = self._stage(workspace, "stage", data.getvalue())
+                destination = pathlib.Path(workspace) / "out"
+                arguments = (source, str(destination), stage)
+                if value_size > 16:
+                    with self.assertRaisesRegex(_transfer_raw.TransferBudgetExceeded, "extended metadata"):
+                        _transfer_raw.transfer(*arguments, unpack=True, workspace=workspace)
+                    self.assertFalse(destination.exists())
+                else:
+                    _transfer_raw.transfer(*arguments, unpack=True, workspace=workspace)
+                    self.assertEqual((destination / "file.txt").read_bytes(), b"x")
+                self.assertFalse(os.path.exists(stage))
+
     def test_archive_output_over_budget_preserves_existing_destination(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = pathlib.Path(tmpdir) / "workspace"
