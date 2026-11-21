@@ -16,3 +16,11 @@ Give each task-operation test its own service state and consolidate assertions f
 ## Risks / Trade-offs
 
 Consolidation can hide the edge cases that gave separate tests value. Preserve externally observable results and gateway side-effect assertions even when fewer test cases cover them.
+
+## Spec references
+
+- `task-orchestration/dispatch` covers single and batch inputs, partial acceptance and slot routing.
+- `task-orchestration/pickup` covers polling, lost members and mailbox results.
+- `task-orchestration/steer` covers steer and continuation behavior.
+- `task-orchestration/timestamps` covers shared task timestamps and expiry.
+- `testing/mcp` covers MCP adapter coverage.

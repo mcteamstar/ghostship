@@ -27,3 +27,12 @@ See proposal.md for motivation and intended trust boundaries. Compose places Cad
 - [Container UID/GID differences prevent socket access] → Verify identities against the actual image and test a fresh install.
 - [Socket removal disrupts route reconciliation] → Cover registration, removal, and startup reconciliation.
 - [Internal dashboard callers depended on the secret alone] → Return 401 before any crew proxy connection and test that path.
+
+## Proxy ownership
+
+The two deltas target the first two capabilities. The HTTP proxy gate uses the existing session contract and preserves dashboard routing.
+
+- `transport/caddy-proxy` covers Caddy admin listener and socket access.
+- `transport/dashboard-proxy` covers Transport UI proxy admission for HTTP requests.
+- `transport/dashboard-session-auth` covers issuance, expiry and revocation of dashboard sessions.
+- `transport/dashboard-routing` covers public dashboard listener and forwarding behavior.

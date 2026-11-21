@@ -11,3 +11,11 @@ Use the real link-producing MCP entry points and parse each URL. Check that an e
 ## Risks / Trade-offs
 
 A helper-only assertion can miss a disconnected caller. Exercise tool or startup entry points for each wiring claim.
+
+## Spec references
+
+- `configuration/yaml` covers configuration precedence and explicit overrides.
+- `transport/proxy-hosting` covers public URLs and crew CORS origin wiring.
+- `transport/bind-guard` covers startup authentication admission.
+- `file-transfer/supply` covers presigned upload URLs.
+- `file-transfer/evac` covers presigned download URLs.

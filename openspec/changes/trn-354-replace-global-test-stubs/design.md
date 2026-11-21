@@ -11,3 +11,8 @@ Treat collection as part of the isolation boundary. Remove per-file sys.modules 
 ## Risks / Trade-offs
 
 A broad stub removal can expose import-time singleton state and accidental I/O. Migrate one dependency at a time and exercise mixed collection in both orders.
+
+## Spec references
+
+- `testing/workflow` covers safe unit runs, integration workflow and Podman-backed verification.
+- `testing/crew-gateway` covers gateway outcomes that must remain covered after the stub removal.

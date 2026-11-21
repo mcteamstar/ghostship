@@ -11,3 +11,11 @@ Move the completion harness into a fixture or setup-only base with no collected 
 ## Risks / Trade-offs
 
 Shared fixtures can conceal backend differences or leak pending login state. Assert backend and profile targeting in each case and check isolated collection.
+
+## Spec references
+
+- `auth/backend-login` covers login endpoints and pending-flow behavior.
+- `auth/backend-credentials` covers credential replacement, status and logout by backend and profile.
+- `auth/credential-profiles` covers default and named profile scoping.
+- `auth/crew-credentials` covers delivery to matching crews.
+- `testing/login` covers login lifecycle and concurrency coverage.

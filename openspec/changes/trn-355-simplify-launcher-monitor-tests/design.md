@@ -11,3 +11,11 @@ The schedule and idle loops sleep before the first tick. Captain computes its ne
 ## Risks / Trade-offs
 
 A loop extraction can change which failures terminate or skip a tick. Preserve exception scope and verify scheduling before and after each outcome.
+
+## Spec references
+
+- `crew-lifecycle/startup` covers generation-stable restart leader and waiter outcomes.
+- `crew-lifecycle/idle-and-wake` covers idle-stop and concurrent wake behavior.
+- `task-orchestration/scheduling` covers recurring schedule and recovery behavior.
+- `testing/launcher` covers launcher test coverage.
+- `testing/monitors` covers single-iteration coverage for schedule, idle and Captain monitors.
