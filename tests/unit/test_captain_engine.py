@@ -814,6 +814,8 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
         # _crew_api_with_recovery again; make it succeed for the re-dispatch.
         call_count = [0]
         def side_effect(*args, **kwargs):
+            if args[2] == "GET":
+                return {}
             call_count[0] += 1
             if call_count[0] == 1:
                 raise exc  # first call: raise 400
@@ -845,6 +847,89 @@ class TestSteerCaptainCheckinHttpxErrors(unittest.TestCase):
         # Should have returned the new task id (re-dispatched)
         self.assertEqual(result, new_task_id)
         self.assertEqual(call_count[0], 2)  # first call raised, second succeeded
+
+    def test_accepted_continuation_later_fails_restore(self):
+        import copy
+        from transport import captain_engine
+
+        persisted = {"crews": {self.crew_id: self.crew_dict_with_sched}}
+        self._schedule["enabled"] = True
+        failed = {
+            "done": True,
+            "outcome": "failed",
+            "error": "RuntimeError: resume_failed: session/load did not restore conversation",
+        }
+        with (
+            patch.object(_reg_mod, "_load_registry", side_effect=lambda: copy.deepcopy(persisted)),
+            patch.object(_reg_mod, "_save_registry", side_effect=persisted.update),
+            patch.object(captain_engine, "_lc") as lifecycle,
+            patch.object(captain_engine, "_dispatch_captain_checkin", return_value="replacement") as dispatch,
+        ):
+            api = lifecycle.return_value._crew_api_with_recovery
+            api.side_effect = [{}, {"id": "accepted"}, failed]
+            self.assertEqual(captain_engine._steer_captain_checkin({}, self.crew_id), "accepted")
+            self.assertEqual(captain_engine._steer_captain_checkin({}, self.crew_id), "replacement")
+            dispatch.assert_called_once_with({}, self.crew_id, model=None, recovering=True)
+            self.assertEqual(api.call_args.args[2:], ("GET", "/api/spawn/accepted"))
+            saved = persisted["crews"][self.crew_id]["schedules"][0]
+            self.assertEqual(saved["current_task_id"], "replacement")
+            self.assertNotIn("restore_recovery", saved)
+
+    def test_active_raven_is_not_continued(self):
+        from transport import captain_engine
+
+        with patch.object(captain_engine, "_dispatch_captain_checkin") as dispatch:
+            result = self._call_steer(api_side_effect=[{"done": False}])
+        self.assertEqual(result, "task-abc")
+        dispatch.assert_not_called()
+
+    def test_recovery_prompt_fits_gateway_task_limit(self):
+        from transport import captain_engine
+
+        lifecycle = MagicMock()
+        lifecycle._to_crew.return_value = self.crew_obj
+        lifecycle._spawn_backend.return_value = "codex"
+        lifecycle._crew_api.return_value = {"id": "fresh"}
+        with (
+            patch.object(captain_engine, "_lc", return_value=lifecycle),
+            patch.object(captain_engine, "_check_in_memory_pressure", return_value=None),
+            patch.object(_reg_mod, "_load_registry", return_value={"crews": {
+                self.crew_id: self.crew_dict_with_sched,
+            }}),
+            patch.object(_reg_mod, "_save_registry"),
+        ):
+            result = captain_engine._dispatch_captain_checkin(
+                self.crew_dict_with_sched, self.crew_id, recovering=True,
+            )
+        self.assertEqual(result, "fresh")
+        prompt = lifecycle._crew_api.call_args.kwargs["json"]["task"]
+        self.assertLessEqual(len(prompt), 5000)
+        self.assertIn("Reconcile durable progress", prompt)
+        lifecycle._crew_api_with_recovery.assert_not_called()
+
+    def test_explicit_continue_failure_starts_fresh_raven(self):
+        from transport import captain_engine
+
+        exc = self._make_httpx_error(500, "/api/spawn/task-abc/continue")
+        exc.response.json.return_value = {"error": {"code": "resume_failed"}}
+        with patch.object(captain_engine, "_dispatch_captain_checkin", return_value="fresh") as dispatch:
+            result = self._call_steer(api_side_effect=[{}, exc])
+        self.assertEqual(result, "fresh")
+        self.assertTrue(dispatch.call_args.kwargs["recovering"])
+
+    def test_memory_pressure_leaves_recovery_deferred(self):
+        from transport import captain_engine
+
+        failed = {"done": True, "outcome": "failed", "error": "resume_failed: restore"}
+        with patch.object(
+            captain_engine, "_dispatch_captain_checkin",
+            side_effect=captain_engine._MemoryPressureSkip("memory pressure"),
+        ):
+            with self.assertRaises(captain_engine._MemoryPressureSkip):
+                self._call_steer(api_side_effect=[failed])
+        saved = self.crew_dict_with_sched["schedules"][0]
+        self.assertIsNone(saved["current_task_id"])
+        self.assertEqual(saved["restore_recovery"], "deferred")
 
     def test_500_on_continue_is_propagated(self):
         """HTTPStatusError 500 is NOT treated as continue-400; it propagates."""

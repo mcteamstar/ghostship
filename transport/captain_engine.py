@@ -213,10 +213,22 @@ def _record_memory_pressure_cycle(crew_id: str) -> None:
         )
 
 
+def _is_raven_restore_failure(error: object) -> bool:
+    if isinstance(error, dict):
+        return error.get("code") == "resume_failed" or _is_raven_restore_failure(
+            error.get("error") or error.get("detail")
+        )
+    if isinstance(error, str):
+        return error.startswith(("resume_failed:", "RuntimeError: resume_failed:"))
+    return False
+
+
 def _dispatch_captain_checkin(
     crew,
     crew_id: str,
     model: str | None = None,
+    *,
+    recovering: bool = False,
 ) -> str:
     """Dispatch Raven into its member-raven slot for a Captain check-in.
 
@@ -263,6 +275,16 @@ def _dispatch_captain_checkin(
         "keep": True,
         "parent_session": "dashboard:member-raven",
     }
+    if recovering:
+        # Replace the introduction to stay within the gateway's task size limit.
+        _, _, instructions = _CAPTAIN_CHECKIN_TASK.partition("\n\n")
+        spawn_body["task"] = (
+            "You are Raven. The Captain is this recurring loop. Your prior session "
+            "failed to restore. Read the standing order in /var/mail/captain. "
+            "Reconcile durable progress, mailbox intents and gateway task IDs before "
+            "dispatching. Hold any work whose admission or progress is uncertain.\n\n"
+            + instructions
+        )
     # Deterministic model selection for Claude-backend crews (TRN-210 D3).
     # raven.json carries a GPT-specific model, so on a Claude-backend crew a
     # dispatch with model=None would otherwise rely on raven.json's model (wrong
@@ -327,7 +349,15 @@ def _dispatch_captain_checkin(
     if (denied := _kiro_signin.dispatch_guard(crew_id, crew)) is not None:
         raise RuntimeError(denied["message"])
     try:
-        result = _lc()._crew_api_with_recovery(crew, crew_id, "POST", "/api/spawn", json=spawn_body)
+        lifecycle = _lc()
+        if recovering:
+            # A lost response may still have admitted Raven. Do not replay this POST.
+            spawn_body["backend"] = lifecycle._spawn_backend(crew)
+            result = lifecycle._crew_api(crew, "POST", "/api/spawn", json=spawn_body)
+        else:
+            result = lifecycle._crew_api_with_recovery(
+                crew, crew_id, "POST", "/api/spawn", json=spawn_body
+            )
     except httpx.HTTPStatusError as exc:
         if _is_memory_pressure_refusal(exc.response):
             logger.warning(
@@ -346,11 +376,46 @@ def _dispatch_captain_checkin(
     return task_id
 
 
+def _recover_raven_checkin(crew, crew_id, schedule, failed_id, model) -> str | None:
+    with registry:
+        current = next(
+            (s for s in registry.get_schedules(crew_id) if s.get("type") == "captain"),
+            None,
+        )
+        if (current is None or current != schedule or not current.get("enabled")
+                or current.get("current_task_id") != failed_id
+                or current.get("restore_recovery") == "awaiting_acceptance"):
+            return current.get("current_task_id") if current else None
+        current["current_task_id"] = None
+        current["restore_recovery"] = "awaiting_acceptance"
+
+    try:
+        task_id = _dispatch_captain_checkin(crew, crew_id, model=model, recovering=True)
+    except _MemoryPressureSkip:
+        _record_raven_recovery(crew_id, current, None)
+        raise
+    # Uncertain spawn acceptance leaves the marker in place.
+    _record_raven_recovery(crew_id, current, task_id)
+    return task_id
+
+
+def _record_raven_recovery(crew_id, expected, task_id):
+    with registry:
+        for schedule in registry.get_schedules(crew_id):
+            if schedule == expected:
+                if task_id is None:
+                    schedule["restore_recovery"] = "deferred"
+                else:
+                    schedule["current_task_id"] = task_id
+                    schedule.pop("restore_recovery", None)
+                break
+
+
 def _steer_captain_checkin(
     crew,
     crew_id: str,
     model: str | None = None,
-) -> str:
+) -> str | None:
     """Continue or re-dispatch the Captain check-in for crew_id.
 
     Reads current_task_id from the registry and calls POST /api/spawn/{id}/continue.
@@ -373,9 +438,30 @@ def _steer_captain_checkin(
     saved_model = captain_sched.get("model") if captain_sched else None
     effective_model = model or saved_model
 
+    recovery_state = captain_sched.get("restore_recovery") if captain_sched else None
+    if recovery_state == "awaiting_acceptance":
+        logger.warning("Captain recovery for %s awaits spawn reconciliation", crew_id)
+        return current_task_id
+    if recovery_state == "deferred" and not current_task_id:
+        return _recover_raven_checkin(crew, crew_id, captain_sched, None, effective_model)
+
     if not current_task_id:
         # No task yet — fresh dispatch
         return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+
+    path = f"/api/spawn/{current_task_id}"
+    try:
+        task_info = _lc()._crew_api_with_recovery(crew, crew_id, "GET", path)
+    except (httpx.HTTPStatusError, httpx.ConnectError, RuntimeError, OSError):
+        task_info = None  # Preserve existing continuation handling.
+    if isinstance(task_info, dict) and task_info.get("done") is False:
+        return current_task_id
+    if (isinstance(task_info, dict) and task_info.get("done") is True
+            and task_info.get("outcome") == "failed"
+            and _is_raven_restore_failure(task_info.get("error"))):
+        return _recover_raven_checkin(
+            crew, crew_id, captain_sched, current_task_id, effective_model
+        )
 
     # Refresh .dashboard_cookie so Raven's cookie auth stays current before continuing.
     # Use internal_cookie (loopback-bound) — skip if absent, _refresh_cookie will populate.
@@ -399,6 +485,15 @@ def _steer_captain_checkin(
         )
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
+        if exc.request.url.path.endswith("/continue"):
+            try:
+                error = exc.response.json()
+            except ValueError:
+                error = None
+            if _is_raven_restore_failure(error):
+                return _recover_raven_checkin(
+                    crew, crew_id, captain_sched, current_task_id, effective_model
+                )
         # TRN-285 M-4: classify by inspecting exc.response.status_code and
         # exc.request.url.path directly — not by string-sniffing the message.
         #
@@ -422,10 +517,16 @@ def _steer_captain_checkin(
                     crew_id, clear_exc,
                 )
             return _dispatch_captain_checkin(crew, crew_id, model=effective_model)
+        if status_code == 409 and exc.request.url.path.endswith("/continue"):
+            return current_task_id
         # Any other HTTPStatusError (e.g. 500) is propagated to the caller.
         raise
     except Exception as exc:
         err_str = str(exc)
+        if _is_raven_restore_failure(err_str):
+            return _recover_raven_checkin(
+                crew, crew_id, captain_sched, current_task_id, effective_model
+            )
         # /continue returns 404 with code "conversation_gone" when the session
         # is no longer available (container restart, etc.).
         if "conversation_gone" in err_str or "404" in err_str:
@@ -768,6 +869,8 @@ def _captain_do_status(crew_id: str) -> dict:
     status_result["admiral_mail"] = admiral_mail
     status_result["agent_mail"] = agent_mail
     status_result["current_task_id"] = current_task_id
+    if recovery := captain_entry.get("restore_recovery"):
+        status_result["restore_recovery"] = recovery
 
     # Report sentinel file presence (TRN-243) — best-effort, no error on failure.
     try:
