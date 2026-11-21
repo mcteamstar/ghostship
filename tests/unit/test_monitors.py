@@ -48,6 +48,40 @@ def _make_reg(crews: dict) -> dict:
     return {"crews": crews}
 
 
+class TestMonitorLoopCadence(unittest.TestCase):
+    """The background loops keep their sleep placement around single ticks."""
+
+    def _assert_sleep_before_tick(self, loop, tick, interval):
+        tick_mock = MagicMock()
+        with patch.object(monitors, tick, tick_mock), \
+             patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]) as sleep:
+            with self.assertRaises(StopIteration):
+                getattr(monitors, loop)()
+        self.assertEqual(sleep.call_args_list[0].args, (interval,))
+        self.assertEqual(sleep.call_count, 2)
+        tick_mock.assert_called_once_with()
+
+    def test_schedule_and_idle_loops_sleep_before_first_tick(self):
+        self._assert_sleep_before_tick(
+            "_schedule_monitor", "_schedule_monitor_tick",
+            monitors._SCHEDULE_MONITOR_INTERVAL,
+        )
+        with patch.object(monitors, "GA_IDLE_TIMEOUT_SECS", 17.0):
+            self._assert_sleep_before_tick(
+                "_idle_monitor", "_idle_monitor_tick", 17.0,
+            )
+
+    def test_captain_loop_sleeps_after_tick_until_dynamic_wakeup(self):
+        tick = MagicMock(return_value=115.0)
+        with patch.object(monitors, "_captain_monitor_tick", tick), \
+             patch.object(monitors.time, "time", return_value=100.0), \
+             patch.object(monitors.time, "sleep", side_effect=StopIteration()) as sleep:
+            with self.assertRaises(StopIteration):
+                monitors._captain_monitor()
+        tick.assert_called_once_with()
+        sleep.assert_called_once_with(15.0)
+
+
 # ── Task 1.1: TestCronActivityHelpers ────────────────────────────────────────
 
 
@@ -213,29 +247,14 @@ class TestScheduleMonitorIteration(unittest.TestCase):
         monitors._idle_skip_reasons.clear()
 
     def _run_one_tick(self, crews):
-        """Run exactly one schedule-monitor body iteration.
-
-        _schedule_monitor sleeps at the TOP of its while loop before running the
-        body. We must let the first sleep return normally (the interval wait) and
-        only raise StopIteration on the second sleep (the next interval) so the
-        body between them executes exactly once.
-
-        Patches:
-        - time.sleep: returns None on call 1, raises StopIteration on call 2
-        - time.time:  returns self.NOW
-        - _load_registry: returns our scripted registry
-        - _save_registry: no-op
-        """
+        """Run one schedule scan directly with a controlled clock and registry."""
         reg = _make_reg(crews)
 
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
+        with patch.object(monitors.time, "time", return_value=self.NOW), \
              patch.object(_reg_mod, "_load_registry", return_value=reg), \
              patch.object(_reg_mod, "_save_registry"):
-            try:
-                monitors._schedule_monitor()
-            except StopIteration:
-                pass
+            monitors._schedule_monitor_tick()
+        return reg
 
     def test_due_job_calls_crew_api_with_recovery_post(self):
         """Due job → _crew_api_with_recovery called with POST /api/spawn."""
@@ -253,15 +272,7 @@ class TestScheduleMonitorIteration(unittest.TestCase):
         """Due job that fires → next_fire_at advances beyond now."""
         sched = self._make_sched()
         old_nfa = sched["next_fire_at"]
-        reg = _make_reg({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
-             patch.object(_reg_mod, "_load_registry", return_value=reg), \
-             patch.object(_reg_mod, "_save_registry"):
-            try:
-                monitors._schedule_monitor()
-            except StopIteration:
-                pass
+        reg = self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
         # _advance_next_fire_at mutates the sched in the reg dict
         live_scheds = reg["crews"][self.CREW_ID].get("schedules", [])
         live_sched = next((s for s in live_scheds if s.get("job_id") == "job-1"), sched)
@@ -273,9 +284,14 @@ class TestScheduleMonitorIteration(unittest.TestCase):
         sched = self._make_sched()
         old_fire = sched["next_fire_at"]
         self._crew_api_with_recovery.side_effect = GatewayAcceptanceUnknown("response lost")
-        self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
+        crews = {self.CREW_ID: self._make_crew_entry(schedules=[sched])}
+        self._run_one_tick(crews)
         self._crew_api_with_recovery.assert_called_once()
         self.assertGreater(sched["next_fire_at"], old_fire)
+        # A later scan sees the advanced timestamp and must not replay a write
+        # whose acceptance was uncertain.
+        self._run_one_tick(crews)
+        self._crew_api_with_recovery.assert_called_once()
 
     def test_not_yet_due_job_not_fired(self):
         """next_fire_at in future → _crew_api_with_recovery not called."""
@@ -300,15 +316,7 @@ class TestScheduleMonitorIteration(unittest.TestCase):
         self._ensure.side_effect = RuntimeError("container dead")
         sched = self._make_sched()
         old_nfa = sched["next_fire_at"]
-        reg = _make_reg({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
-             patch.object(_reg_mod, "_load_registry", return_value=reg), \
-             patch.object(_reg_mod, "_save_registry"):
-            try:
-                monitors._schedule_monitor()
-            except StopIteration:
-                pass
+        reg = self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
         self._crew_api_with_recovery.assert_not_called()
         live_scheds = reg["crews"][self.CREW_ID].get("schedules", [])
         live_sched = next((s for s in live_scheds if s.get("job_id") == "job-1"), sched)
@@ -318,17 +326,7 @@ class TestScheduleMonitorIteration(unittest.TestCase):
         """Gateway returns job with enabled=false → registry entry disabled, no spawn."""
         self._crew_api.return_value = {"jobs": [{"id": "job-1", "enabled": False}]}
         sched = self._make_sched(job_id="job-1")
-        reg = _make_reg({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
-
-        # We need _load_registry to return the same reg object so mutations land
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
-             patch.object(_reg_mod, "_load_registry", return_value=reg), \
-             patch.object(_reg_mod, "_save_registry"):
-            try:
-                monitors._schedule_monitor()
-            except StopIteration:
-                pass
+        reg = self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
 
         self._crew_api_with_recovery.assert_not_called()
         crew_scheds = reg["crews"][self.CREW_ID].get("schedules", [])
@@ -345,16 +343,7 @@ class TestScheduleMonitorIteration(unittest.TestCase):
     def test_one_shot_job_sets_registry_disabled_and_never_fire_at(self):
         """one_shot=True job fires → registry entry enabled=False, next_fire_at=_NEVER_FIRE_AT."""
         sched = self._make_sched(one_shot=True, job_id="oneshot-1")
-        reg = _make_reg({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
-
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
-             patch.object(_reg_mod, "_load_registry", return_value=reg), \
-             patch.object(_reg_mod, "_save_registry"):
-            try:
-                monitors._schedule_monitor()
-            except StopIteration:
-                pass
+        reg = self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
 
         crew_scheds = reg["crews"][self.CREW_ID].get("schedules", [])
         oneshot = next((s for s in crew_scheds if s.get("job_id") == "oneshot-1"), None)
@@ -365,16 +354,7 @@ class TestScheduleMonitorIteration(unittest.TestCase):
     def test_one_shot_job_calls_delete_on_gateway(self):
         """one_shot=True job fires → _crew_api_with_recovery called with DELETE /api/crons/<id>."""
         sched = self._make_sched(one_shot=True, job_id="oneshot-1")
-        reg = _make_reg({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
-
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
-             patch.object(_reg_mod, "_load_registry", return_value=reg), \
-             patch.object(_reg_mod, "_save_registry"):
-            try:
-                monitors._schedule_monitor()
-            except StopIteration:
-                pass
+        reg = self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
 
         delete_calls = [
             c for c in self._crew_api_with_recovery.call_args_list
@@ -456,17 +436,10 @@ class TestIdleMonitorIteration(unittest.TestCase):
         monitors._idle_skip_reasons.clear()
 
     def _run_one_tick(self, crews):
-        """Run exactly one idle-monitor body iteration.
-
-        _idle_monitor sleeps at the TOP of its while loop before running the body.
-        Let the first sleep return normally; raise StopIteration on the second.
-
-        Sets self._mock_touch and self._last_reg for post-run inspection.
-        """
+        """Run one idle scan directly with a controlled clock and registry."""
         reg = _make_reg(crews)
 
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
+        with patch.object(monitors.time, "time", return_value=self.NOW), \
              patch.object(monitors, "_get_podman", return_value=self._podman), \
              patch.object(monitors, "_http", self._http), \
              patch.object(monitors, "_touch_crew") as mock_touch, \
@@ -474,10 +447,7 @@ class TestIdleMonitorIteration(unittest.TestCase):
              patch.object(_reg_mod, "_save_registry"):
             self._mock_touch = mock_touch
             self._last_reg = reg
-            try:
-                monitors._idle_monitor()
-            except StopIteration:
-                pass
+            monitors._idle_monitor_tick()
 
     def test_active_task_not_stopped_touch_called(self):
         """Crew with active task (done=False in /api/spawn) → container_stop not called, _touch_crew called."""
@@ -569,6 +539,16 @@ class TestIdleMonitorIteration(unittest.TestCase):
         self._run_one_tick({self.CREW_ID: self._make_crew_entry()})
         self.assertFalse(self._podman.was_called("container_stop"))
 
+    def test_podman_unavailable_fails_open(self):
+        reg = _make_reg({self.CREW_ID: self._make_crew_entry()})
+        with patch.object(monitors.time, "time", return_value=self.NOW), \
+             patch.object(monitors, "_get_podman", side_effect=RuntimeError("Podman unavailable")), \
+             patch.object(_reg_mod, "_load_registry", return_value=reg), \
+             patch.object(_reg_mod, "_save_registry"):
+            monitors._idle_monitor_tick()
+        self.assertFalse(self._podman.was_called("container_stop"))
+        self.assertEqual(self._http._calls, [])
+
     def test_crons_401_mint_cookie_succeeds_retries(self):
         """/api/crons returns 401 AND _mint_cookie returns new cookie → request retried."""
         responses = {"cron_calls": 0}
@@ -648,17 +628,13 @@ class TestIdleMonitorIteration(unittest.TestCase):
             # Subsequent calls (TOCTOU lock block + write-back): refreshed last_used
             return refreshed_reg
 
-        with patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
+        with patch.object(monitors.time, "time", return_value=self.NOW), \
              patch.object(monitors, "_get_podman", return_value=self._podman), \
              patch.object(monitors, "_http", self._http), \
              patch.object(monitors, "_touch_crew"), \
              patch.object(_reg_mod, "_load_registry", side_effect=scripted_load), \
              patch.object(_reg_mod, "_save_registry"):
-            try:
-                monitors._idle_monitor()
-            except StopIteration:
-                pass
+            monitors._idle_monitor_tick()
 
         self.assertFalse(self._podman.was_called("container_stop"))
 
@@ -751,25 +727,16 @@ class TestCaptainMonitorIteration(unittest.TestCase):
         monitors._idle_skip_reasons.clear()
 
     def _run_one_tick(self, crews):
-        """Run exactly one captain-monitor body iteration."""
+        """Run one Captain scan directly with a controlled clock and registry."""
         reg = _make_reg(crews)
-        call_count = [0]
 
-        def fake_sleep(n):
-            call_count[0] += 1
-            if call_count[0] >= 1:
-                raise StopIteration
-
-        with patch.object(monitors.time, "sleep", side_effect=fake_sleep), \
-             patch.object(monitors.time, "time", return_value=self.NOW), \
+        with patch.object(monitors.time, "time", return_value=self.NOW), \
              patch.object(monitors, "_get_podman", return_value=self._podman), \
              patch.object(_reg_mod, "_load_registry", return_value=reg), \
              patch.object(_reg_mod, "_save_registry"):
             self._last_reg = reg
-            try:
-                monitors._captain_monitor()
-            except StopIteration:
-                pass
+            self._next_wakeup = monitors._captain_monitor_tick()
+        return reg
 
     def test_due_entry_calls_steer_captain_checkin(self):
         """Due captain entry, no sentinel → _steer_captain_checkin called, next_fire_at advanced."""
@@ -788,11 +755,22 @@ class TestCaptainMonitorIteration(unittest.TestCase):
         self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
         self._fake_steer.assert_not_called()
 
+    def test_next_wakeup_tracks_earliest_enabled_captain_entry(self):
+        far = self._make_captain_sched(next_fire_at=self.NOW + 400)
+        soon = self._make_captain_sched(next_fire_at=self.NOW + 15)
+        paused = self._make_captain_sched(enabled=False, next_fire_at=self.NOW + 10)
+        result = self._run_one_tick({
+            self.CREW_ID: self._make_crew_entry(schedules=[far, soon, paused]),
+        })
+        self.assertEqual(self._next_wakeup, self.NOW + 15)
+        self.assertEqual(result["crews"][self.CREW_ID]["schedules"][1]["next_fire_at"], self.NOW + 15)
+
     def test_disabled_entry_skipped(self):
         """enabled=False → _steer_captain_checkin not called."""
         sched = self._make_captain_sched(enabled=False)
         self._run_one_tick({self.CREW_ID: self._make_crew_entry(schedules=[sched])})
         self._fake_steer.assert_not_called()
+        self._ensure.assert_not_called()
 
     def test_sentinel_auto_pause(self):
         """Sentinel present → schedule entry enabled=False, _steer_captain_checkin not called."""
@@ -818,9 +796,10 @@ class TestCaptainMonitorIteration(unittest.TestCase):
         self._ensure.side_effect = RuntimeError("container dead")
         sched = self._make_captain_sched()
         old_nfa = sched["next_fire_at"]
-        crews = {self.CREW_ID: self._make_crew_entry(schedules=[sched])}
+        crews = {self.CREW_ID: self._make_crew_entry(status="stopped", schedules=[sched])}
         self._run_one_tick(crews)
         self._fake_steer.assert_not_called()
+        self._ensure.assert_called_once()
         live_scheds = self._last_reg["crews"].get(self.CREW_ID, {}).get("schedules", [])
         live_sched = next((s for s in live_scheds if s.get("type") == "captain"), sched)
         self.assertGreater(live_sched["next_fire_at"], old_nfa)
