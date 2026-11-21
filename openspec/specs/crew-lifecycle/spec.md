@@ -346,23 +346,28 @@ The system's documentation SHALL frame crews as persistent workspaces that survi
 - **THEN** the document SHALL include a note distinguishing idle-stop (automatic, transparent, reversible) from nuke (explicit, permanent, workspace-destroying), and SHALL identify idle-stop as the normal resource management path
 
 ### Requirement: CSRF/cookie auto-recovery on stale credentials
-The transport SHALL detect stale session credentials when `_crew_api` receives a 400, 401, or 403 response from a running container, transparently re-mint the session cookie via `container_exec`, update the registry, and retry the original request exactly once — without user intervention. If the re-mint fails, the transport SHALL escalate to a full container restart via `_ensure_crew_running`.
+
+Transport SHALL refresh credentials and retry once when the gateway explicitly rejects a request for refreshable stale credentials before the operation executes. Plain HTTP status codes alone SHALL NOT establish a stale credential.
 
 #### Scenario: Stale cookie triggers transparent refresh
-- **WHEN** `_crew_api` sends a request to a running crew container and receives a 400, 401, or 403 HTTP response
-- **THEN** the transport mints a new session cookie, updates the registry, and retries the original request with the fresh cookie
+- **WHEN** the gateway confirms the request was refused due to refreshable stale credentials
+- **THEN** Transport mints a fresh cookie, updates the registry, and retries once
 
 #### Scenario: Successful retry after cookie refresh
-- **WHEN** the retried request with the fresh cookie succeeds
-- **THEN** the original caller receives the successful response as if the stale-cookie episode never happened
+- **WHEN** the retried request succeeds
+- **THEN** the caller receives its successful response
 
 #### Scenario: Cookie re-mint fails
-- **WHEN** the transport detects a stale credential and the `_mint_cookie` call returns no valid cookie
-- **THEN** the transport escalates to a full container restart via `_ensure_crew_running` before retrying
+- **WHEN** confirmed stale credentials cannot be refreshed
+- **THEN** Transport may restore the crew and retry only if the operation permits replay or rejection before execution is established
 
 #### Scenario: Retry limit prevents infinite loops
-- **WHEN** a request has already been retried once after credential refresh (or once after container restart)
-- **THEN** the transport does not attempt further retries and surfaces the error to the caller
+- **WHEN** credential refresh or restoration has already been attempted for the request
+- **THEN** further recovery follows the bounded operation policy and surfaces failure when exhausted
+
+#### Scenario: Payload is refused
+- **WHEN** a gateway rejects the request payload without identifying refreshable stale credentials
+- **THEN** Transport reports the rejection without credential refresh or restart
 
 ### Requirement: Gateway liveness probe
 The transport SHALL distinguish between "container stopped" and "container running but gateway unresponsive" by performing a lightweight HTTP probe against the gateway URL before treating a running container as healthy. If the probe fails on a running container, the transport SHALL treat it as a gateway crash and execute the recovery path.
@@ -380,15 +385,24 @@ The transport SHALL distinguish between "container stopped" and "container runni
 - **THEN** it SHALL complete within 5 seconds so a hung gateway does not block the caller indefinitely
 
 ### Requirement: Retry with backoff on transient failures
-The transport SHALL wrap `_crew_api` calls in a retry layer that attempts recovery at most once per failure class. After two consecutive failures, the transport SHALL stop retrying and surface a clear error.
+
+Transport SHALL use a bounded retry policy per gateway operation. Reads may retry after recovery. Side-effecting operations SHALL retry only if the prior attempt is known to have been rejected before execution.
 
 #### Scenario: Connection error triggers restart-then-retry
-- **WHEN** `_crew_api` raises a connection error and the container is running
-- **THEN** the transport restarts the gateway via `_ensure_crew_running` and retries the request once
+- **WHEN** a read encounters a connection error and the running container has an unresponsive gateway
+- **THEN** Transport may restore the gateway and retry the read within its retry budget
 
 #### Scenario: Two consecutive failures surface an error
-- **WHEN** the retry after recovery also fails
-- **THEN** the transport does not attempt further recovery and raises a descriptive error to the caller
+- **WHEN** the recovery retry fails and the retry budget is exhausted
+- **THEN** Transport surfaces a descriptive error
+
+#### Scenario: Write response is lost
+- **WHEN** Transport cannot tell whether the gateway accepted a side-effecting request
+- **THEN** Transport reports unknown acceptance for reconciliation and does not replay the request
+
+#### Scenario: Gateway accepted a task that later fails
+- **WHEN** a continuation returns an accepted task ID and the task later fails
+- **THEN** the task ID and terminal outcome remain available to the caller
 
 ### Requirement: User-facing error messages on recovery failure
 The transport SHALL return a human-readable error message when all recovery attempts are exhausted, stating the crew identifier, what was attempted, and a suggested next action — not a raw HTTP status code or Python traceback.
@@ -799,15 +813,16 @@ After `container_start` returns and before proceeding with post-start setup (coo
 - **THEN** `_ensure_crew_running` detects the missing entry after `container_start`, skips post-start setup, and returns without error or spurious log noise
 
 ### Requirement: /continue path detection uses endswith, not substring match
-`_crew_api_with_recovery` SHALL detect the `/continue` path component using `path.endswith('/continue')` rather than `'continue' in path`, to avoid false matches on future routes containing "continue" as a substring.
+
+Transport SHALL identify continuation by the gateway operation or exact final path component. A path match alone SHALL NOT classify credentials or establish whether a write was accepted.
 
 #### Scenario: /continue path is correctly identified
-- **WHEN** `_crew_api_with_recovery` handles a 400 response on path `/api/spawn/abc123/continue`
-- **THEN** the path is correctly identified as a /continue path and cookie-refresh recovery is skipped
+- **WHEN** the gateway returns HTTP 400 on an actual continuation route
+- **THEN** Transport identifies the continuation and uses structured gateway evidence to classify the failure
 
 #### Scenario: Non-/continue path containing "continue" is not misidentified
-- **WHEN** `_crew_api_with_recovery` handles a 400 response on a hypothetical path `/api/continue-session/abc`
-- **THEN** the path is NOT identified as a /continue path and normal cookie-refresh recovery proceeds
+- **WHEN** the gateway returns HTTP 400 on a route that only contains the word continue in a different path component
+- **THEN** Transport applies that route's operation policy and refreshes credentials only on a confirmed stale credential refusal
 
 ### Requirement: Crew container environment includes KIROCREW_CREW_ID
 

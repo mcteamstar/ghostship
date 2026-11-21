@@ -206,15 +206,16 @@ continue to use the 60-second initial delay.
 
 ### Requirement: _steer_captain_checkin classifies errors by HTTP status code
 
-`_steer_captain_checkin` SHALL classify `httpx.HTTPStatusError` responses by
-inspecting `exc.response.status_code` and `exc.request.url.path`, NOT by
-string-matching on the exception message. This makes the classification robust to
-changes in httpx error message formatting.
+Captain SHALL use structured gateway outcomes for continuation. A bare HTTP 400 SHALL NOT trigger another write. A busy outcome SHALL preserve the tracked task ID.
 
 #### Scenario: 400 on /continue path triggers follow-up steer
-- **WHEN** the gateway returns HTTP 400 on a `/continue` request in `_steer_captain_checkin`
-- **THEN** the transport falls back to a steer (interrupt) call
-- **THEN** the classification is performed via `status_code == 400` check on the exception
+- **WHEN** continuation returns HTTP 400
+- **THEN** Captain starts recovery only if the response confirms a missing session or restore failure; otherwise it surfaces the rejection
+
+#### Scenario: Continuation acceptance is unknown
+- **WHEN** Captain cannot establish whether a continuation or replacement spawn was accepted
+- **THEN** Captain adopts an existing task ID only when unique correlation identifies that attempt
+- **AND** Captain exposes a hold to the operator without replaying the request when correlation is inconclusive
 
 ### Requirement: verify_password handles scrypt resource exceptions
 
