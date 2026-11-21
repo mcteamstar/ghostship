@@ -308,6 +308,8 @@ class TestWorkerRun(unittest.TestCase):
             )
         self.assertEqual(result, b"done")
         spec = create.call_args.kwargs["json"]
+        self.assertFalse(spec.get("remove", False))
+        pc._c.delete.assert_called_once()
         self.assertEqual(spec["user"], "1000:1000")
         self.assertEqual(spec["env"]["GA_TRANSFER_SOURCE"], "/workspace/.stage/payload")
         self.assertEqual(spec["netns"], {"nsmode": "none"})

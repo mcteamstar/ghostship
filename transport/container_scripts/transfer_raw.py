@@ -259,6 +259,20 @@ def _bundle_storage_capacity(storage_root: str, configured_limit_bytes: int) -> 
     raise RuntimeError("bounded bundle storage is unavailable")
 
 
+def _copy_bundle_checkout(source: str, destination: str) -> None:
+    """Copy Git checkout data while retaining the workspace's mount labels."""
+    with os.scandir(source) as entries:
+        for entry in entries:
+            target = os.path.join(destination, entry.name)
+            if entry.is_symlink():
+                os.symlink(os.readlink(entry.path), target)
+            elif entry.is_dir(follow_symlinks=False):
+                os.mkdir(target, stat.S_IMODE(entry.stat(follow_symlinks=False).st_mode))
+                _copy_bundle_checkout(entry.path, target)
+            else:
+                shutil.copy(entry.path, target)
+
+
 def _transfer_bundle(root_fd: int, source_fd: int, destination_parts: list[str],
                      force: bool, destination: str, storage_root: str,
                      storage_capacity: int) -> str:
@@ -356,12 +370,7 @@ def _transfer_bundle(root_fd: int, source_fd: int, destination_parts: list[str],
         os.mkdir(clone_name, 0o700, dir_fd=parent_fd)
         staged_fd = open_dir_chain(root_fd, destination_parts[:-1] + [clone_name])
         try:
-            shutil.copytree(
-                git_clone_dir,
-                f"/proc/self/fd/{staged_fd}",
-                symlinks=True,
-                dirs_exist_ok=True,
-            )
+            _copy_bundle_checkout(git_clone_dir, f"/proc/self/fd/{staged_fd}")
             staged_stat = os.fstat(staged_fd)
             clone_identity = (staged_stat.st_dev, staged_stat.st_ino)
         finally:

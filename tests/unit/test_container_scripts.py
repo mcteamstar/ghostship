@@ -396,6 +396,7 @@ class TestTransferRaw(unittest.TestCase):
                 bundle_storage_limit_bytes=16 * 1024 * 1024,
             )
 
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc/self/fd")
     def test_bundle_clone_accepts_nested_destination(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = pathlib.Path(tmpdir) / "workspace"
@@ -408,6 +409,7 @@ class TestTransferRaw(unittest.TestCase):
             self.assertEqual((destination / "README.txt").read_text(), "bundle content\n")
             self.assertFalse(os.path.exists(stage))
 
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc/self/fd")
     def test_forced_bundle_replacement_waits_until_clone_is_ready(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = pathlib.Path(tmpdir) / "workspace"
@@ -422,6 +424,7 @@ class TestTransferRaw(unittest.TestCase):
             self.assertEqual((destination / "README.txt").read_text(), "bundle content\n")
             self.assertFalse(os.path.exists(stage))
 
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc/self/fd")
     def test_rejected_forced_bundle_preserves_destination_and_cleans_stage(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = pathlib.Path(tmpdir) / "workspace"

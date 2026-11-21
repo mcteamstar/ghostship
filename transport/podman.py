@@ -801,7 +801,6 @@ class PodmanClient(ContainerRuntime):
             "name": name,
             "image": WORKER_IMAGE,
             "command": cmd,
-            "remove": True,  # auto-remove on exit (--rm)
             "netns": {"nsmode": "none"},
             "volumes": [volume],
             # Prevent privilege escalation and drop high-risk capabilities.
@@ -872,13 +871,12 @@ class PodmanClient(ContainerRuntime):
         except httpx.HTTPStatusError as e:
             raise RuntimeError(f"Worker container failed: {e}") from e
         finally:
-            # remove:true handles the happy path; force-remove covers a worker
-            # that failed to start or was interrupted before auto-removal.
+            # Keep the worker until its exit code and logs have been collected.
             if created:
                 try:
                     self._c.delete(
                         f"/libpod/containers/{name}", params={"force": "true"}
-                    )
+                    ).raise_for_status()
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code not in (404,):
                         logger.warning("worker cleanup failed to remove %s: %s", name, e)
