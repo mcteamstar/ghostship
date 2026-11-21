@@ -101,11 +101,11 @@ class TestBatchDispatch(unittest.TestCase):
                 return {"id": f"task-{call_count[0]}"}
             api_mock = MagicMock(side_effect=_default_return)
 
-        with patch.object(_lifecycle, "_require_crew", return_value=rq_return), \
-             patch.object(_lifecycle, "_ensure_crew_running", return_value=en_return), \
-             patch.object(_lifecycle, "_crew_api_with_recovery", api_mock), \
-             patch.object(_lifecycle, "_write_batch", wb_mock), \
-             patch.object(_lifecycle, "_record_last_task_at"):
+        with patch.object(_lifecycle._task_service, "require_crew", return_value=rq_return), \
+             patch.object(_lifecycle._task_service, "ensure_running", return_value=en_return), \
+             patch.object(_lifecycle._task_service, "call_gateway", api_mock), \
+             patch.object(_lifecycle._task_service, "write_batch", wb_mock), \
+             patch.object(_lifecycle._task_service, "record_last_task_at"):
             result = _lifecycle._dispatch_batch(
                 tasks=tasks,
                 agent=agent,
@@ -211,7 +211,7 @@ class TestBatchDispatch(unittest.TestCase):
         crew = _fake_crew()
         crew["enrolled_agents"] = ["ghost"]
 
-        with self.assertLogs("transport.lifecycle", level="WARNING") as logs:
+        with self.assertLogs("transport.task_service", level="WARNING") as logs:
             result, _, api = self._dispatch(
                 ["task A", "task B"],
                 require_crew_return=crew,
@@ -332,10 +332,10 @@ class TestBatchDispatch(unittest.TestCase):
         with (
             patch.object(_registry, "_load_registry", return_value=backing),
             patch.object(_registry, "_save_registry"),
-            patch.object(_lifecycle, "_require_crew", return_value=crew),
-            patch.object(_lifecycle, "_ensure_crew_running", return_value=crew),
-            patch.object(_lifecycle, "_crew_api_with_recovery", api),
-            patch.object(_lifecycle, "_record_last_task_at"),
+            patch.object(_lifecycle._task_service, "require_crew", return_value=crew),
+            patch.object(_lifecycle._task_service, "ensure_running", return_value=crew),
+            patch.object(_lifecycle._task_service, "call_gateway", api),
+            patch.object(_lifecycle._task_service, "record_last_task_at"),
         ):
             dispatched = _lifecycle._dispatch_batch(
                 tasks=["task A", "task B"], agent="ghost", crew_id="test-crew", model=None,
@@ -347,11 +347,11 @@ class TestBatchDispatch(unittest.TestCase):
             self.assertEqual(stored[0]["status"], "partial")
 
             with (
-                patch.object(_tools, "_require_crew", return_value=crew),
-                patch.object(_tools, "_ensure_crew_running", return_value=crew),
-                patch.object(_tools, "_get_podman", return_value=MagicMock()),
-                patch.object(_tools, "_to_crew", return_value=SimpleNamespace(container="gs-test-crew")),
-                patch.object(_tools, "_pickup_batch", return_value={"done": False}) as pickup,
+                patch.object(_tools._task_service, "require_crew", return_value=crew),
+                patch.object(_tools._task_service, "ensure_running", return_value=crew),
+                patch.object(_tools._task_service, "get_podman", return_value=MagicMock()),
+                patch.object(_tools._task_service, "to_crew", return_value=SimpleNamespace(container="gs-test-crew")),
+                patch.object(_tools._task_service, "_pickup_batch", return_value={"done": False}) as pickup,
             ):
                 result = _tools.pickup(
                     crew_id="test-crew", task_ids=dispatched["task_ids"], timeout_secs=0,
@@ -404,7 +404,7 @@ class TestBatchDispatch(unittest.TestCase):
 
     def test_d6_crew_not_found_error_nonempty(self):
         """D6: _require_crew raises ValueError → error is non-empty."""
-        with patch.object(_lifecycle, "_require_crew", side_effect=ValueError("crew not found")):
+        with patch.object(_lifecycle._task_service, "require_crew", side_effect=ValueError("crew not found")):
             result = _lifecycle._dispatch_batch(
                 tasks=["task A", "task B"],
                 agent="ghost",
@@ -413,6 +413,88 @@ class TestBatchDispatch(unittest.TestCase):
             )
         self.assertTrue(result.get("error"))
 
+
+
+def test_task_service_tracks_partial_batch_and_steer_across_pickups():
+    from datetime import datetime, timedelta, timezone
+
+    from transport.task_service import TaskService
+
+    crew = _fake_crew()
+    tasks = {}
+    batches = {}
+    mail = {"admiral": 0}
+
+    def gateway(_crew, _crew_id, method, path, **kwargs):
+        if (method, path) == ("POST", "/api/spawn"):
+            task = kwargs["json"]["task"]
+            if task == "refused":
+                raise _gateway_refusal()
+            tasks[task] = {"id": task, "done": False, "elapsed": 1}
+            return tasks[task]
+        _, _, _, task_id, *action = path.split("/")
+        if task_id not in tasks:
+            raise _gateway_refusal(404, "task not found")
+        if method == "GET":
+            mail["admiral"] += 1
+            return tasks[task_id]
+        assert action == ["steer"]
+        tasks[task_id]["result"] = kwargs["json"]["message"]
+        return {}
+
+    def write_batch(_crew_id, batch_id, task_ids, *, status, created_at):
+        batches[batch_id] = (task_ids, status)
+
+    service = TaskService(
+        config=SimpleNamespace(
+            ga_batch_max_tasks=5, ga_pickup_max_poll_secs=30, ga_task_timestamp_ttl_secs=60,
+        ),
+        require_crew=lambda _: crew,
+        ensure_running=lambda record, _: record,
+        to_crew=lambda *_: SimpleNamespace(container=crew["container"]),
+        validate_agent=_lifecycle._validate_agent,
+        call_gateway=gateway,
+        get_podman=lambda: None,
+        sign_in=lambda: SimpleNamespace(dispatch_guard=lambda *_: None),
+        record_last_task_at=lambda *_: None,
+        write_batch=write_batch,
+        find_batch=lambda *_: None,
+        read_mail_counts=lambda *_: dict(mail),
+        read_mail_subjects=lambda *_: {},
+    )
+
+    accepted = service.dispatch(task="single", crew_id="test-crew")
+    batch = service.dispatch(tasks=["accepted", "refused"], crew_id="test-crew")
+    assert batches[batch["batch_id"]] == (["accepted"], "partial")
+    assert service.steer("accepted", "keep going", "test-crew")["task_id"] == "accepted"
+    single = service.pickup("single", "test-crew")
+    assert single["created_at"] == accepted["created_at"]
+    picked = service.pickup(
+        crew_id="test-crew", task_ids=["accepted", "missing"], timeout_secs=10,
+    )
+    assert picked["accepted"]["created_at"]
+    assert picked["accepted"]["result"] == "keep going"
+    assert picked["missing"]["lost"] is True
+    assert picked["reason"] == "admiral_mail"
+
+    tasks["accepted"]["done"] = True
+    completed = service.pickup("accepted", "test-crew")
+    assert completed["completed_at"]
+    service._task_timestamps["accepted"]["completed_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=2)
+    ).isoformat()
+    service.pickup("single", "test-crew")
+    assert "accepted" not in service._task_timestamps
+    assert "single" in service._task_timestamps
+
+
+def test_tools_and_lifecycle_share_one_task_service():
+    service = _tools._task_service
+    assert _lifecycle._task_service is service
+    assert _lifecycle._dispatch_batch.__self__ is service
+    assert _lifecycle._pickup_single.__self__ is service
+    assert _lifecycle._task_timestamps is service._task_timestamps
+    assert _lifecycle._task_timestamps_lock is service._task_timestamps_lock
 
 # ─────────────────────────────────────────────────────────────────────────────
 # T2 — TestBatchPickup

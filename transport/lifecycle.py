@@ -24,8 +24,7 @@ import select
 import tarfile
 import threading
 import time
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +42,12 @@ except ModuleNotFoundError:
         _crew_cookie, _crew_url, _gateway_error_detail, _spawn_backend,
         _unresponsive_error,
     )
+
+
+try:
+    from task_service import TaskService, _resolve_dispatch_slot
+except ModuleNotFoundError:
+    from .task_service import TaskService, _resolve_dispatch_slot
 
 
 try:
@@ -87,7 +92,6 @@ try:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
-        _write_batch,
         _write_secret_file,
         registry,
     )
@@ -101,7 +105,6 @@ except ModuleNotFoundError:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
-        _write_batch,
         _write_secret_file,
         registry,
     )
@@ -114,14 +117,10 @@ except ModuleNotFoundError:
 try:
     from captain import (  # container: flat /app/
         _resolve_orders_dir,
-        _read_all_mail_counts,
-        _read_all_mail_subjects,
     )
 except ModuleNotFoundError:
     from transport.captain import (  # local dev
         _resolve_orders_dir,
-        _read_all_mail_counts,
-        _read_all_mail_subjects,
     )
 
 try:
@@ -355,11 +354,7 @@ _startup_generation: dict[str, int] = {}
 _warm_markers: dict[str, float] = {}
 _warm_markers_lock = threading.Lock()
 
-# Bounded in-process memory: _task_timestamps completed entries are evicted once
-# their completed_at is older than cfg.ga_task_timestamp_ttl_secs (env-overridable);
-# _warm_markers entries are evicted once older than _WARM_MARKER_TTL_SECS.
-# The warm-marker TTL is floored at one hour via `_warm_marker_ttl_secs()`;
-# `ga_task_timestamp_ttl_secs` has no floor.
+# Warm markers expire after the TTL, which has a one-hour floor.
 
 
 def _warm_marker_ttl_secs() -> float:
@@ -1486,45 +1481,6 @@ def _patch_crew_config(
         logger.warning("Config patch failed for %s: %s", container, e)
 
 
-def _resolve_dispatch_slot(
-    agent: str,
-    slot: bool | None,
-    crew,
-) -> tuple[str | None, str | None]:
-    """Resolve the effective slot and parent_session for a dispatch.
-
-    Returns (effective_slot, parent_session).
-
-    Two modes:
-
-    - ``slot=None`` (default): let the system decide. An enrolled agent routes
-      to its member DM slot (``parent_session="dashboard:member-<slug>"``),
-      echoing ``"<slug>"`` as the slot name. An unenrolled agent routes headless
-      (``(None, None)``) — no session is created.
-    - ``slot=False``: explicit headless, regardless of enrollment —
-      ``(None, None)``.
-
-    ``True`` is a legacy value, not a distinct slot mode. It logs a warning
-    and is treated as ``None``: enrolled agents use their member slot, while
-    unenrolled agents remain headless. MCP callers cannot pass string-valued
-    slots because the dispatch tool schema accepts only boolean or null.
-    """
-    if isinstance(crew, Crew):
-        enrolled: frozenset[str] = frozenset(crew.enrolled_agents or [])
-    else:
-        enrolled = frozenset(crew.get("enrolled_agents") or [])
-    if slot is True:
-        logger.warning(
-            "_resolve_dispatch_slot: slot=True is not a valid value; "
-            "treating as slot=None (member-slot or headless resolution proceeds normally)"
-        )
-        slot = None
-    if slot is None and agent in enrolled:
-        # Echo the agent name (clean) not "member-<agent>" (implementation detail).
-        return agent, f"dashboard:member-{agent}"
-    # slot=None for an unenrolled agent, or slot=False for anyone → headless.
-    return None, None
-
 
 def _deployed_agent_names(podman: PodmanClient, container: str) -> list[str]:
     """Return the list of agent JSON filenames deployed in this crew container."""
@@ -2487,144 +2443,6 @@ except ModuleNotFoundError:
 _schedule_monitor = _monitors._schedule_monitor
 _idle_monitor = _monitors._idle_monitor
 _captain_monitor = _monitors._captain_monitor
-# ── Batch pickup ────────────────────────────────────────────────────
-# cfg.ga_pickup_max_poll_secs caps the wall time of one _pickup_batch call,
-# mirroring the single-task pickup internal cap (default 30 s). Resolved from
-# cfg at startup.
-
-_BATCH_POLL_INTERVAL_SECS = 3
-
-
-def _pickup_batch(
-    crew: dict,
-    crew_id: str,
-    task_ids: list[str],
-    podman: "PodmanClient",
-    container: str,
-    timeout_secs: int,
-    pickup_single,
-    read_all_mail_counts,
-    batch_id: str | None = None,
-    update_batch_status=None,
-) -> dict:
-    """Blocking multi-task pickup: collect results for every id in *task_ids*.
-
-    Orchestrates per-round sequential calls to ``pickup_single(timeout_secs=0)``
-    for each task id, aggregating into a dict keyed by task_id. The whole call
-    is capped at ``cfg.ga_pickup_max_poll_secs`` of wall time (each round polls all
-    members once, then sleeps 3 s). A task the gateway does not know about (404
-    / missing) is marked ``{"done": false, "lost": true, ...}`` rather than
-    raising, so the other members' results survive.
-
-    ``pickup_single`` and ``read_all_mail_counts`` are injected by the caller
-    (server.py) to avoid a lifecycle->server import cycle. ``update_batch_status``
-    (optional) is called with (crew_id, batch_id, "complete") when every task is
-    done and a ``batch_id`` is known.
-
-    Response shape::
-
-        {
-          "<task_id>": {<single-task pickup shape> | lost-marker},
-          ...,
-          "done": bool,          # True only when every member is done
-          "completed_tasks": int,
-          "total_tasks": int,
-          "reason": "timeout" | "admiral_mail",   # only when it applies
-        }
-    """
-    total = len(task_ids)
-
-    # Cap the batch wall time at cfg.ga_pickup_max_poll_secs regardless of the
-    # requested timeout — identical to the single-task internal cap contract.
-    capped_timeout = min(max(0, timeout_secs), cfg.ga_pickup_max_poll_secs)
-
-    # Admiral-mail early-return baseline read before the first round.
-    if capped_timeout > 0:
-        initial_counts = read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-
-    deadline = time.monotonic() + capped_timeout
-
-    def _poll_round() -> tuple[dict, int]:
-        """Poll every task once; return (results, done_count)."""
-        results: dict[str, Any] = {}
-        done_count = 0
-        for tid in task_ids:
-            res = pickup_single(crew, crew_id, tid, podman, container, 0)
-            # Lost member: gateway returns 404 for an unknown task id. The
-            # single-task path surfaces that as an error string; normalise it
-            # to an explicit lost marker so the batch survives.
-            err = res.get("error", "") if isinstance(res, dict) else ""
-            if err and ("404" in str(err) or "not found" in str(err).lower()):
-                res = {
-                    "task_id": tid,
-                    "done": False,
-                    "lost": True,
-                    "error": "task not found in gateway",
-                }
-            results[tid] = res
-            if res.get("done"):
-                done_count += 1
-                # Per-task status (H-3): mark the task complete in
-                # _task_timestamps so callers polling pickup can observe
-                # per-task completion within this process session.
-                with _task_timestamps_lock:
-                    if tid in _task_timestamps:
-                        _task_timestamps[tid]["status"] = "complete"
-                        if _task_timestamps[tid]["completed_at"] is None:
-                            _task_timestamps[tid]["completed_at"] = datetime.now(timezone.utc).isoformat()
-        return results, done_count
-
-    while True:
-        results, done_count = _poll_round()
-        all_done = done_count == total and total > 0
-
-        out: dict[str, Any] = dict(results)
-        out["done"] = all_done
-        out["completed_tasks"] = done_count
-        out["total_tasks"] = total
-
-        if all_done:
-            if batch_id is not None and update_batch_status is not None:
-                try:
-                    update_batch_status(crew_id, batch_id, "complete")
-                except Exception as exc:  # best-effort; do not fail the pickup
-                    logger.warning(
-                        "Could not mark batch %s complete: %s",
-                        batch_id, exc,
-                    )
-            return out
-
-        # Snapshot mode (timeout_secs == 0): one query per task, no blocking.
-        if capped_timeout == 0:
-            return out
-
-        # Admiral-mail early-return: re-read the count and bail if it grew.
-        admiral_mail = read_all_mail_counts(podman, container).get("admiral", 0)
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            out["reason"] = "timeout"
-            return out
-
-        time.sleep(min(_BATCH_POLL_INTERVAL_SECS, remaining))
-
-
-# ── Task timestamp tracking ──────────────────────────────────────────
-# In-memory per-task created/started/completed timestamps. Written by the
-# dispatch tools (worker threads) and read-modified-written by the pickup
-# handlers (worker threads). Lives here alongside pickup/dispatch; server.py
-# imports these names so its dispatch tools share the same objects.
-_task_timestamps: dict[str, dict] = {}
-# Guards all read-modify-write access to _task_timestamps. The dict is written
-# by dispatch (worker thread) and read-modified-written by pickup handlers
-# (worker threads); without this lock those accesses race.
-_task_timestamps_lock = threading.Lock()
 
 
 def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
@@ -2637,368 +2455,25 @@ def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
         logger.warning("Could not update last_task_at for crew %s: %s", crew_id, exc)
 
 
-def _dispatch_batch(
-    tasks: list[str],
-    agent: str,
-    crew_id: str | None,
-    model: str | None,
-    slot: bool | None = None,
-) -> dict:
-    """Sequentially dispatch a batch of tasks; record a batch entry.
+_task_service = TaskService(
+    config=cfg,
+    require_crew=_require_crew,
+    ensure_running=_ensure_crew_running,
+    to_crew=_to_crew,
+    validate_agent=_validate_agent,
+    call_gateway=_crew_api_with_recovery,
+    get_podman=_get_podman,
+    sign_in=_kiro_signin,
+    record_last_task_at=_record_last_task_at,
+)
 
-    Validation (size, agent, model) has already run in ``dispatch``. On the
-    first CrewUnresponsiveError or unexpected failure the loop breaks and a
-    ``partial`` batch is recorded with the task_ids assigned so far.
-
-    ``slot`` follows the same two-mode semantics as single-task dispatch:
-    ``None`` (default) routes an enrolled agent to its shared member DM slot and
-    an unenrolled agent headless; ``False`` is explicit headless for everyone.
-    All tasks in the batch share the one resolved slot (member or headless);
-    per-task slot names are not generated.
-    """
-    # Size validation.
-    max_tasks = cfg.ga_batch_max_tasks
-    if len(tasks) == 0 or len(tasks) == 1:
-        return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
-    if len(tasks) > max_tasks:
-        return {"error": f"tasks exceeds maximum batch size of {max_tasks}"}
-
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    if (denied := _kiro_signin().dispatch_guard(crew_id, crew)) is not None:
-        return denied
-
-    # Resolve effective slot and shared parent_session using the unified helper.
-    # effective_slot is either the agent name (member slot) or None (headless);
-    # all tasks in the batch share the one resolved parent_session.
-    effective_slot, shared_parent_session = _resolve_dispatch_slot(agent, slot, crew)
-
-    batch_id = str(uuid.uuid4())
-    task_ids: list[str] = []
-    now = datetime.now(timezone.utc)
-    created_at = now.isoformat()
-    dispatch_error: str | None = None
-
-    for t in tasks:
-        body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
-        if model is not None:
-            body["model"] = model
-        if shared_parent_session is not None:
-            body["parent_session"] = shared_parent_session
-
-        try:
-            result = _crew_api_with_recovery(
-                crew, crew_id, "POST", "/api/spawn", json=body,
-            )
-        except httpx.HTTPStatusError as e:
-            # A non-retryable gateway response (for example, a 4xx refusal)
-            # bypasses recovery as an HTTPStatusError. Convert it at the batch
-            # boundary so accepted members still reach the shared finalizer,
-            # and use the existing sanitizer before surfacing gateway detail.
-            dispatch_error = str(
-                _unresponsive_error(crew_id, "gateway refused batch spawn", crew, e)
-            )
-            break
-        except (CrewUnresponsiveError, RuntimeError, ValueError) as e:
-            dispatch_error = str(e)
-            break
-        tid = result.get("id")
-        if not tid:
-            dispatch_error = "spawn returned no task id"
-            break
-        task_ids.append(tid)
-        # Per-task timestamp + last_task_at, using this task's response time.
-        task_created = datetime.now(timezone.utc).isoformat()
-        with _task_timestamps_lock:
-            _task_timestamps[tid] = {
-                "created_at": task_created,
-                "started_at": None,
-                "completed_at": None,
-                "status": "pending",
-            }
-        _record_last_task_at(crew_id, task_created)
-
-    # Echo the effective slot: the agent name (member slot) or None (headless).
-    response_slot: str | None = effective_slot
-
-    if dispatch_error is None:
-        # Task 2.5: full success.
-        _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
-        response: dict[str, Any] = {
-            "batch_id": batch_id,
-            "task_ids": task_ids,
-            "crew_id": crew_id,
-            "status": "dispatched",
-            "agent": agent,
-            "slot": response_slot,
-            "created_at": created_at,
-        }
-        return response
-
-    if not task_ids:
-        # Nothing was accepted, so retain the existing simple failure shape
-        # and avoid persisting an empty batch record.
-        return {"error": dispatch_error}
-
-    # Task 2.6: partial failure. Record what was started; surface the error.
-    _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
-    response = {
-        "batch_id": batch_id,
-        "task_ids": task_ids,
-        "crew_id": crew_id,
-        "status": "partial",
-        "agent": agent,
-        "slot": response_slot,
-        "created_at": created_at,
-        "error": dispatch_error,
-    }
-    return response
-
-
-def _pickup_single(
-    crew: dict,
-    crew_id: str,
-    task_id: str,
-    podman: PodmanClient,
-    container: str,
-    timeout_secs: int,
-) -> dict:
-    """Single-task pickup with optional polling and mail state."""
-    # Capture initial admiral mail count for early-return detection using a
-    # single batched exec rather than a dedicated _mail_count call.
-    if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-    deadline = time.monotonic() + timeout_secs
-
-    while True:
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
-        except CrewUnresponsiveError as e:
-            return {"error": str(e), "task_id": task_id, "crew_id": crew_id}
-        done = r.get("done", False)
-
-        # Single exec reads all mailboxes at once.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
-        agent_persona = r.get("agent", "")
-        agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
-        admiral_mail = mail_counts.get("admiral", 0)
-
-        # Populate task timestamps
-        now = datetime.now(timezone.utc)
-        with _task_timestamps_lock:
-            ts = _task_timestamps.get(task_id, {})
-            elapsed = r.get("elapsed", 0)
-            if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
-                ts["started_at"] = now.isoformat()
-            if ts and done and ts.get("completed_at") is None:
-                ts["completed_at"] = now.isoformat()
-            # Snapshot ts under the lock so the post-lock reads below see a stable
-            # copy rather than a live reference that a concurrent _pickup_single
-            # or _dispatch_batch could mutate after release.
-            ts = dict(ts)
-
-            # Evict completed-task timestamp entries older than TTL so
-            # _task_timestamps does not grow without bound over the process life.
-            _evict_cutoff = (
-                now - timedelta(seconds=cfg.ga_task_timestamp_ttl_secs)
-            ).isoformat()
-            _to_evict = [
-                k
-                for k, v in _task_timestamps.items()
-                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
-            ]
-            for k in _to_evict:
-                _task_timestamps.pop(k, None)
-
-        out: dict[str, Any] = {
-            "task_id": r.get("id"),
-            "crew_id": crew_id,
-            "done": done,
-            "turns": r.get("turns", 0),
-            "last_tool": r.get("last_tool", ""),
-            "elapsed_secs": int(r.get("elapsed", 0)),
-            "result": r.get("result", ""),
-            "error": r.get("error", ""),
-            "outcome": r.get("outcome", ""),
-            "agent_mail": agent_mail,
-            "created_at": ts.get("created_at") if ts else None,
-            "started_at": ts.get("started_at") if ts else None,
-            "completed_at": ts.get("completed_at") if ts else None,
-        }
-        if done and out["error"]:
-            explained = _kiro_signin().explain_failure(crew_id, crew, out["error"])
-            if explained:
-                out.update(explained)
-
-        # Include subject lines for the agent persona, raven, captain, and admiral.
-        # captain/admiral come from the single _read_all_mail_subjects exec above
-        # (same shape: [{subject, received_at}]). The admiral_mail count above is
-        # still used for the reason="admiral_mail" early-return signal.
-        if agent_persona:
-            out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
-        raven_subjects = mail_subjects.get("raven", [])
-        if raven_subjects:
-            out["raven_subjects"] = raven_subjects
-        captain_subjects = mail_subjects.get("captain", [])
-        admiral_subjects = mail_subjects.get("admiral", [])
-        out["captain_subjects"] = captain_subjects
-        out["captain_mail"] = len(captain_subjects)
-        out["admiral_subjects"] = admiral_subjects
-        out["admiral_mail"] = len(admiral_subjects)
-
-        if done or timeout_secs == 0:
-            return out
-
-        # Check for admiral mail early-return
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            if not done:
-                out["reason"] = "timeout"
-            return out
-
-        # F-03 audit: @mcp.tool() handlers are dispatched via run_in_executor
-        # (confirmed: MCPServer.streamable_http_app wraps sync handlers in the
-        # default thread-pool executor). time.sleep blocks the worker thread,
-        # not the event loop — safe, no conversion to asyncio.sleep needed.
-        time.sleep(min(3, remaining))
-
-
-def _pickup_list(
-    crew: dict,
-    crew_id: str,
-    podman: PodmanClient,
-    container: str,
-    timeout_secs: int,
-) -> dict:
-    """List-all pickup with optional polling and mail state."""
-    # Capture initial admiral mail count for early-return detection using a
-    # single batched exec rather than a dedicated _mail_count call.
-    if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-    deadline = time.monotonic() + timeout_secs
-
-    while True:
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
-        except CrewUnresponsiveError as e:
-            return {"error": str(e), "crew_id": crew_id}
-        agents = r.get("agents", [])
-
-        # Check if any task is done
-        any_done = any(a.get("done", False) for a in agents)
-
-        # Single exec reads all mailboxes at once; split into persona summary
-        # and admiral count for the response surface.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
-        mail_summary: dict[str, int] = {
-            name: mail_counts[name]
-            for name in PERSONA_NAMES
-            if mail_counts.get(name, 0) > 0
-        }
-        admiral_mail = mail_counts.get("admiral", 0)
-
-        # Snapshot the timestamp entries for the listed agents under the lock,
-        # then build the response list from the snapshot so the comprehension
-        # does not read _task_timestamps concurrently with writes.
-        with _task_timestamps_lock:
-            # Evict completed-task timestamp entries older than TTL first
-            # (reading _task_timestamps), then snapshot the survivors.
-            _evict_cutoff = (
-                datetime.now(timezone.utc)
-                - timedelta(seconds=cfg.ga_task_timestamp_ttl_secs)
-            ).isoformat()
-            _to_evict = [
-                k
-                for k, v in _task_timestamps.items()
-                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
-            ]
-            for k in _to_evict:
-                _task_timestamps.pop(k, None)
-            _ts_snapshot = {
-                a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
-                for a in agents
-            }
-
-        task_list = [
-            {
-                "task_id": a.get("id"),
-                "crew_id": crew_id,
-                "task": a.get("task", "")[:80],
-                "agent": a.get("agent", ""),
-                "done": a.get("done", False),
-                "elapsed_secs": int(a.get("elapsed", 0)),
-                "last_tool": a.get("last_tool", ""),
-                "outcome": a.get("outcome", ""),
-                "error": a.get("error", ""),
-                # Include per-task timestamps (null if missing)
-                "created_at": _ts_snapshot.get(a.get("id", ""), {}).get("created_at"),
-                "started_at": _ts_snapshot.get(a.get("id", ""), {}).get("started_at"),
-                "completed_at": _ts_snapshot.get(a.get("id", ""), {}).get("completed_at"),
-            }
-            for a in agents
-        ]
-        # List view: explain sign-in failures from the recorded state only,
-        # never probing the crew once per listed task.
-        for entry in task_list:
-            if entry["done"] and entry["error"]:
-                explained = _kiro_signin().explain_failure(
-                    crew_id, crew, entry["error"], probe=False,
-                )
-                if explained:
-                    entry.update(explained)
-
-        # Build subject summaries for all persona mailboxes + captain + admiral.
-        # captain/admiral come from the single _read_all_mail_subjects exec above.
-        subjects_summary: dict[str, list[str]] = {}
-        for name in PERSONA_NAMES:
-            subs = mail_subjects.get(name, [])
-            if subs:
-                subjects_summary[f"{name}_subjects"] = subs
-        captain_subjects = mail_subjects.get("captain", [])
-        admiral_subjects = mail_subjects.get("admiral", [])
-        subjects_summary["captain_subjects"] = captain_subjects
-        subjects_summary["captain_mail"] = len(captain_subjects)
-        subjects_summary["admiral_subjects"] = admiral_subjects
-        subjects_summary["admiral_mail"] = len(admiral_subjects)
-
-        out: dict[str, Any] = {
-            "crew_id": crew_id,
-            "tasks": task_list,
-            "mail_summary": mail_summary,
-            "agent_subjects": mail_subjects,
-            **subjects_summary,
-        }
-
-        if any_done or timeout_secs == 0:
-            return out
-
-        # Check for admiral mail early-return
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            out["reason"] = "timeout"
-            return out
-
-        # F-03: same as _pickup_single — time.sleep is safe in executor thread.
-        time.sleep(min(3, remaining))
+# Compatibility exports for existing Python callers.
+_dispatch_batch = _task_service._dispatch_batch
+_pickup_batch = _task_service._pickup_batch
+_pickup_single = _task_service._pickup_single
+_pickup_list = _task_service._pickup_list
+_task_timestamps = _task_service._task_timestamps
+_task_timestamps_lock = _task_service._task_timestamps_lock
 
 
 _cron_activity_since = _monitors._cron_activity_since

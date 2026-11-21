@@ -889,13 +889,6 @@ mcp = MCPServer(
     ),
 )
 
-# ── Task timestamps ──────────────────────────────────────────────────
-# In-memory store for task lifecycle timestamps. Keyed by task_id.
-# Lost on transport restart — acceptable per design decision D1.
-# _task_timestamps and _task_timestamps_lock live in transport.lifecycle
-# alongside the pickup/dispatch helpers; imported above. server's dispatch
-# tools mutate the same shared objects.
-
 # ── UI port pool + Caddy admin API ─────────────────────────
 # _dashboard_ports_in_use, _allocate_dashboard_port, _release_dashboard_port,
 # _caddy_admin_url, _caddy_register_crew, and _caddy_deregister_crew now live in

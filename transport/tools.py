@@ -59,7 +59,6 @@ try:
         CREW_HOME_VOLUME_PREFIX,
         CREW_VOLUME_PREFIX,
         GA_STARBOARD_NETWORK,
-        PERSONA_NAMES,
     )
 except ModuleNotFoundError:
     from transport.constants import (  # local dev
@@ -69,7 +68,6 @@ except ModuleNotFoundError:
         CREW_HOME_VOLUME_PREFIX,
         CREW_VOLUME_PREFIX,
         GA_STARBOARD_NETWORK,
-        PERSONA_NAMES,
     )
 
 try:
@@ -79,8 +77,6 @@ try:
         _delete_crew_secret,
         _read_crew_secret,
         _write_crew_secret,
-        _find_batch_by_task_ids,
-        _update_batch_status,
     )
 except ModuleNotFoundError:
     from transport.registry import (  # local dev
@@ -89,8 +85,6 @@ except ModuleNotFoundError:
         _delete_crew_secret,
         _read_crew_secret,
         _write_crew_secret,
-        _find_batch_by_task_ids,
-        _update_batch_status,
     )
 
 # RegistryCorruptError drives the _registry_guard decorator. Imported with the
@@ -128,8 +122,6 @@ try:
         _list_order_templates,
         _load_order_template,
         _substitute_placeholders,
-        _skim_all_mailboxes,
-        _read_all_mail_counts,
     )
 except ModuleNotFoundError:
     from transport.captain import (  # local dev
@@ -140,8 +132,6 @@ except ModuleNotFoundError:
         _list_order_templates,
         _load_order_template,
         _substitute_placeholders,
-        _skim_all_mailboxes,
-        _read_all_mail_counts,
     )
 
 try:
@@ -191,7 +181,6 @@ try:
         _crew_api,
         _crew_api_with_recovery,
         _crew_url,
-        _dispatch_batch,
         _ensure_crew_running,
         _finish_crew_setup,
         _gateway_error_detail,
@@ -199,20 +188,15 @@ try:
         _initiate_codex_login,
         _initiate_login,
         _nuke_login_container,
-        _pickup_batch,
-        _pickup_list,
-        _pickup_single,
         _prewarm_crew,
         _probe_gateway,
         _read_auth_from_crew,
-        _record_last_task_at,
         _require_crew,
-        _resolve_dispatch_slot,
+        _task_service,
         _to_crew,
         _validate_agent,
         _wait_gateway,
     )
-    import lifecycle as _lifecycle  # for the shared task-timestamp objects
 except ModuleNotFoundError:
     from transport.lifecycle import (  # local dev
         CrewUnresponsiveError,
@@ -222,7 +206,6 @@ except ModuleNotFoundError:
         _crew_api,
         _crew_api_with_recovery,
         _crew_url,
-        _dispatch_batch,
         _ensure_crew_running,
         _finish_crew_setup,
         _gateway_error_detail,
@@ -230,31 +213,25 @@ except ModuleNotFoundError:
         _initiate_codex_login,
         _initiate_login,
         _nuke_login_container,
-        _pickup_batch,
-        _pickup_list,
-        _pickup_single,
         _prewarm_crew,
         _probe_gateway,
         _read_auth_from_crew,
-        _record_last_task_at,
         _require_crew,
-        _resolve_dispatch_slot,
+        _task_service,
         _to_crew,
         _validate_agent,
         _wait_gateway,
     )
-    from transport import lifecycle as _lifecycle  # local dev
 
 try:
     import kiro_signin as _kiro_signin  # container: flat /app/
 except ModuleNotFoundError:
     from transport import kiro_signin as _kiro_signin  # local dev
 
-# dispatch() mutates the shared in-memory task-timestamp store that lives in
-# lifecycle (same objects server used). Reference lifecycle's live objects.
-_task_timestamps = _lifecycle._task_timestamps
-_task_timestamps_lock = _lifecycle._task_timestamps_lock
-
+try:
+    from task_service import _validate_model
+except ModuleNotFoundError:
+    from .task_service import _validate_model
 
 # login module: launch() reads login.KIRO_FLOW on the kiro device-flow path.
 try:
@@ -315,10 +292,7 @@ def _resolve_profile(backend: str, requested: str | None, store: CredentialStore
 _ANTHROPIC_BASE_URL = cfg.anthropic_base_url
 _OPENAI_BASE_URL = cfg.openai_base_url
 
-_MODEL_MAX_LENGTH = 500
-_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
-PERSONA_ALLOWLIST = frozenset(PERSONA_NAMES)
 
 
 # ── Transport version (resource_version) ──────────────────────────────────────
@@ -345,26 +319,6 @@ TRANSPORT_VERSION: str = _read_transport_version()
 # functions can read them (R4 — injection, not a server import).
 _caddy_portal = None
 _dashboard_gate = None
-
-
-def _validate_model(model: str | None) -> str | None:
-    """Validate and normalize an optional KiroCrew model override."""
-    if model is None:
-        return None
-    if not isinstance(model, str):
-        raise ValueError("Invalid model: expected a string")
-    if not model:
-        return None
-    if len(model) > _MODEL_MAX_LENGTH:
-        raise ValueError(
-            f"Invalid model: maximum length is {_MODEL_MAX_LENGTH} characters"
-        )
-    if _MODEL_NAME_RE.fullmatch(model) is None:
-        raise ValueError(
-            "Invalid model: must start with a letter or digit and contain only "
-            "letters, digits, '.', '_' or '-'"
-        )
-    return model
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2188,129 +2142,7 @@ def dispatch(
             visibility is not needed, pass ``slot=False`` to dispatch headless
             and avoid this overhead.
     """
-    # Mutual-exclusion + presence guard (task 2.2).
-    if task is not None and tasks is not None:
-        return {"error": "Provide either task or tasks, not both"}
-    if task is None and tasks is None:
-        return {"error": "Provide task or tasks"}
-
-    try:
-        model = _validate_model(model)
-    except ValueError as e:
-        return {"error": str(e)}
-    try:
-        _validate_agent(agent)
-    except ValueError as e:
-        return {"error": str(e)}
-
-    if tasks is not None:
-        return _dispatch_batch(tasks, agent, crew_id, model, slot=slot)
-
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    if (denied := _kiro_signin.dispatch_guard(crew_id, crew)) is not None:
-        return denied
-
-    effective_slot, parent_session = _resolve_dispatch_slot(agent, slot, crew)
-
-    body: dict[str, Any] = {"task": task, "agent": agent, "keep": True}
-    if model is not None:
-        body["model"] = model
-
-    resolved_slot_name: str | None = None
-    if parent_session:
-        # Member DM auto-route (effective_slot is the agent name). The member
-        # slot is pre-created at enrollment time, so no dispatch-time
-        # slot pre-creation is needed. Headless dispatch leaves parent_session
-        # unset (effective_slot is None).
-        resolved_slot_name = effective_slot
-        body["parent_session"] = parent_session
-
-    try:
-        result = _crew_api_with_recovery(
-            crew, crew_id, "POST", "/api/spawn",
-            json=body,
-        )
-    except CrewUnresponsiveError as e:
-        return {"error": str(e)}
-    except httpx.HTTPStatusError as exc:
-        detail, _ = _gateway_error_detail(exc, crew)
-        return {"error": f"crew gateway rejected dispatch.{detail}"}
-
-    task_id = result.get("id")
-    if not task_id:
-        return {"error": "spawn returned no task id"}
-    now = datetime.now(timezone.utc)
-    created_at = now.isoformat()
-
-    # Record task timestamps in-memory
-    with _task_timestamps_lock:
-        _task_timestamps[task_id] = {
-            "created_at": created_at,
-            "started_at": None,
-            "completed_at": None,
-        }
-
-    # Write last_task_at to crew's registry entry
-    _record_last_task_at(crew_id, created_at)
-
-    response: dict[str, Any] = {
-        "task_id": task_id,
-        "crew_id": crew_id,
-        "status": "dispatched",
-        "task": task,
-        "agent": agent,
-        "slot": resolved_slot_name,
-        "created_at": created_at,
-    }
-    return response
-
-
-def _response_body(exc: httpx.HTTPStatusError) -> str:
-    try:
-        return exc.response.text or ""
-    except Exception:
-        return ""
-
-
-def _is_steer_unsupported(exc: httpx.HTTPStatusError) -> bool:
-    """True when the run's backend refuses a mid-turn interrupt (claude, codex).
-
-    KiroCrew answers 502 ``steer_failed`` with a ``steer_unsupported`` detail and
-    asks for ``mode='follow_up'`` instead.
-    """
-    return exc.response.status_code == 502 and "steer_unsupported" in _response_body(exc)
-
-
-def _is_not_running(exc: httpx.HTTPStatusError) -> bool:
-    """True when the run finished between our status check and the steer (409 not_running)."""
-    return exc.response.status_code == 409 and "not_running" in _response_body(exc)
-
-
-def _is_session_starting(exc: httpx.HTTPStatusError) -> bool:
-    """True when the run is alive but its session hasn't registered yet (503 session_starting)."""
-    return exc.response.status_code == 503 and "session_starting" in _response_body(exc)
-
-
-def _steer_call(
-    crew: dict, crew_id: str, method: str, path: str, what: str, **kw: Any,
-) -> tuple[Any, dict | None, httpx.HTTPStatusError | None]:
-    """Make one gateway call for steer without letting it raise.
-
-    Returns ``(response, None, None)`` on success, or ``(None, error, exc)`` where
-    ``error`` is the caller-facing dict and ``exc`` is the gateway's
-    HTTPStatusError (``None`` when the crew was unresponsive instead).
-    """
-    try:
-        return _crew_api_with_recovery(crew, crew_id, method, path, **kw), None, None
-    except CrewUnresponsiveError as e:
-        return None, {"error": str(e)}, None
-    except httpx.HTTPStatusError as e:
-        detail, _ = _gateway_error_detail(e, crew)
-        return None, {"error": f"crew gateway rejected {what}.{detail}"}, e
+    return _task_service.dispatch(task, agent, crew_id, model, tasks, slot)
 
 
 @_registry_guard
@@ -2345,64 +2177,7 @@ def steer(
         crew_id: Which crew the task belongs to. Required.
         force: Hard-stop a running task before continuing its session.
     """
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    def _continue(action: str, what: str) -> dict:
-        r, err, _ = _steer_call(crew, crew_id, "POST", f"/api/spawn/{task_id}/continue",
-                                what, json={"task": message})
-        if err:
-            return err
-        return {"task_id": r.get("id", task_id), "crew_id": crew_id,
-                "action": action, "message": message}
-
-    s, err, _ = _steer_call(crew, crew_id, "GET", f"/api/spawn/{task_id}",
-                            f"status lookup for task {task_id}")
-    if err:
-        return err
-    if s.get("done", False):
-        return _continue("redeployed", f"continue for finished task {task_id}")
-    if force:
-        _, err, _ = _steer_call(crew, crew_id, "DELETE", f"/api/spawn/{task_id}",
-                                f"force stop of task {task_id}")
-        if err:
-            return err
-        return _continue(
-            "force_redeployed",
-            f"resume of task {task_id} after force stop (the task is stopped and was not resumed)",
-        )
-
-    path = f"/api/spawn/{task_id}/steer"
-    _, err, exc = _steer_call(crew, crew_id, "POST", path,
-                              f"steer for running task {task_id}", json={"message": message})
-    if exc is not None and _is_not_running(exc):
-        # Finished between the status check and the steer: continue it instead.
-        return _continue("redeployed", f"continue for finished task {task_id}")
-    if exc is not None and _is_steer_unsupported(exc):
-        # The backend can't interrupt mid-turn: queue the message for delivery
-        # as a continuation once the current turn ends.
-        _, err, exc = _steer_call(crew, crew_id, "POST", path,
-                                  f"follow-up for running task {task_id}",
-                                  json={"message": message, "mode": "follow_up"})
-        if exc is not None and _is_not_running(exc):
-            return _continue("redeployed", f"continue for finished task {task_id}")
-        if err:
-            return err
-        return {"task_id": task_id, "crew_id": crew_id, "action": "follow_up_queued",
-                "message": message,
-                "note": "This backend can't interrupt a running turn; the message is "
-                        "delivered as a new continuation task when the current turn ends "
-                        "(see pickup(crew_id=...)). Use force=True to stop it now."}
-    if err:
-        if exc is not None and _is_session_starting(exc):
-            err["hint"] = ("The task's session is still starting; retry once it has made "
-                           "a tool call. force=True would stop it instead.")
-        elif exc is not None:
-            err["hint"] = "steer(..., force=True) stops the task and resumes its session with the message."
-        return err
-    return {"task_id": task_id, "crew_id": crew_id, "action": "steered", "message": message}
+    return _task_service.steer(task_id, message, crew_id, force)
 
 
 @_registry_guard
@@ -2459,63 +2234,7 @@ def pickup(
         task_ids: A list of task IDs for blocking batch pickup. Mutually
             exclusive with task_id. Must be non-empty.
     """
-    # Batch mutual-exclusion + empty guards (tasks 4.2, 4.3).
-    if task_id is not None and task_ids is not None:
-        return {"error": "Provide either task_id or task_ids, not both"}
-    if task_ids is not None and len(task_ids) == 0:
-        return {"error": "task_ids must not be empty"}
-
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    try:
-        podman = _get_podman()
-    except Exception as e:
-        return {"error": str(e)}
-
-    container = _to_crew(crew_id, crew).container
-    effective_timeout = min(max(0, timeout_secs), 30) if timeout_secs > 0 else 0
-
-    if task_ids is not None:
-        # Route to the batch pickup orchestrator in lifecycle.py, injecting the
-        # single-task pickup and mail-count helpers to avoid a lifecycle->server
-        # import cycle. effective_timeout already applies the standard cap.
-        # Look up the batch_id so _pickup_batch can mark the batch complete
-        # when all members finish (spec: "batch status SHALL be updated to
-        # complete when all tasks complete"). Best-effort — if the batch record
-        # is not found (e.g. caller assembled task_ids manually, or registry was
-        # reset) pickup still works; the status just won't be updated.
-        batch_record = _find_batch_by_task_ids(crew_id, task_ids)
-        found_batch_id = batch_record["batch_id"] if batch_record else None
-        return _pickup_batch(
-            crew, crew_id, task_ids, podman, container, effective_timeout,
-            _pickup_single, _read_all_mail_counts,
-            batch_id=found_batch_id,
-            update_batch_status=_update_batch_status,
-        )
-
-    if task_id:
-        return _pickup_single(crew, crew_id, task_id, podman, container, effective_timeout)
-    elif agent is not None:
-        # Agent filter: validate and return single-inbox subjects only
-        if agent not in PERSONA_ALLOWLIST:
-            return {
-                "error": (
-                    f"Invalid agent {agent!r}. Must be one of: "
-                    + ", ".join(sorted(PERSONA_ALLOWLIST))
-                )
-            }
-        all_subjects = _skim_all_mailboxes(podman, container)
-        subjects = all_subjects.get(agent, [])
-        return {
-            "agent": agent,
-            "subjects": subjects,
-            "mail": len(subjects),
-        }
-    else:
-        return _pickup_list(crew, crew_id, podman, container, effective_timeout)
+    return _task_service.pickup(task_id, crew_id, timeout_secs, agent, task_ids)
 
 
 def resource_agents() -> str:

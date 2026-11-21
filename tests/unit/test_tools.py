@@ -408,7 +408,7 @@ class TestDispatch(unittest.TestCase):
         """dispatch to a non-existent crew returns {"error": ...}."""
         _patch_registry(self, {})
         registry._reg = {"crews": {}}
-        with patch("transport.tools._require_crew", side_effect=KeyError("not found")):
+        with patch("transport.tools._task_service.require_crew", side_effect=KeyError("not found")):
             result = self._call(task="do work", crew_id="missing-crew")
         self.assertIn("error", result)
 
@@ -424,14 +424,12 @@ class TestDispatch(unittest.TestCase):
             from transport.lifecycle import CrewUnresponsiveError  # local dev
 
         with (
-            patch("transport.tools._require_crew",
+            patch("transport.tools._task_service.require_crew",
                   return_value=_fake_crew_dict(crew_id)),
-            patch("transport.tools._ensure_crew_running",
+            patch("transport.tools._task_service.ensure_running",
                   return_value=_fake_crew_dict(crew_id)),
-            patch("transport.tools._crew_api_with_recovery",
+            patch("transport.tools._task_service.call_gateway",
                   side_effect=CrewUnresponsiveError("gateway unreachable")),
-            patch("transport.tools._resolve_dispatch_slot",
-                  return_value=(None, None)),
         ):
             result = self._call(task="do work", crew_id=crew_id)
         self.assertIn("error", result)

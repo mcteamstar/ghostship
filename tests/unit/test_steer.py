@@ -44,9 +44,9 @@ def _status_error(status: int, body: str) -> httpx.HTTPStatusError:
 
 def _run_steer(api_side_effect, **steer_kw):
     crew = {"cookie": _COOKIE}
-    with patch.object(tools, "_require_crew", return_value=crew), \
-            patch.object(tools, "_ensure_crew_running", return_value=crew), \
-            patch.object(tools, "_crew_api_with_recovery", side_effect=api_side_effect):
+    with patch.object(tools._task_service, "require_crew", return_value=crew), \
+            patch.object(tools._task_service, "ensure_running", return_value=crew), \
+            patch.object(tools._task_service, "call_gateway", side_effect=api_side_effect):
         return tools.steer(task_id="t1", message="stop", crew_id="c1", **steer_kw)
 
 
