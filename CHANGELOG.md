@@ -5,6 +5,10 @@
 - Pace Captain dispatches to avoid overwhelming crew resources.
 - Confine crew uploads to their intended workspace and bound rate-limiter state.
 - Preserve accepted results when a batch dispatch is only partially completed.
+- Restrict Caddy administration to a permissioned Unix socket and require
+  dashboard sessions for direct HTTP proxy requests.
+- Replace process-wide test stubs with isolated fixtures and simplify launch,
+  monitor, configuration, and credential-route tests.
 
 ## v0.13.0
 
