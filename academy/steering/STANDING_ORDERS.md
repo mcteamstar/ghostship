@@ -139,13 +139,13 @@ fi
 
 For SDD transitions, follow the full dispatch-coordination pattern in the current Captain standing order, including its pre-spawn intent token, post-spawn assigned-ID confirmation, and pending-marker election. It applies to every SDD transition, including Ghost, Banshee, and Reaper dispatches.
 
-Before dispatching any persona task, apply this three-layer check in order:
+Before dispatching, identify the logical work item from the active order (for example, `<change>/<persona>` for SDD or `<review-track>/<shard>/<scope>` for a review). Apply this three-layer check to that work item, not to the persona alone:
 
-1. **Raven mailbox (primary):** Scan `raven@localhost` (`/var/mail/raven/new/` and `/var/mail/raven/cur/`) for a `dispatching <persona> <intent_id>` message for the target persona. If a pending or confirmed intent is present and the referenced task is not yet done, hold — do not dispatch.
-2. **Spawn list task descriptions (secondary):** Run `~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --list` and scan each task's `task` description field for mention of the target persona. If a matching in-flight task is found, steer or continue it rather than spawning a duplicate.
-3. **Agent field (tertiary):** Check the `agent` field in `~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --list` as a final confirmation only. This field is asynchronous and must not be the sole dispatch guard.
+1. **Raven mailbox (primary):** Scan `raven@localhost` (`/var/mail/raven/new/` and `/var/mail/raven/cur/`) for pending or confirmed intents for the same logical work item. Correlate the intent token in the message with its work-item key and any confirmed gateway task ID. An active intent for the same key blocks a duplicate; an intent for another change, review track, or shard does not by itself block this task.
+2. **Spawn list task descriptions (secondary):** Run `~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn --list` and match the intent token or exact work-item key in the task description. A match for the same key means the task is already admitted; a task for the same persona under a different key is distinct. If truncation or missing context makes the key ambiguous, hold and reconcile before retrying.
+3. **Agent field (tertiary):** Use the `agent` field as corroboration for the matching task ID when available. It is asynchronous and must not be the sole dispatch guard or make a persona-only match block independent work.
 
-All three signals must be clear before proceeding with a new dispatch.
+Reconcile all three signals for the same logical work item before writing a new intent or retrying an uncertain start. If a listing fails or the identity cannot be resolved, hold. For an order that explicitly authorizes several independent work items, start them sequentially and reconcile each intent and returned task ID before starting the next; accepted tasks may continue in parallel. A memory-pressure deferral stops further starts for that check-in, and pending work is reconciled on a later check-in before retry.
 
 **AcpProcessDied (`outcome=stopped`):** A task with `outcome=stopped` means the runtime process died unexpectedly — this is NOT a successful completion. Treat it identically to `outcome=failed`: check tasks.md to find the last successfully checked item and dispatch a continuation starting from that point. Never assume a stopped task completed its work.
 

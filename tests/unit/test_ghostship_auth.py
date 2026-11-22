@@ -74,7 +74,8 @@ class TestInspectInstalledUrl(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GHOSTSHIP_URL", None)
             with patch.object(gs, "_inspect_installed_url", return_value=url):
-                resolved, _ = gs._discover_transport([])
+                with patch.object(gs, "_inspect_installed_api_key", return_value=""):
+                    resolved, _ = gs._discover_transport([])
         self.assertEqual(resolved, "http://localhost:9000")
 
     def test_missing_ga_host_url_falls_back(self):
@@ -94,13 +95,15 @@ class TestDiscoverTransport(unittest.TestCase):
     def test_flag_takes_precedence_over_env(self):
         with patch.dict(os.environ, {"GHOSTSHIP_URL": "http://env.example.com"}):
             with patch.object(gs, "_inspect_installed_url", return_value=""):
-                url, _ = gs._discover_transport(["--url", "http://flag.example.com"])
+                with patch.object(gs, "_inspect_installed_api_key", return_value=""):
+                    url, _ = gs._discover_transport(["--url", "http://flag.example.com"])
         self.assertEqual(url, "http://flag.example.com")
 
     def test_env_used_when_no_flag(self):
         with patch.dict(os.environ, {"GHOSTSHIP_URL": "http://env.example.com"}):
             with patch.object(gs, "_inspect_installed_url", return_value=""):
-                url, _ = gs._discover_transport([])
+                with patch.object(gs, "_inspect_installed_api_key", return_value=""):
+                    url, _ = gs._discover_transport([])
         self.assertEqual(url, "http://env.example.com")
 
     def test_podman_inspect_used_when_no_flag_no_env(self):
@@ -147,7 +150,8 @@ class TestDiscoverTransport(unittest.TestCase):
     def test_trailing_slash_stripped(self):
         with patch.dict(os.environ, {"GHOSTSHIP_URL": "http://example.com/"}):
             with patch.object(gs, "_inspect_installed_url", return_value=""):
-                url, _ = gs._discover_transport([])
+                with patch.object(gs, "_inspect_installed_api_key", return_value=""):
+                    url, _ = gs._discover_transport([])
         self.assertEqual(url, "http://example.com")
 
 

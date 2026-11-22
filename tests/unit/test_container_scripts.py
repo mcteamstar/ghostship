@@ -16,10 +16,12 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 # Add container_scripts to sys.path so inject_policy / transfer_raw import cleanly.
 _SCRIPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "transport" / "container_scripts"
@@ -121,17 +123,20 @@ def _make_tar(contents: dict[str, bytes]) -> bytes:
 
 
 class TestTransferRaw(unittest.TestCase):
-    """transfer_raw.transfer() — copy and unpack modes."""
+    """transfer_raw.transfer() — plain, archive, and bundle modes."""
+
+    def _stage(self, workspace: str, stage_name: str, payload: bytes) -> tuple[str, str]:
+        stage = os.path.join(workspace, stage_name)
+        os.makedirs(stage)
+        source = os.path.join(stage, "payload")
+        pathlib.Path(source).write_bytes(payload)
+        return source, stage
 
     def test_plain_copy_writes_bytes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, "source.bin")
             dest_path = os.path.join(tmpdir, "dest.bin")
-            stage_path = os.path.join(tmpdir, "stage")
-            os.makedirs(stage_path)
-            with open(src_path, "wb") as f:
-                f.write(b"hello world")
-            result = _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=False)
+            src_path, stage_path = self._stage(tmpdir, "stage", b"hello world")
+            result = _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=False, workspace=tmpdir)
             self.assertIn("wrote", result)
             self.assertEqual(pathlib.Path(dest_path).read_bytes(), b"hello world")
             # Stage directory cleaned up
@@ -140,17 +145,105 @@ class TestTransferRaw(unittest.TestCase):
     def test_unpack_mode_extracts_archive(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_data = _make_tar({"readme.txt": b"archive content"})
-            src_path = os.path.join(tmpdir, "archive.tar")
             dest_path = os.path.join(tmpdir, "extracted")
-            stage_path = os.path.join(tmpdir, "stage_unpack")
-            os.makedirs(stage_path)
-            with open(src_path, "wb") as f:
-                f.write(archive_data)
-            result = _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True)
+            src_path, stage_path = self._stage(tmpdir, "stage_unpack", archive_data)
+            result = _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True, workspace=tmpdir)
             self.assertIn("unpacked", result)
             extracted_file = pathlib.Path(dest_path) / "readme.txt"
             self.assertTrue(extracted_file.exists())
             self.assertEqual(extracted_file.read_bytes(), b"archive content")
+
+    def test_archive_exact_member_and_output_budgets_succeed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source, stage = self._stage(
+                str(workspace), "stage_exact_archive", _make_tar({"exact.txt": b"1234"})
+            )
+            destination = workspace / "out"
+            _transfer_raw.transfer(
+                source,
+                str(destination),
+                stage,
+                unpack=True,
+                workspace=str(workspace),
+                max_archive_bytes=4,
+                max_archive_members=1,
+            )
+            self.assertEqual((destination / "exact.txt").read_bytes(), b"1234")
+
+    def test_compressed_pax_metadata_is_bounded_before_parsing(self):
+        for value_size in (16, 128 * 1024):
+            with self.subTest(value_size=value_size), tempfile.TemporaryDirectory() as workspace:
+                data = io.BytesIO()
+                with tarfile.open(fileobj=data, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
+                    member = tarfile.TarInfo("file.txt")
+                    member.pax_headers = {"comment": "x" * value_size}
+                    member.size = 1
+                    archive.addfile(member, io.BytesIO(b"x"))
+                source, stage = self._stage(workspace, "stage", data.getvalue())
+                destination = pathlib.Path(workspace) / "out"
+                arguments = (source, str(destination), stage)
+                if value_size > 16:
+                    with self.assertRaisesRegex(_transfer_raw.TransferBudgetExceeded, "extended metadata"):
+                        _transfer_raw.transfer(*arguments, unpack=True, workspace=workspace)
+                    self.assertFalse(destination.exists())
+                else:
+                    _transfer_raw.transfer(*arguments, unpack=True, workspace=workspace)
+                    self.assertEqual((destination / "file.txt").read_bytes(), b"x")
+                self.assertFalse(os.path.exists(stage))
+
+    def test_archive_output_over_budget_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            destination = workspace / "out"
+            destination.mkdir(parents=True)
+            preserved = destination / "keep.txt"
+            preserved.write_bytes(b"keep this")
+            source, stage = self._stage(
+                str(workspace), "stage_over_archive_bytes", _make_tar({"large.txt": b"12345"})
+            )
+            with self.assertRaises(_transfer_raw.TransferBudgetExceeded):
+                _transfer_raw.transfer(
+                    source,
+                    str(destination),
+                    stage,
+                    unpack=True,
+                    workspace=str(workspace),
+                    max_archive_bytes=4,
+                    max_archive_members=1,
+                )
+            self.assertEqual(preserved.read_bytes(), b"keep this")
+            self.assertFalse((destination / "large.txt").exists())
+            self.assertFalse(os.path.exists(stage))
+
+    def test_archive_member_count_over_budget_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source, stage = self._stage(
+                str(workspace),
+                "stage_over_archive_members",
+                _make_tar({"one.txt": b"1", "two.txt": b"2"}),
+            )
+            destination = workspace / "out"
+            with self.assertRaises(_transfer_raw.TransferBudgetExceeded):
+                _transfer_raw.transfer(
+                    source,
+                    str(destination),
+                    stage,
+                    unpack=True,
+                    workspace=str(workspace),
+                    max_archive_bytes=2,
+                    max_archive_members=1,
+                )
+            self.assertFalse(destination.exists())
+            self.assertFalse(os.path.exists(stage))
+
+    def test_bundle_storage_rejects_unbounded_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(RuntimeError):
+                _transfer_raw._bundle_storage_capacity(tmpdir, 1024 * 1024)
 
     def test_stage_cleaned_on_error(self):
         """Stage directory is removed even when transfer fails."""
@@ -160,38 +253,27 @@ class TestTransferRaw(unittest.TestCase):
             # Source does not exist — should raise, but stage must be cleaned up.
             try:
                 _transfer_raw.transfer(
-                    os.path.join(tmpdir, "missing.bin"),
+                    os.path.join(stage_path, "missing.bin"),
                     os.path.join(tmpdir, "dest.bin"),
                     stage_path,
                     unpack=False,
+                    workspace=tmpdir,
                 )
             except Exception:
                 pass
             self.assertFalse(os.path.exists(stage_path))
 
-    @unittest.skipIf(sys.version_info < (3, 12), "filter='data' only on Python 3.12+")
-    def test_unpack_uses_data_filter_python312(self):
-        """On Python 3.12+, extractall should not raise for safe member names."""
+    def test_unpack_accepts_safe_member(self):
+        """Safe members are unpacked on every supported Python version."""
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_data = _make_tar({"safe_member.txt": b"safe"})
-            src_path = os.path.join(tmpdir, "safe.tar")
             dest_path = os.path.join(tmpdir, "out")
-            stage_path = os.path.join(tmpdir, "stage_312")
-            os.makedirs(stage_path)
-            with open(src_path, "wb") as f:
-                f.write(archive_data)
-            # Should succeed — safe members pass through filter="data".
-            result = _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True)
+            src_path, stage_path = self._stage(tmpdir, "stage_safe", archive_data)
+            result = _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True, workspace=tmpdir)
             self.assertIn("unpacked", result)
 
-    @unittest.skipIf(sys.version_info < (3, 12), "filter='data' path-traversal guard only on Python 3.12+")
-    def test_path_traversal_member_rejected_python312(self):
-        """filter='data' causes tarfile to raise OutsideDestinationError for ../
-        members, preventing extraction outside the destination directory.
-
-        This confirms the security invariant that transfer_raw.transfer() in
-        unpack mode cannot be used to write files outside the intended dest.
-        """
+    def test_archive_traversal_rejected_before_destination_changes(self):
+        """Unsafe members are rejected before any existing destination data changes."""
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             info = tarfile.TarInfo(name="../traversal_escape.txt")
@@ -201,20 +283,213 @@ class TestTransferRaw(unittest.TestCase):
         traversal_bytes = buf.getvalue()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            src_path = os.path.join(tmpdir, "traversal.tar")
             dest_path = os.path.join(tmpdir, "extracted")
-            stage_path = os.path.join(tmpdir, "stage_trav")
-            os.makedirs(stage_path)
-            with open(src_path, "wb") as f:
-                f.write(traversal_bytes)
-            # filter="data" raises on path-traversal member names.
-            with self.assertRaises(Exception):
-                _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True)
-            # The escaped file must not exist outside dest.
+            os.makedirs(dest_path)
+            preserved = pathlib.Path(dest_path) / "preserved.txt"
+            preserved.write_bytes(b"keep this")
+            src_path, stage_path = self._stage(tmpdir, "stage_trav", traversal_bytes)
+            with self.assertRaises(ValueError):
+                _transfer_raw.transfer(src_path, dest_path, stage_path, unpack=True, workspace=tmpdir)
             self.assertFalse(
                 os.path.exists(os.path.join(tmpdir, "traversal_escape.txt")),
                 "path-traversal member must not be written outside the destination",
             )
+            self.assertEqual(preserved.read_bytes(), b"keep this")
+            self.assertFalse(os.path.exists(stage_path))
+
+    def test_plain_copy_accepts_nested_workspace_destination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source, stage = self._stage(str(workspace), "stage_nested", b"nested bytes")
+            destination = workspace / "a" / "b" / "file.bin"
+            result = _transfer_raw.transfer(
+                source, str(destination), stage, unpack=False, workspace=str(workspace)
+            )
+            self.assertIn("wrote", result)
+            self.assertEqual(destination.read_bytes(), b"nested bytes")
+            self.assertFalse(os.path.exists(stage))
+
+    def test_plain_copy_rejects_destination_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            outside = pathlib.Path(tmpdir) / "outside.txt"
+            outside.write_bytes(b"keep this")
+            source, stage = self._stage(str(workspace), "stage_outside", b"overwrite")
+            with self.assertRaises(ValueError):
+                _transfer_raw.transfer(
+                    source, str(outside), stage, unpack=False, workspace=str(workspace)
+                )
+            self.assertEqual(outside.read_bytes(), b"keep this")
+            self.assertFalse(os.path.exists(stage))
+
+    def test_plain_copy_rejects_symlinked_destination_parent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            outside = pathlib.Path(tmpdir) / "outside"
+            workspace.mkdir()
+            outside.mkdir()
+            protected = outside / "file.txt"
+            protected.write_bytes(b"keep this")
+            (workspace / "link").symlink_to(outside, target_is_directory=True)
+            source, stage = self._stage(str(workspace), "stage_link", b"overwrite")
+            with self.assertRaises(ValueError):
+                _transfer_raw.transfer(
+                    source,
+                    str(workspace / "link" / "file.txt"),
+                    stage,
+                    unpack=False,
+                    workspace=str(workspace),
+                )
+            self.assertEqual(protected.read_bytes(), b"keep this")
+            self.assertFalse(os.path.exists(stage))
+
+    def test_unpack_accepts_nested_destination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source, stage = self._stage(
+                str(workspace), "stage_nested_archive", _make_tar({"a/b.txt": b"nested archive"})
+            )
+            destination = workspace / "nested" / "out"
+            _transfer_raw.transfer(
+                source, str(destination), stage, unpack=True, workspace=str(workspace)
+            )
+            self.assertEqual((destination / "a" / "b.txt").read_bytes(), b"nested archive")
+            self.assertFalse(os.path.exists(stage))
+
+    def test_archive_symlink_member_is_rejected_before_changes(self):
+        archive_buffer = io.BytesIO()
+        with tarfile.open(fileobj=archive_buffer, mode="w") as archive:
+            regular = tarfile.TarInfo("new.txt")
+            regular.size = 3
+            archive.addfile(regular, io.BytesIO(b"new"))
+            link = tarfile.TarInfo("link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../outside.txt"
+            archive.addfile(link)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            destination = workspace / "existing"
+            destination.mkdir(parents=True)
+            preserved = destination / "keep.txt"
+            preserved.write_bytes(b"keep this")
+            source, stage = self._stage(str(workspace), "stage_symlink_archive", archive_buffer.getvalue())
+            with self.assertRaises(ValueError):
+                _transfer_raw.transfer(
+                    source, str(destination), stage, unpack=True, workspace=str(workspace)
+                )
+            self.assertEqual(preserved.read_bytes(), b"keep this")
+            self.assertFalse((destination / "new.txt").exists())
+            self.assertFalse(os.path.exists(stage))
+
+    def _make_bundle(self, repo_path: pathlib.Path, bundle_path: pathlib.Path) -> None:
+        repo_path.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo_path)], check=True)
+        (repo_path / "README.txt").write_text("bundle content\n")
+        subprocess.run(["git", "-C", str(repo_path), "add", "README.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo_path), "-c", "user.name=Test", "-c",
+             "user.email=test@example.invalid", "commit", "-m", "initial"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_path), "bundle", "create", str(bundle_path), "--all"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+
+    def _transfer_bundle(self, source: str, destination: pathlib.Path, stage: str,
+                         workspace: pathlib.Path, force: bool = False) -> str:
+        with patch.object(_transfer_raw, "_bundle_storage_capacity", return_value=16 * 1024 * 1024):
+            return _transfer_raw.transfer(
+                source,
+                str(destination),
+                stage,
+                unpack=False,
+                workspace=str(workspace),
+                bundle=True,
+                force=force,
+                bundle_storage_root=str(workspace.parent),
+                bundle_storage_limit_bytes=16 * 1024 * 1024,
+            )
+
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc/self/fd")
+    def test_bundle_clone_accepts_nested_destination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            source, stage = self._stage(str(workspace), "stage_bundle", b"")
+            self._make_bundle(pathlib.Path(tmpdir) / "source-repo", pathlib.Path(source))
+            destination = workspace / "nested" / "repo"
+            result = self._transfer_bundle(source, destination, stage, workspace)
+            self.assertIn("cloned to", result)
+            self.assertEqual((destination / "README.txt").read_text(), "bundle content\n")
+            self.assertFalse(os.path.exists(stage))
+
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc/self/fd")
+    def test_forced_bundle_replacement_waits_until_clone_is_ready(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            destination = workspace / "repo"
+            destination.mkdir()
+            (destination / "old.txt").write_text("preserve until clone succeeds")
+            source, stage = self._stage(str(workspace), "stage_force_bundle", b"")
+            self._make_bundle(pathlib.Path(tmpdir) / "force-source", pathlib.Path(source))
+            self._transfer_bundle(source, destination, stage, workspace, force=True)
+            self.assertFalse((destination / "old.txt").exists())
+            self.assertEqual((destination / "README.txt").read_text(), "bundle content\n")
+            self.assertFalse(os.path.exists(stage))
+
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux /proc/self/fd")
+    def test_rejected_forced_bundle_preserves_destination_and_cleans_stage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            destination = workspace / "repo"
+            destination.mkdir(parents=True)
+            preserved = destination / "old.txt"
+            preserved.write_bytes(b"keep this")
+            source, stage = self._stage(str(workspace), "stage_bad_bundle", b"not a git bundle")
+            with self.assertRaises(RuntimeError):
+                self._transfer_bundle(source, destination, stage, workspace, force=True)
+            self.assertEqual(preserved.read_bytes(), b"keep this")
+            self.assertFalse(os.path.exists(stage))
+
+    def test_wire_acceptable_bundle_over_storage_budget_preserves_forced_destination(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = pathlib.Path(tmpdir) / "workspace"
+            destination = workspace / "repo"
+            destination.mkdir(parents=True)
+            preserved = destination / "old.txt"
+            preserved.write_bytes(b"keep this")
+            source, stage = self._stage(str(workspace), "stage_full_bundle", b"")
+            self._make_bundle(pathlib.Path(tmpdir) / "limited-source", pathlib.Path(source))
+            self.assertLess(pathlib.Path(source).stat().st_size, 256 * 1024 * 1024)
+            with patch.object(
+                _transfer_raw, "_bundle_storage_capacity", return_value=8
+            ), patch.object(
+                _transfer_raw,
+                "_run_git",
+                side_effect=RuntimeError("fatal: No space left on device"),
+            ):
+                with self.assertRaises(_transfer_raw.TransferBudgetExceeded):
+                    _transfer_raw.transfer(
+                        source,
+                        str(destination),
+                        stage,
+                        unpack=False,
+                        workspace=str(workspace),
+                        bundle=True,
+                        force=True,
+                        bundle_storage_root=tmpdir,
+                        bundle_storage_limit_bytes=8,
+                    )
+            self.assertEqual(preserved.read_bytes(), b"keep this")
+            self.assertFalse(os.path.exists(stage))
 
 
 if __name__ == "__main__":

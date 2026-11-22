@@ -11,7 +11,7 @@ Covers the pure utility functions in server.py and the minimal health endpoint:
 Design (see openspec/changes/trn-275-server-dashboard-unit-tests/design.md):
 - Import only the specific utility functions needed — ``from transport.server
   import _jwt_exp, ...`` — to avoid pulling in the full server startup path.
-  The conftest stubs are sufficient to import server.py in the test environment.
+  Tests use the installed Starlette, MCP, and Uvicorn dependencies.
 - Tests are pure-function or minimal ASGI invocations with no live server.
 - JWT payloads are constructed inline with base64 encoding — no real signing.
 
@@ -24,12 +24,15 @@ Dual-import shim (container flat layout vs. local dev package):
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import json
 import time
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -172,6 +175,54 @@ class TestLoadTransportSecret(unittest.TestCase):
         self.assertIn("pass-through mode", "\n".join(captured.output))
         self.assertIn("192.168.1.10", "\n".join(captured.output))
 
+    def test_enabled_guard_refuses_wildcard_bind_without_secret(self):
+        server = self._server_module()
+
+        for bind in ("0.0.0.0", "::"):
+            with self.subTest(bind=bind):
+                with self._patch_startup_config(
+                    server, required=True, bind=bind
+                ), patch.object(
+                    server, "Path", return_value=_MissingSecretFile()
+                ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+                    with self.assertRaises(SystemExit) as exc_info:
+                        server._load_transport_secret()
+
+                self.assertEqual(exc_info.exception.code, 1)
+                self.assertIn("GA_TRANSPORT_SECRET is not set", "\n".join(captured.output))
+                self.assertIn(bind, "\n".join(captured.output))
+
+    def test_disabled_guard_warns_and_continues_for_wildcard_bind(self):
+        server = self._server_module()
+
+        for bind in ("0.0.0.0", "::"):
+            with self.subTest(bind=bind):
+                with self._patch_startup_config(
+                    server, required=False, bind=bind
+                ), patch.object(
+                    server, "Path", return_value=_MissingSecretFile()
+                ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+                    secret = server._load_transport_secret()
+
+                self.assertEqual(secret, "")
+                self.assertIn("pass-through mode", "\n".join(captured.output))
+                self.assertIn(bind, "\n".join(captured.output))
+
+    def test_present_secret_allows_wildcard_bind_with_guard_enabled(self):
+        server = self._server_module()
+
+        for bind in ("0.0.0.0", "::"):
+            with self.subTest(bind=bind):
+                with self._patch_startup_config(
+                    server, required=True, bind=bind
+                ), patch.object(
+                    server, "Path", return_value=_PresentSecretFile()
+                ), patch.object(server._security, "register_secret") as register:
+                    secret = server._load_transport_secret()
+
+                self.assertEqual(secret, "transport-secret")
+                register.assert_called_once_with("transport-secret")
+
     def test_present_secret_allows_specific_external_bind(self):
         server = self._server_module()
 
@@ -187,10 +238,10 @@ class TestLoadTransportSecret(unittest.TestCase):
                 self.assertEqual(secret, "transport-secret")
                 register.assert_called_once_with("transport-secret")
 
-    def test_loopback_and_wildcard_binds_do_not_trigger_guard(self):
+    def test_loopback_binds_do_not_trigger_guard(self):
         server = self._server_module()
 
-        for bind in ("127.0.0.1", "0.0.0.0"):
+        for bind in ("127.0.0.1", "localhost", "::1"):
             for required in (True, False):
                 with self.subTest(bind=bind, required=required):
                     with self._patch_startup_config(
@@ -212,6 +263,150 @@ class TestLoadTransportSecret(unittest.TestCase):
                 server._load_transport_secret()
 
         self.assertEqual(exc_info.exception.code, 1)
+
+
+class TestApiKeyStartupGuard(unittest.TestCase):
+    """The server startup guard rejects or allows the real entrypoint cases."""
+
+    @staticmethod
+    def _server_module():
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _run_server_entrypoint(self, server, api_key, config, progressed):
+        """Execute the real __main__ block with external startup I/O stubbed."""
+        class _Registry:
+            _reg = {"crews": {}}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class _Thread:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        def _run(coro):
+            coro.close()
+            progressed.append("startup continued")
+
+        source = Path(server.__file__).read_text(encoding="utf-8")
+        parsed = ast.parse(source)
+        entrypoint = next(
+            node
+            for node in parsed.body
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "__name__"
+            and len(node.test.comparators) == 1
+            and isinstance(node.test.comparators[0], ast.Constant)
+            and node.test.comparators[0].value == "__main__"
+        )
+        namespace = vars(server).copy()
+        namespace.update({
+            "__name__": "__main__",
+            "cfg": config,
+            "GA_API_KEY": api_key,
+            "_warn_inert_backend_settings": lambda: None,
+            "_reconcile_registry": lambda: None,
+            "_validate_academy": lambda: [],
+            "registry": _Registry(),
+            "_dashboard_ports_in_use": set(),
+            "threading": SimpleNamespace(Thread=_Thread),
+            "mcp": SimpleNamespace(streamable_http_app=lambda **_kwargs: object()),
+            "_dashboard_gate": SimpleNamespace(
+                handle_login_post=lambda *_a, **_kw: None,
+                handle_logout_post=lambda *_a, **_kw: None,
+                handle_auth=lambda *_a, **_kw: None,
+                handle_login_get=lambda *_a, **_kw: None,
+            ),
+            "Starlette": lambda **_kwargs: object(),
+            "_openapi": SimpleNamespace(
+                generate_schema=lambda **_kwargs: {"paths": {}},
+                get_mcp_tools=lambda _mcp: [],
+            ),
+            "BearerAuthMiddleware": lambda app, **_kwargs: app,
+            "_build_rate_limiters": lambda: None,
+            "SecurityHeadersMiddleware": lambda app, **_kwargs: app,
+            "TransportSecretMiddleware": lambda app, **_kwargs: app,
+            "uvicorn": SimpleNamespace(
+                Config=lambda *_a, **_kw: object(),
+                Server=lambda _config: object(),
+            ),
+            "asyncio": SimpleNamespace(run=_run),
+        })
+
+        with patch.object(server, "cfg", config):
+            entrypoint_code = compile(
+                ast.Module(body=[entrypoint], type_ignores=[]),
+                server.__file__,
+                "exec",
+            )
+            exec(entrypoint_code, namespace)
+
+    def test_wildcard_bind_with_loopback_portal_continues_without_key(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="127.0.0.1",
+        )
+        progressed = []
+
+        self._run_server_entrypoint(server, "", config, progressed)
+
+        self.assertEqual(progressed, ["startup continued"])
+
+    def test_non_loopback_portal_without_key_exits_startup(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="192.0.2.40",
+        )
+        progressed = []
+
+        with self.assertLogs(server.__name__, level="ERROR") as captured:
+            with self.assertRaises(SystemExit) as exc_info:
+                self._run_server_entrypoint(server, "", config, progressed)
+
+        self.assertEqual(exc_info.exception.code, 1)
+        self.assertEqual(progressed, [])
+        self.assertIn("192.0.2.40", "\n".join(captured.output))
+
+    def test_explicit_opt_out_warns_and_continues(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="192.0.2.41",
+            ga_api_key_disabled=True,
+        )
+        progressed = []
+
+        with self.assertLogs(server.__name__, level="WARNING") as captured:
+            self._run_server_entrypoint(server, "", config, progressed)
+
+        self.assertEqual(progressed, ["startup continued"])
+        self.assertIn("without authentication", "\n".join(captured.output))
+
+    def test_configured_key_allows_non_loopback_portal(self):
+        server = self._server_module()
+        config = server.Config(
+            ga_transport_bind="0.0.0.0",
+            ga_portal_host="192.0.2.42",
+        )
+        progressed = []
+
+        self._run_server_entrypoint(server, "configured-test-key", config, progressed)
+
+        self.assertEqual(progressed, ["startup continued"])
 
 
 # ── TestExtractCrewProxyParts ─────────────────────────────────────────────────
@@ -748,6 +943,127 @@ class TestCrewUiProxyForeignOriginNoCookieRefresh(unittest.TestCase):
         status, refresh = self._invoke(origin_matches=True)
         self.assertEqual(status, 403)
         refresh.assert_called_once()
+
+
+class TestCrewUiProxySessionGate(unittest.TestCase):
+    """Direct internal UI-proxy calls still require a dashboard session."""
+
+    def _server(self):
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+        return _s
+
+    def _invoke(self, *, api_key, with_session):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from transport.dashboard import DashboardGate
+
+        _s = self._server()
+        gate = DashboardGate(
+            session_ttl_secs=3600,
+            api_key=api_key,
+            external_url="http://localhost:64057",
+        )
+        headers = {"x-transport-token": "radar-transport-secret"}
+        if with_session:
+            token = gate._sessions.issue()
+            headers["cookie"] = f"gs_session={token}"
+        scope = _make_scope("GET", "/crews/c1/ui", headers=headers)
+
+        class _ProxyRequest:
+            def __init__(self, request_scope):
+                self.scope = request_scope
+                self.method = request_scope["method"]
+                self.headers = {
+                    key.decode("latin-1"): value.decode("latin-1")
+                    for key, value in request_scope["headers"]
+                }
+
+            async def body(self):
+                return b""
+
+        resolver = AsyncMock(return_value=("c1", "", {"cookie": "crew-cookie"}))
+        stream = MagicMock(return_value=_FakeStreamCtx(200))
+
+        async def _go():
+            return await _s._handle_crew_ui_proxy(_ProxyRequest(scope))
+
+        with patch.object(_s, "_dashboard_gate", gate), \
+             patch.object(_s, "_resolve_crew_for_proxy", resolver), \
+             patch.object(_s, "_cookie_near_expiry", return_value=False), \
+             patch.object(_s, "_crew_cookie", return_value="mc_token_5476=crew"), \
+             patch.object(_s._async_http, "stream", stream, create=True):
+            response = _run(_go())
+        return response, resolver, stream
+
+    def test_transport_secret_without_session_is_rejected_before_proxy(self):
+        response, resolver, stream = self._invoke(api_key="keyed-install", with_session=False)
+
+        self.assertEqual(response.status_code, 401)
+        resolver.assert_not_awaited()
+        stream.assert_not_called()
+
+    def test_valid_session_can_proxy_on_keyed_install(self):
+        response, resolver, stream = self._invoke(api_key="keyed-install", with_session=True)
+
+        self.assertEqual(response.status_code, 200)
+        resolver.assert_awaited_once()
+        stream.assert_called_once()
+
+    def test_open_install_can_proxy_without_session(self):
+        response, resolver, stream = self._invoke(api_key="", with_session=False)
+
+        self.assertEqual(response.status_code, 200)
+        resolver.assert_awaited_once()
+        stream.assert_called_once()
+
+
+class TestRestoreCaddyDashboardRoutes(unittest.TestCase):
+    """Startup route restoration uses the same Caddy socket client."""
+
+    def test_restored_dashboard_routes_are_registered_through_caddy_portal(self):
+        from unittest.mock import MagicMock, patch
+        import transport.caddy as _caddy
+        from transport.caddy import CaddyPortal
+        from transport.dashboard import DashboardGate
+
+        try:
+            import server as _s
+        except ModuleNotFoundError:
+            from transport import server as _s
+
+        portal = CaddyPortal(
+            port=64057,
+            api_key="",
+            port_range_start=64058,
+            port_range_size=4,
+        )
+        gate = DashboardGate(
+            session_ttl_secs=3600,
+            api_key="",
+            external_url="http://localhost:64057",
+        )
+        response = MagicMock(status_code=200, text="")
+        with patch.object(_s, "_caddy_portal", portal), \
+             patch.object(_s, "_dashboard_gate", gate), \
+             patch.object(
+                 _caddy._caddy_admin_client,
+                 "put",
+                 return_value=response,
+                 create=True,
+             ) as put:
+            _s._restore_caddy_dashboard_routes({
+                "alpha": {"dashboard_port": 64058, "cookie": "old-cookie"},
+                "headless": {},
+            })
+
+        self.assertEqual(gate._port_crew[64058], "alpha")
+        put.assert_called_once()
+        self.assertEqual(
+            put.call_args.args[0],
+            "http://localhost:2019/config/apps/http/servers/crew-alpha",
+        )
 
 
 class TestCrewDashboardEndpointRejectsBrowserOrigin(unittest.TestCase):

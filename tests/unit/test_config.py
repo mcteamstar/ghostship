@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from transport.config import (
@@ -149,6 +150,12 @@ class TestConfigDefaults(unittest.TestCase):
     def test_ga_idle_timeout_default(self):
         self.assertEqual(self.cfg.ga_idle_timeout_secs, 300)
 
+    def test_transfer_budget_defaults(self):
+        self.assertEqual(self.cfg.ga_max_upload_bytes, 268_435_456)
+        self.assertEqual(self.cfg.ga_max_archive_bytes, 1_073_741_824)
+        self.assertEqual(self.cfg.ga_max_archive_members, 100_000)
+        self.assertEqual(self.cfg.ga_max_bundle_storage_bytes, 2_147_483_648)
+
     def test_ga_min_free_mem_gb_default(self):
         self.assertAlmostEqual(self.cfg.ga_min_free_mem_gb, 2.0)
 
@@ -173,8 +180,26 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(self.cfg.kiro_api_key, "")
 
     def test_kc_base_image_is_pinned_digest(self):
-        # Must contain a sha256 digest (TRN-219)
-        self.assertIn("sha256:", self.cfg.kc_base_image)
+        expected = (
+            "ghcr.io/kirodotdev/kirocrew@sha256:"
+            "080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1"
+        )
+        self.assertEqual(
+            self.cfg.kc_base_image,
+            expected,
+        )
+
+    def test_kc_base_image_default_matches_admission_containerfile(self):
+        containerfile = (
+            Path(__file__).resolve().parents[2]
+            / "crews" / "_base" / "admission" / "Containerfile"
+        )
+        pin = next(
+            line.split("=", 1)[1]
+            for line in containerfile.read_text().splitlines()
+            if line.startswith("ARG KC_BASE_IMAGE=")
+        )
+        self.assertEqual(self.cfg.kc_base_image, pin)
 
 
 # ── Config.from_env() ─────────────────────────────────────────────────────────
@@ -187,6 +212,12 @@ class TestConfigFromEnv(unittest.TestCase):
         with patch.dict("os.environ", {"PORT": "9000"}):
             cfg = Config.from_env()
         self.assertEqual(cfg.port, 9000)
+
+    def test_kc_base_image_override_from_env(self):
+        override = "ghcr.io/example/kirocrew:custom-test"
+        with patch.dict("os.environ", {"KC_BASE_IMAGE": override}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, override)
 
     def test_host_env_does_not_set_transport_bind(self):
         # HOST is ga-portal's published address; the transport never reads it.
@@ -249,6 +280,20 @@ class TestConfigFromEnv(unittest.TestCase):
             cfg = Config.from_env()
         self.assertEqual(cfg.ga_portal_tls_mode, "internal")
 
+    def test_transfer_budgets_from_env(self):
+        env = {
+            "GA_MAX_UPLOAD_BYTES": "1234",
+            "GA_MAX_ARCHIVE_BYTES": "2345",
+            "GA_MAX_ARCHIVE_MEMBERS": "3456",
+            "GA_MAX_BUNDLE_STORAGE_BYTES": "4567",
+        }
+        with patch.dict("os.environ", env):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.ga_max_upload_bytes, 1234)
+        self.assertEqual(cfg.ga_max_archive_bytes, 2345)
+        self.assertEqual(cfg.ga_max_archive_members, 3456)
+        self.assertEqual(cfg.ga_max_bundle_storage_bytes, 4567)
+
     def test_retired_backend_flag_raises(self):
         with patch.dict("os.environ", {"GA_INCLUDE_CLAUDE_AGENT": "true"}):
             with self.assertRaises(ConfigError):
@@ -294,6 +339,17 @@ class TestConfigFromEnvErrors(unittest.TestCase):
 
     def test_ga_max_active_crews_invalid(self):
         self._assert_config_error("GA_MAX_ACTIVE_CREWS", "x")
+
+    def test_transfer_budgets_must_be_positive_integers(self):
+        for name in (
+            "GA_MAX_UPLOAD_BYTES",
+            "GA_MAX_ARCHIVE_BYTES",
+            "GA_MAX_ARCHIVE_MEMBERS",
+            "GA_MAX_BUNDLE_STORAGE_BYTES",
+        ):
+            with self.subTest(name=name):
+                self._assert_config_error(name, "0")
+                self._assert_config_error(name, "-1")
 
     def test_ga_idle_timeout_secs_invalid(self):
         self._assert_config_error("GA_IDLE_TIMEOUT_SECS", "long")
@@ -746,23 +802,6 @@ class TestPortalOnlyHost(unittest.TestCase):
             "http://[2001:db8::1]:64057",
         )
 
-    def test_presigned_urls_use_public_base_url(self):
-        # transport.files cannot be imported in the unit env; check the wiring.
-        from pathlib import Path
-
-        src = (Path(__file__).resolve().parents[2] / "transport" / "files.py").read_text()
-        self.assertIn("return cfg.public_base_url()", src)
-
-    def test_crew_cors_origin_uses_public_base_url(self):
-        # The CORS origin injected into crews is derived from public_base_url(),
-        # so it follows GA_HOST_URL, then the portal host.
-        from pathlib import Path
-
-        src = (Path(__file__).resolve().parents[2] / "transport" / "tools.py").read_text()
-        self.assertIn("_urlparse(cfg.public_base_url())", src)
-        self.assertNotIn('_transport_public_origin = f"http://localhost:{PORT}"', src)
-
-
 class TestApiKeyExposure(unittest.TestCase):
     """Startup check is on ga-portal's published address, not the listen address."""
 
@@ -791,16 +830,6 @@ class TestApiKeyExposure(unittest.TestCase):
         from transport.config import api_key_exposure
 
         self.assertIsNone(api_key_exposure("s3cret", Config(ga_portal_host="0.0.0.0")))
-
-    def test_server_exits_on_error_verdict(self):
-        # transport.server cannot be imported in the unit env; check the wiring.
-        from pathlib import Path
-
-        src = (Path(__file__).resolve().parents[2] / "transport" / "server.py").read_text()
-        self.assertIn("verdict = api_key_exposure(api_key, config or cfg)", src)
-        self.assertIn("_enforce_api_key_requirement(GA_API_KEY)", src)
-        self.assertNotIn('environ.get("HOST"', src)
-
 
 # ── New env-var fields: ga_task_timestamp_ttl_secs, ga_pickup_max_poll_secs,
 #    ga_batch_max_tasks (TRN-309) ───────────────────────────────────────────────

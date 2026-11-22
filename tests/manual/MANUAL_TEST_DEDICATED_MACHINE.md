@@ -15,17 +15,20 @@ they require an actual Podman runtime (machine on macOS, systemd on Linux).
 
 ```bash
 # 1. Create a config file enabling the dedicated machine
-cat > /tmp/test-dedicated.conf <<EOF
-GA_DEDICATED_MACHINE=true
-GA_MACHINE_CPUS=2
-GA_MACHINE_MEMORY=4096
-GA_MACHINE_DISK=30
-GA_MACHINE_NAME=ghost-academy
-PORT=64057
+cat > /tmp/test-dedicated.yaml <<'EOF'
+machine:
+  dedicated: true
+  name: ghost-academy
+  resources:
+    cpus: 2
+    memory_mb: 4096
+    disk_gb: 30
+network:
+  port: 64057
 EOF
 
 # 2. Run install
-./install.sh --config /tmp/test-dedicated.conf
+./install.sh --config /tmp/test-dedicated.yaml
 
 # 3. Verify the dedicated machine exists
 podman machine list
@@ -47,21 +50,23 @@ healthy on `http://127.0.0.1:64057/health`.
 
 ```bash
 # 1. Create config
-cat > /tmp/test-dedicated.conf <<EOF
-GA_DEDICATED_MACHINE=true
-GA_MACHINE_NAME=ghost-academy
-PORT=64057
+cat > /tmp/test-dedicated.yaml <<'EOF'
+machine:
+  dedicated: true
+  name: ghost-academy
+network:
+  port: 64057
 EOF
 
 # 2. Run install
-./install.sh --config /tmp/test-dedicated.conf
+./install.sh --config /tmp/test-dedicated.yaml
 
 # 3. Verify systemd units
 systemctl --user status podman-ghost-academy.socket
 # Expected: active (listening)
 
 # 4. Verify socket exists
-ls -la /run/user/$(id -u)/podman/ghost-academy.sock
+ls -la ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ghost-academy/podman.sock
 # Expected: socket file present
 
 # 5. Verify containers on dedicated instance

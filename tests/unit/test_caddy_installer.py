@@ -177,6 +177,13 @@ class TestWithApiKey:
         assert ids.index("ga-transport-crew-dashboard") < ids.index("ga-mcp-files-reject")
 
 
+class TestAdminSocket:
+    def test_admin_api_uses_owner_only_unix_socket(self) -> None:
+        doc = _doc()
+        assert doc["admin"]["listen"] == "unix//run/ga-portal-admin/admin.sock|0600"
+        assert "2019" not in doc["admin"]["listen"]
+
+
 # ---------------------------------------------------------------------------
 # (c) Without API key — no 401 handler present
 # ---------------------------------------------------------------------------

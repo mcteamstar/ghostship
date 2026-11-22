@@ -30,3 +30,25 @@ Ghostship's visual identity.
 - **WHEN** the user submits the correct API key
 - **THEN** the browser redirects to the server-sanitised `next` URL
 - **THEN** the redirect target comes from the JSON response body, not the raw form field
+
+#### Scenario: Unauthenticated browser is shown login page
+- **WHEN** a browser hits a crew dashboard port with no session cookie
+- **THEN** it lands on `/dashboard/login?next=<original-url>`
+- **THEN** the response is a valid HTML page with a password form
+
+### Requirement: Dashboard login uses a per-page CSRF cookie and form field
+
+Each login page response SHALL issue a fresh random `gs_csrf` cookie with `SameSite=Strict` and `Secure` when TLS is active. The page SHALL echo that cookie in the `csrf_token` form field. The login handler SHALL compare the non-empty cookie and field in constant time and reject missing or mismatched values with HTTP 403 before evaluating the API key.
+
+#### Scenario: Two login page responses issue distinct nonces
+- **WHEN** the dashboard login page is rendered twice
+- **THEN** the responses issue different `gs_csrf` values, including after an earlier session expires
+- **AND** the form echoes the browser's current cookie value
+
+#### Scenario: Missing or forged login CSRF value
+- **WHEN** the login form cookie or field is missing or the values differ
+- **THEN** the response is HTTP 403 without checking the API key or issuing a session
+
+#### Scenario: Matching login CSRF values
+- **WHEN** the cookie and form field match and the API key is valid
+- **THEN** login returns HTTP 200 and issues a `gs_session` cookie

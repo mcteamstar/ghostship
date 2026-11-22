@@ -75,6 +75,10 @@ class ComposeConfig:
     ga_resource_pressure_gb: str = "2.0"
     ga_resource_critical_gb: str = "1.0"
     ga_spawn_pressure_escalate_cycles: str = "3"
+    ga_max_upload_bytes: str = "268435456"
+    ga_max_archive_bytes: str = "1073741824"
+    ga_max_archive_members: str = "100000"
+    ga_max_bundle_storage_bytes: str = "2147483648"
     ga_git_author_name: str = ""
     ga_git_author_email: str = ""
     ga_rate_limit_enabled: str = "true"
@@ -131,6 +135,7 @@ def generate_compose(config: ComposeConfig) -> str:
         f"{config.data_dir}/academy/mcp:/mcp:ro",
         f"{config.data_dir}/crews:/crews:ro",
         f"{config.podman_sock}:{config.podman_sock}",
+        "ga-portal-admin:/run/ga-portal-admin:ro",
     ]
     if config.ga_orders_dir:
         transport_volumes.append(f"{config.ga_orders_dir}:/mnt/orders:ro")
@@ -180,6 +185,10 @@ def generate_compose(config: ComposeConfig) -> str:
         "GA_RESOURCE_PRESSURE_GB": config.ga_resource_pressure_gb,
         "GA_RESOURCE_CRITICAL_GB": config.ga_resource_critical_gb,
         "GA_SPAWN_PRESSURE_ESCALATE_CYCLES": config.ga_spawn_pressure_escalate_cycles,
+        "GA_MAX_UPLOAD_BYTES": config.ga_max_upload_bytes,
+        "GA_MAX_ARCHIVE_BYTES": config.ga_max_archive_bytes,
+        "GA_MAX_ARCHIVE_MEMBERS": config.ga_max_archive_members,
+        "GA_MAX_BUNDLE_STORAGE_BYTES": config.ga_max_bundle_storage_bytes,
         "GA_GIT_AUTHOR_NAME": config.ga_git_author_name,
         "GA_GIT_AUTHOR_EMAIL": config.ga_git_author_email,
         "GA_TLS_CERTFILE": tls_certfile_container,
@@ -261,6 +270,7 @@ def generate_compose(config: ComposeConfig) -> str:
                 "volumes": [
                     f"{config.data_dir}/caddy/initial-config.json:/config/initial-config.json:ro",
                     "ga-portal-data:/data",
+                    "ga-portal-admin:/run/ga-portal-admin:rw",
                 ],
                 "command": [
                     "caddy",
@@ -278,6 +288,7 @@ def generate_compose(config: ComposeConfig) -> str:
         "secrets": top_secrets,
         "volumes": {
             "ga-portal-data": None,
+            "ga-portal-admin": None,
         },
     }
 
@@ -353,6 +364,10 @@ def _config_from_env() -> ComposeConfig:
         ga_resource_pressure_gb=env.get("GA_RESOURCE_PRESSURE_GB", "2.0"),
         ga_resource_critical_gb=env.get("GA_RESOURCE_CRITICAL_GB", "1.0"),
         ga_spawn_pressure_escalate_cycles=env.get("GA_SPAWN_PRESSURE_ESCALATE_CYCLES", "3"),
+        ga_max_upload_bytes=env.get("GA_MAX_UPLOAD_BYTES", "268435456"),
+        ga_max_archive_bytes=env.get("GA_MAX_ARCHIVE_BYTES", "1073741824"),
+        ga_max_archive_members=env.get("GA_MAX_ARCHIVE_MEMBERS", "100000"),
+        ga_max_bundle_storage_bytes=env.get("GA_MAX_BUNDLE_STORAGE_BYTES", "2147483648"),
         ga_git_author_name=env.get("GA_GIT_AUTHOR_NAME", ""),
         ga_git_author_email=env.get("GA_GIT_AUTHOR_EMAIL", ""),
         ga_rate_limit_enabled=env.get("GA_RATE_LIMIT_ENABLED", "true"),

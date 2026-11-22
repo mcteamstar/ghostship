@@ -421,5 +421,48 @@ class TestOutputEncoding(unittest.TestCase):
         self.assertEqual(result, safe)
 
 
+class TestRateLimiterCapacity(unittest.TestCase):
+    """Finite, synchronized caller-bucket capacity for RateLimiter."""
+
+    def test_expired_bucket_from_another_caller_is_reclaimed(self):
+        limiter = _security.RateLimiter(
+            max_requests=2, window_secs=10.0, max_keys=1
+        )
+        self.assertTrue(limiter.record("old-caller", now=0.0))
+        self.assertTrue(limiter.record("new-caller", now=10.0))
+        self.assertNotIn("old-caller", limiter._hits)
+        self.assertEqual(set(limiter._hits), {"new-caller"})
+
+    def test_capacity_preserves_active_buckets(self):
+        limiter = _security.RateLimiter(
+            max_requests=3, window_secs=10.0, max_keys=1
+        )
+        self.assertTrue(limiter.record("active", now=1.0))
+        self.assertFalse(limiter.record("unseen", now=2.0))
+        self.assertIn("active", limiter._hits)
+        self.assertTrue(limiter.record("active", now=3.0))
+
+    def test_concurrent_admissions_never_exceed_capacity(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        capacity = 3
+        callers = 12
+        barrier = Barrier(callers)
+        limiter = _security.RateLimiter(
+            max_requests=10, window_secs=60.0, max_keys=capacity
+        )
+
+        def admit(index):
+            barrier.wait()
+            return limiter.record(f"caller-{index}", now=1.0)
+
+        with ThreadPoolExecutor(max_workers=callers) as pool:
+            admitted = list(pool.map(admit, range(callers)))
+
+        self.assertEqual(sum(admitted), capacity)
+        self.assertEqual(len(limiter._hits), capacity)
+
+
 if __name__ == "__main__":
     unittest.main()

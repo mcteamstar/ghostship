@@ -15,7 +15,7 @@ seed_kiro_db = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(seed_kiro_db)
 
 
-def test_seed_matches_v0122_chat_database_schema(tmp_path):
+def test_seed_matches_kiro_cli_chat_database_schema(tmp_path):
     db = tmp_path / "kiro-cli" / "data.sqlite3"
     seed_kiro_db.seed_database(db)
 
@@ -60,10 +60,10 @@ def test_seed_matches_v0122_chat_database_schema(tmp_path):
         indexes = {
             row[0]
             for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
             )
         }
-        assert {
+        assert indexes == {
             "idx_conversations_v2_key_updated",
             "idx_conversations_v2_updated_at",
-        } <= indexes
+        }

@@ -70,6 +70,63 @@ def _patch_registry_backing(test, reg_mod, crews):
     return backing["crews"]
 
 
+def _tracked_startup_event_type(waiter_entered, timeout):
+    """Return an Event subclass that observes and bounds startup waiters."""
+    event_type = threading.Event
+
+    class _TrackedStartupEvent(event_type):
+        def wait(self, timeout=None):
+            waiter_entered.set()
+            bounded_timeout = (
+                timeout_limit if timeout is None else min(timeout, timeout_limit)
+            )
+            return super().wait(timeout=bounded_timeout)
+
+    timeout_limit = timeout
+    return _TrackedStartupEvent
+
+
+def _run_same_crew_leader_waiter(
+    test, launcher, crew_id, crew_provider, leader_entered, release_leader,
+    *, before_release=None, timeout=5,
+):
+    """Run a leader and waiter, releasing the leader only after wait entry."""
+    import transport.launcher as launcher_module
+
+    waiter_entered = threading.Event()
+    tracked_event = _tracked_startup_event_type(waiter_entered, timeout)
+    results, errors = [], []
+
+    def _call():
+        try:
+            results.append(launcher.ensure_running(dict(crew_provider()), crew_id))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    leader = threading.Thread(target=_call, name="leader")
+    waiter = threading.Thread(target=_call, name="waiter")
+    waiter_started = False
+    with patch.object(launcher_module, "threading", SimpleNamespace(Event=tracked_event)):
+        leader.start()
+        try:
+            test.assertTrue(leader_entered.wait(timeout=timeout), "leader did not reach its gate")
+            waiter.start()
+            waiter_started = True
+            test.assertTrue(waiter_entered.wait(timeout=timeout), "waiter did not enter event.wait()")
+            if before_release is not None:
+                before_release()
+        finally:
+            release_leader.set()
+            leader.join(timeout=timeout)
+            if waiter_started:
+                waiter.join(timeout=timeout)
+
+    test.assertFalse(leader.is_alive(), "leader thread did not finish")
+    if waiter_started:
+        test.assertFalse(waiter.is_alive(), "waiter thread did not finish")
+    return results, errors
+
+
 # ── TestSecretIdentifier ──────────────────────────────────────────────────────
 
 class TestSecretIdentifier(unittest.TestCase):
@@ -495,49 +552,26 @@ class TestEnsureRunning(_EnsureRunningBase):
 class TestEnsureRunningConcurrency(_EnsureRunningBase):
     """Leader/waiter serialisation, generation counter, exception propagation."""
 
-    def _run_threads(self, targets, timeout=10):
-        threads = [threading.Thread(target=t) for t in targets]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=timeout)
-            self.assertFalse(t.is_alive(), "thread did not finish within timeout")
-
     def test_concurrent_callers_start_container_once(self):
-        results: list = []
-        errors: list = []
-        # The leader signals once it is inside container_start (so it has
-        # already registered the in-progress startup event); the second caller
-        # waits for that signal before entering, guaranteeing it takes the
-        # waiter path. The leader then blocks briefly so the waiter is parked on
-        # event.wait() before the leader finishes.
         leader_in_start = threading.Event()
+        release_start = threading.Event()
         real_start = self.podman.container_start
+        start_calls = 0
 
         def _slow_start(name):
-            leader_in_start.set()
-            # Hold long enough for the waiter to enter and block.
-            __import__("time").sleep(0.3)
+            nonlocal start_calls
+            start_calls += 1
+            if start_calls == 1:
+                leader_in_start.set()
+                if not release_start.wait(timeout=5):
+                    raise RuntimeError("test did not release the startup leader")
             real_start(name)
         self.podman.container_start = _slow_start
 
-        def _leader():
-            try:
-                crew = dict(self.crews[CREW_ID])
-                results.append(self.launcher.ensure_running(crew, CREW_ID))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
-
-        def _waiter():
-            # Wait until the leader is mid-restart, then enter.
-            leader_in_start.wait(timeout=5)
-            try:
-                crew = dict(self.crews[CREW_ID])
-                results.append(self.launcher.ensure_running(crew, CREW_ID))
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
-
-        self._run_threads([_leader, _waiter])
+        results, errors = _run_same_crew_leader_waiter(
+            self, self.launcher, CREW_ID, lambda: self.crews[CREW_ID],
+            leader_in_start, release_start,
+        )
 
         self.assertEqual(errors, [], f"unexpected errors: {errors}")
         # Exactly one restart CYCLE ran: the leader's restart body calls
@@ -556,51 +590,53 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         self.assertEqual(self.crews[CREW_ID]["status"], "running")
 
     def test_leader_exception_propagates_to_waiters(self):
-        errors: list = []
         leader_in_start = threading.Event()
+        release_start = threading.Event()
 
         def _failing_start(name):
             leader_in_start.set()
-            __import__("time").sleep(0.3)
+            if not release_start.wait(timeout=5):
+                raise RuntimeError("test did not release the failing leader")
             self.podman.calls.append(("container_start", name))
             raise RuntimeError("start failed")
         self.podman.container_start = _failing_start
 
-        def _leader():
-            try:
-                crew = dict(self.crews[CREW_ID])
-                self.launcher.ensure_running(crew, CREW_ID)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
-
-        def _waiter():
-            leader_in_start.wait(timeout=5)
-            try:
-                crew = dict(self.crews[CREW_ID])
-                self.launcher.ensure_running(crew, CREW_ID)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
-
-        self._run_threads([_leader, _waiter])
+        _, errors = _run_same_crew_leader_waiter(
+            self, self.launcher, CREW_ID, lambda: self.crews[CREW_ID],
+            leader_in_start, release_start,
+        )
 
         self.assertEqual(len(errors), 2, f"expected both to raise, got {errors}")
         for exc in errors:
             self.assertIsInstance(exc, RuntimeError)
             self.assertIn("start failed", str(exc))
 
-    def _assert_early_failure_releases_waiter(self, expected_error, install_failure):
-        event_type = threading.Event
-        failure_entered = event_type()
-        release_failure = event_type()
-        waiter_waiting = event_type()
-        errors: list[Exception] = []
+    def test_waiter_uses_150_second_timeout(self):
+        from transport.launcher import _StartupCycle
 
-        class _TrackedEvent(event_type):
+        wait_timeouts = []
+
+        class _ObservedEvent(threading.Event):
             def wait(self, timeout=None):
-                waiter_waiting.set()
-                # Keep a broken-finalizer regression bounded instead of
-                # waiting through the production 150-second timeout.
-                return super().wait(timeout=3)
+                wait_timeouts.append(timeout)
+                return super().wait(timeout)
+
+        event = _ObservedEvent()
+        event.set()
+        cycle = _StartupCycle(1, event, (True, None))
+        self.crews[CREW_ID]["status"] = "running"
+        with self.launcher._startup_events_lock:
+            self.launcher._startup_cycles[CREW_ID] = cycle
+            self.launcher._startup_generation[CREW_ID] = 1
+
+        result = self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(wait_timeouts, [150])
+
+    def _assert_early_failure_releases_waiter(self, expected_error, install_failure):
+        failure_entered = threading.Event()
+        release_failure = threading.Event()
 
         def _block_and_raise():
             failure_entered.set()
@@ -609,32 +645,10 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
             raise RuntimeError(expected_error)
 
         install_failure(_block_and_raise)
-
-        def _caller():
-            try:
-                self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
-
-        import transport.launcher as launcher_module
-
-        with patch.object(
-            launcher_module, "threading", SimpleNamespace(Event=_TrackedEvent),
-        ):
-            leader = threading.Thread(target=_caller, name="leader")
-            leader.start()
-            self.assertTrue(failure_entered.wait(timeout=5), "leader did not enter failure point")
-
-            waiter = threading.Thread(target=_caller, name="waiter")
-            waiter.start()
-            self.assertTrue(waiter_waiting.wait(timeout=5), "waiter did not block on leader event")
-            release_failure.set()
-
-            leader.join(timeout=5)
-            waiter.join(timeout=5)
-
-        self.assertFalse(leader.is_alive(), "leader did not finish")
-        self.assertFalse(waiter.is_alive(), "waiter was not released promptly")
+        _, errors = _run_same_crew_leader_waiter(
+            self, self.launcher, CREW_ID, lambda: self.crews[CREW_ID],
+            failure_entered, release_failure,
+        )
         self.assertEqual(len(errors), 2, f"expected both callers to fail, got {errors}")
         self.assertEqual([str(exc) for exc in errors], [expected_error, expected_error])
 
@@ -729,9 +743,7 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
 
         def _run_monitor():
             try:
-                monitors._idle_monitor()
-            except StopIteration:
-                pass
+                monitors._idle_monitor_tick()
             except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
 
@@ -746,7 +758,6 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         with patch.object(monitors, "_get_podman", return_value=self.podman), \
              patch.object(monitors, "_http", http), \
              patch.object(monitors.time, "time", return_value=2000.0), \
-             patch.object(monitors.time, "sleep", side_effect=[None, StopIteration()]), \
              patch.object(monitors, "_get_crew_lifecycle_lock", return_value=observed_lock), \
              patch.object(launcher_module, "_get_crew_lifecycle_lock", return_value=observed_lock):
             monitor_thread = threading.Thread(target=_run_monitor, name="idle-monitor")
@@ -775,43 +786,97 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         self.assertTrue(self.podman.container_is_running(CONTAINER))
         self.assertEqual(self.crews[CREW_ID]["status"], "running")
 
-    def test_generation_change_raises_in_waiter(self):
-        # Simulate a waiter that wakes to find a newer restart cycle running:
-        # the generation counter advanced past the one the waiter captured.
-        errors: list = []
+    def test_waiters_keep_outcomes_from_the_generation_they_joined(self):
+        from transport.launcher import _StartupCycle
 
-        # Elect a leader-in-progress state by hand so the next caller is a
-        # waiter: register an already-set event and a stale outcome, then bump
-        # the generation after the waiter captures the old one.
-        ev = threading.Event()
-        self.launcher._startup_events[CREW_ID] = ev
-        self.launcher._startup_generation[CREW_ID] = 1
-        self.launcher._crew_restart_outcomes[CREW_ID] = (True, None)
+        for earlier_success in (True, False):
+            with self.subTest(earlier_success=earlier_success):
+                self.launcher._startup_cycles.clear()
+                self.launcher._startup_generation.clear()
+                old_waiter_entered = threading.Event()
+                old_wait_signaled = threading.Event()
+                release_old_read = threading.Event()
+                new_waiter_entered = threading.Event()
+                event_type = threading.Event
 
-        def _advance_generation_then_release():
-            # Represent a third caller starting a brand-new restart cycle: the
-            # event the waiter is blocked on fires, but the generation has moved
-            # on, so the waiter must detect the mismatch and raise.
-            self.launcher._startup_generation[CREW_ID] = 2
-            ev.set()
+                class _OldEvent(event_type):
+                    def wait(self, timeout=None):
+                        old_waiter_entered.set()
+                        signaled = super().wait(timeout=5)
+                        if signaled:
+                            old_wait_signaled.set()
+                            if not release_old_read.wait(timeout=5):
+                                raise RuntimeError("test did not release the old waiter")
+                        return signaled
 
-        def _waiter():
-            try:
-                crew = dict(self.crews[CREW_ID])
-                self.launcher.ensure_running(crew, CREW_ID)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
+                class _NewEvent(event_type):
+                    def wait(self, timeout=None):
+                        new_waiter_entered.set()
+                        return super().wait(timeout=5)
 
-        t = threading.Thread(target=_waiter)
-        t.start()
-        # Give the waiter a moment to enter event.wait(), then advance + release.
-        threading.Timer(0.2, _advance_generation_then_release).start()
-        t.join(timeout=10)
-        self.assertFalse(t.is_alive(), "waiter did not finish within timeout")
+                old_cycle = _StartupCycle(1, _OldEvent())
+                results, errors = {}, {}
+                with self.launcher._startup_events_lock:
+                    self.launcher._startup_cycles[CREW_ID] = old_cycle
+                    self.launcher._startup_generation[CREW_ID] = 1
 
-        self.assertEqual(len(errors), 1, f"expected one error, got {errors}")
-        self.assertIsInstance(errors[0], RuntimeError)
-        self.assertIn("gen", str(errors[0]).lower())
+                def _waiter(name):
+                    try:
+                        results[name] = self.launcher.ensure_running(
+                            dict(self.crews[CREW_ID]), CREW_ID,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        errors[name] = exc
+
+                old_thread = threading.Thread(target=_waiter, args=("old",), name="old-waiter")
+                old_thread.start()
+                self.assertTrue(
+                    old_waiter_entered.wait(timeout=5),
+                    "old waiter did not enter event.wait()",
+                )
+                old_error = RuntimeError("generation 1 failed")
+                with self.launcher._startup_events_lock:
+                    old_cycle.outcome = (earlier_success, None if earlier_success else old_error)
+                old_cycle.event.set()
+                self.assertTrue(
+                    old_wait_signaled.wait(timeout=5),
+                    "old waiter did not pause after its event was signaled",
+                )
+
+                later_success = not earlier_success
+                later_error = RuntimeError("generation 2 failed")
+                new_cycle = _StartupCycle(2, _NewEvent())
+                with self.launcher._startup_events_lock:
+                    self.launcher._startup_cycles[CREW_ID] = new_cycle
+                    self.launcher._startup_generation[CREW_ID] = 2
+                    self.crews[CREW_ID]["status"] = "running"
+
+                new_thread = threading.Thread(target=_waiter, args=("new",), name="new-waiter")
+                new_thread.start()
+                self.assertTrue(
+                    new_waiter_entered.wait(timeout=5),
+                    "new waiter did not join generation 2",
+                )
+                with self.launcher._startup_events_lock:
+                    new_cycle.outcome = (later_success, None if later_success else later_error)
+                new_cycle.event.set()
+                new_thread.join(timeout=5)
+                self.assertFalse(new_thread.is_alive(), "new waiter did not finish")
+
+                release_old_read.set()
+                old_thread.join(timeout=5)
+                self.assertFalse(old_thread.is_alive(), "old waiter did not finish")
+
+                if earlier_success:
+                    self.assertIsInstance(results.get("old"), dict)
+                    self.assertIs(errors.get("new"), later_error)
+                else:
+                    self.assertIs(errors.get("old"), old_error)
+                    self.assertIsInstance(results.get("new"), dict)
+
+                with self.launcher._startup_events_lock:
+                    self.launcher._startup_cycles.clear()
+                    self.launcher._startup_generation.clear()
 
     def test_waiter_sees_nuked_crew_after_waking(self):
         # Spec scenario: waiter wakes after a successful leader restart but the
@@ -819,43 +884,26 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         # container_start and post-start setup.  The waiter path calls
         # _get_crew(crew_id); if it raises KeyError the waiter should return
         # _NUKED_DURING_RESTART rather than raising or returning stale data.
-        results: list = []
         leader_in_start = threading.Event()
+        release_start = threading.Event()
         real_start = self.podman.container_start
+        start_calls = 0
 
         def _slow_start(name):
-            leader_in_start.set()
-            __import__("time").sleep(0.3)
+            nonlocal start_calls
+            start_calls += 1
+            if start_calls == 1:
+                leader_in_start.set()
+                if not release_start.wait(timeout=5):
+                    raise RuntimeError("test did not release the startup leader")
             real_start(name)
         self.podman.container_start = _slow_start
 
-        def _leader():
-            try:
-                crew = dict(self.crews[CREW_ID])
-                results.append(self.launcher.ensure_running(crew, CREW_ID))
-            except Exception as exc:  # noqa: BLE001
-                results.append(exc)
-
-        def _waiter():
-            # Enter after leader is mid-restart; then nuke the registry entry
-            # before the waiter wakes, so _get_crew raises KeyError.
-            leader_in_start.wait(timeout=5)
-            # Remove the crew entry — the leader will finish and write outcome,
-            # then the waiter wakes and tries _get_crew which should KeyError.
-            self.crews.pop(CREW_ID, None)
-            try:
-                crew = dict({
-                    "container": CONTAINER,
-                    "volume": "gs-vol-test",
-                    "home_volume": "gs-home-test",
-                    "cookie": "old-cookie",
-                    "status": "stopped",
-                })
-                results.append(self.launcher.ensure_running(crew, CREW_ID))
-            except Exception as exc:  # noqa: BLE001
-                results.append(exc)
-
-        self._run_threads([_leader, _waiter])
+        results, _ = _run_same_crew_leader_waiter(
+            self, self.launcher, CREW_ID, lambda: self.crews[CREW_ID],
+            leader_in_start, release_start,
+            before_release=lambda: self.crews.pop(CREW_ID, None),
+        )
 
         # The leader may return a dict or sentinel; the waiter must specifically
         # return _NUKED_DURING_RESTART because the registry was empty when it
@@ -1209,32 +1257,28 @@ class TestCrossCrewStartAdmission(unittest.TestCase):
                 self.assertEqual(self.launcher._start_reservations, {})
 
     def test_waiter_receives_leader_cookie_failure(self):
-        in_wait = threading.Event()
+        leader_at_gateway = threading.Event()
         release = threading.Event()
 
         def _wait_gateway(_url, timeout=30):
-            in_wait.set()
+            leader_at_gateway.set()
             return release.wait(timeout=5)
 
         self.life._wait_gateway.side_effect = _wait_gateway
         self.life._mint_cookie.side_effect = lambda *_a: None
-        successes, errors = [], []
         with (
             patch.object(self.life, "GA_MAX_ACTIVE_CREWS", 0),
             patch.object(self.life, "GA_MIN_FREE_MEM_GB", 0),
         ):
-            leader = threading.Thread(target=self._start, args=("admit-a", successes, errors))
-            leader.start()
-            self.assertTrue(in_wait.wait(timeout=5))
-            waiter = threading.Thread(target=self._start, args=("admit-a", successes, errors))
-            waiter.start()
-            release.set()
-            self._join([leader, waiter])
+            results, errors = _run_same_crew_leader_waiter(
+                self, self.launcher, "admit-a", lambda: self.crews["admit-a"],
+                leader_at_gateway, release,
+            )
 
-        self.assertEqual(successes, [])
+        self.assertEqual(results, [])
         self.assertEqual(len(errors), 2)
-        self.assertIn("cookie", str(errors[0][1]).lower())
-        self.assertEqual(str(errors[0][1]), str(errors[1][1]))
+        self.assertIn("cookie", str(errors[0]).lower())
+        self.assertEqual(str(errors[0]), str(errors[1]))
         self.assertEqual(self.launcher._start_reservations, {})
 
 
@@ -1812,75 +1856,6 @@ class TestReconcileRegistryTimestampGuard(unittest.TestCase):
         )
 
 
-# ── Task 3.3: H-3 ensure_running single-lock election ────────────────────────
-
-class TestEnsureRunningOneStartPerCrew(_EnsureRunningBase):
-    """TRN-283 H-3: two threads both entering ensure_running for the same crew
-    simultaneously must start the container exactly once."""
-
-    def test_two_threads_start_container_exactly_once(self):
-        """H-3: concurrent ensure_running calls elect one leader; container
-        is restarted exactly once (one restart cycle, not two)."""
-        # The ensure_running restart cycle calls container_start twice per cycle:
-        # once for the initial start, then again after re-patching config.
-        # One leader running one restart cycle → 2 container_start calls total.
-        # Two leaders each running a restart cycle → 4 calls total.
-        # We assert exactly 2 calls, proving only one restart cycle ran.
-        starts: list = []
-        real_start = self.podman.container_start
-        leader_started = threading.Event()
-
-        def _slow_counting_start(name):
-            starts.append(name)
-            if len(starts) == 1:
-                # Signal on the first start so the second thread enters
-                # ensure_running while the leader is mid-restart.
-                leader_started.set()
-                import time as _time
-                _time.sleep(0.25)
-            real_start(name)
-
-        self.podman.container_start = _slow_counting_start
-
-        results: list = []
-        errors: list = []
-
-        def _call():
-            try:
-                crew = dict(self.crews[CREW_ID])
-                results.append(self.launcher.ensure_running(crew, CREW_ID))
-            except Exception as exc:
-                errors.append(exc)
-
-        t1 = threading.Thread(target=_call)
-        t2 = threading.Thread(target=_call)
-        t1.start()
-        # Give t1 a moment to enter ensure_running and register as leader.
-        leader_started.wait(timeout=5)
-        t2.start()
-
-        t1.join(timeout=10)
-        t2.join(timeout=10)
-        self.assertFalse(t1.is_alive(), "t1 did not finish")
-        self.assertFalse(t2.is_alive(), "t2 did not finish")
-
-        self.assertEqual(errors, [], f"unexpected errors: {errors}")
-        self.assertEqual(len(results), 2, f"expected two results, got {results}")
-
-        # One restart cycle calls container_start exactly twice (initial start +
-        # post-config-patch restart). Two restart cycles would be 4 calls.
-        # Assert exactly 2: only one restart cycle ran.
-        self.assertEqual(
-            len(starts), 2,
-            f"container_start called {len(starts)} time(s); expected 2 (one restart cycle). "
-            f"If 4, two restart cycles ran (H-3 election race not fixed).",
-        )
-        # Both callers returned a crew dict (not the nuked sentinel).
-        for r in results:
-            self.assertIsInstance(r, dict)
-        self.assertEqual(self.crews[CREW_ID]["status"], "running")
-
-
 # ── Banshee finding: leader early-exit must unblock waiters ──────────────────
 # H-3 introduced a new race: the leader registers in _startup_events, releases
 # the lock to probe the container (network I/O), and a concurrent caller arrives
@@ -1902,55 +1877,26 @@ class TestEnsureRunningLeaderEarlyExitUnblocksWaiters(_EnsureRunningBase):
     def test_waiter_is_unblocked_when_leader_early_exits(self):
         """If the leader finds a healthy container and returns early, any waiter
         that registered during the probe must be unblocked (not stranded 150 s)."""
-        import time as _time
-
         probe_started = threading.Event()
-        probe_may_continue = threading.Event()
+        release_probe = threading.Event()
 
         life = self.life
 
         # Wrap _probe_gateway so the leader signals when it starts the probe,
         # then waits for the test to send T2 in before completing.
-        real_probe = life._probe_gateway.__wrapped__ if hasattr(
-            life._probe_gateway, "__wrapped__") else None
-
         def _slow_probe(url):
-            probe_started.set()          # signal: T2, come in now
-            probe_may_continue.wait(timeout=5)  # wait for T2 to register
-            return True                  # healthy — leader will early-exit
+            probe_started.set()
+            if not release_probe.wait(timeout=5):
+                raise RuntimeError("test did not release the healthy leader")
+            return True
 
         # Replace the already-patched _probe_gateway with our slow version.
         life._probe_gateway = _slow_probe
 
-        results: list = []
-        errors: list = []
-
-        def _call():
-            try:
-                crew = dict(self.crews[CREW_ID])
-                results.append(self.launcher.ensure_running(crew, CREW_ID))
-            except Exception as exc:
-                errors.append(exc)
-
-        t1 = threading.Thread(target=_call, name="leader")
-        t2 = threading.Thread(target=_call, name="waiter")
-
-        t1.start()
-        # Wait until the leader is inside the probe, then launch T2.
-        probe_started.wait(timeout=5)
-        t2.start()
-        # Give T2 a moment to see the event and call event.wait().
-        _time.sleep(0.05)
-        # Now let the probe finish — T1 will probe-succeed and early-exit.
-        probe_may_continue.set()
-
-        t1.join(timeout=5)
-        # T2 should NOT wait 150 s — it should be unblocked by the leader.
-        t2.join(timeout=5)
-
-        self.assertFalse(t1.is_alive(), "leader thread did not finish in time")
-        self.assertFalse(t2.is_alive(),
-            "waiter thread is still blocked — leader early-exit did not call event.set()")
+        results, errors = _run_same_crew_leader_waiter(
+            self, self.launcher, CREW_ID, lambda: self.crews[CREW_ID],
+            probe_started, release_probe,
+        )
         self.assertEqual(errors, [], f"unexpected errors: {errors}")
         self.assertEqual(len(results), 2,
             f"expected 2 results (leader + waiter), got {results}")
@@ -1979,9 +1925,8 @@ class TestReconcileRegistry(unittest.TestCase):
         self.podman = FakePodmanClient()
         self.podman._req = MagicMock(return_value=[])
         with self.launcher._startup_events_lock:
-            self.launcher._startup_events.clear()
+            self.launcher._startup_cycles.clear()
             self.launcher._startup_generation.clear()
-            self.launcher._crew_restart_outcomes.clear()
 
     def _seed(self, crews):
         from transport.registry import registry
@@ -2322,68 +2267,3 @@ class TestMintCookieAndRefreshCookie(unittest.TestCase):
         # refresh must return True and update the registry entry
         self.assertTrue(result)
         self.assertEqual(backing["crews"][crew_id].get("cookie"), "NEW-COOKIE-XYZ")
-
-
-
-
-class TestResolveDispatchSlot(unittest.TestCase):
-    """Dispatch slot resolution follows enrollment and preserves legacy True fallback."""
-
-    def setUp(self):
-        from transport.lifecycle import _resolve_dispatch_slot
-        self._resolve_dispatch_slot = _resolve_dispatch_slot
-
-    def _enrolled_crew(self):
-        """Return a plain dict crew with 'ghost' enrolled."""
-        return {"enrolled_agents": ["ghost"]}
-
-    def _unenrolled_crew(self):
-        """Return a plain dict crew with no enrolled agents."""
-        return {"enrolled_agents": []}
-
-    def test_default_enrolled_agent_uses_member_slot(self):
-        eff_slot, parent = self._resolve_dispatch_slot(
-            "ghost", None, self._enrolled_crew()
-        )
-        self.assertEqual(eff_slot, "ghost")
-        self.assertEqual(parent, "dashboard:member-ghost")
-
-    def test_default_unenrolled_agent_is_headless(self):
-        eff_slot, parent = self._resolve_dispatch_slot(
-            "ghost", None, self._unenrolled_crew()
-        )
-        self.assertIsNone(eff_slot)
-        self.assertIsNone(parent)
-
-    def test_false_forces_headless_for_enrolled_agent(self):
-        eff_slot, parent = self._resolve_dispatch_slot(
-            "ghost", False, self._enrolled_crew()
-        )
-        self.assertIsNone(eff_slot)
-        self.assertIsNone(parent)
-
-    def test_slot_true_logs_warning(self):
-        """slot=True must emit a WARNING log."""
-        import logging
-        with self.assertLogs("transport.lifecycle", level=logging.WARNING) as cm:
-            self._resolve_dispatch_slot("ghost", True, self._enrolled_crew())
-        self.assertTrue(
-            any("slot=True" in line for line in cm.output),
-            f"No 'slot=True' warning found; got: {cm.output}",
-        )
-
-    def test_slot_true_enrolled_proceeds_as_member_slot(self):
-        """slot=True on enrolled agent resolves to member slot (same as slot=None)."""
-        import logging
-        with self.assertLogs("transport.lifecycle", level=logging.WARNING):
-            eff_slot, parent = self._resolve_dispatch_slot("ghost", True, self._enrolled_crew())
-        self.assertEqual(eff_slot, "ghost")
-        self.assertEqual(parent, "dashboard:member-ghost")
-
-    def test_slot_true_unenrolled_proceeds_as_headless(self):
-        """slot=True on unenrolled agent resolves to headless (same as slot=None)."""
-        import logging
-        with self.assertLogs("transport.lifecycle", level=logging.WARNING):
-            eff_slot, parent = self._resolve_dispatch_slot("ghost", True, self._unenrolled_crew())
-        self.assertIsNone(eff_slot)
-        self.assertIsNone(parent)

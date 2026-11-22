@@ -4,6 +4,17 @@
 
 Defines the durability and integrity guarantees for the crew registry file: atomic writes with kernel-level flush, restricted permissions on intermediate files, and loud failure on corrupt data rather than silent empty-state masking.
 ## Requirements
+### Requirement: Registry file written with restricted permissions
+The system SHALL write `crews.json` with file permissions `0o600` (owner read/write only), ensuring the registry is not readable by other local users on the host.
+
+#### Scenario: Registry written with 0o600 permissions
+- **WHEN** `_save_registry` writes `crews.json`
+- **THEN** the resulting file has permissions `0o600`
+
+#### Scenario: Existing registry file permissions corrected on write
+- **WHEN** `_save_registry` is called on a host where `crews.json` already exists with broader permissions
+- **THEN** after the write the file has permissions `0o600`
+
 ### Requirement: Registry writes use one durable atomic path
 
 Credential and registry files SHALL use `_write_secret_file`: open `.tmp` with mode `0o600`, flush and fsync the file, then fsync its directory before return. Consolidation SHALL preserve each writer's permissions, durability, and atomicity.
@@ -32,6 +43,7 @@ The writer SHALL set `fd = -1` immediately after `os.fdopen()` succeeds and befo
 - **WHEN** the shared utility calls `os.fdopen(fd, ...)`
 - **THEN** `fd` is immediately set to `-1` after `os.fdopen` returns, before any code in the `with` block executes
 - **THEN** if any exception is raised inside the `with` block, the `finally` clause does not attempt to close the already-transferred fd
+
 ### Requirement: Registry load fails loudly on corrupt data
 
 The system SHALL raise an exception when `_load_registry` encounters a file that exists but contains invalid JSON. It SHALL NOT silently return an empty dict in that case.
@@ -50,4 +62,3 @@ The system SHALL raise an exception when `_load_registry` encounters a file that
 
 - **WHEN** `crews.json` does not exist
 - **THEN** `_load_registry` SHALL return `{"crews": {}}` without error (no change to existing behavior)
-

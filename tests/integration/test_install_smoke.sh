@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Disposable Linux install/start smoke test. All Podman state lives under a
-# unique temporary HOME and is served through a private temporary API socket.
+# Disposable Linux install/start smoke test. Podman uses isolated temporary
+# storage and an API socket at the path derived by the installer.
 set -Ee -o pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -37,7 +37,6 @@ export HOME="$SMOKE_HOME"
 export XDG_CONFIG_HOME="$SMOKE_HOME/.config"
 export XDG_DATA_HOME="$SMOKE_DATA"
 export XDG_RUNTIME_DIR="$SMOKE_RUNTIME"
-export PODMAN_SOCK="$SMOKE_RUNTIME/podman.sock"
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   # Podman mounts XDG_RUNTIME_DIR back into its rootless network namespace
   # after replacing /run. Netavark needs the real user manager socket there.
@@ -47,6 +46,16 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   export CONTAINERS_STORAGE_CONF="$SMOKE_ROOT/storage.conf"
   printf '[storage]\ndriver = "overlay"\nrunroot = "%s"\ngraphroot = "%s"\n' \
     "$SMOKE_RUNTIME/storage" "$SMOKE_DATA/containers/storage" > "$CONTAINERS_STORAGE_CONF"
+fi
+# install_main clears PODMAN_SOCK before provisioning and derives the Linux
+# socket from XDG_RUNTIME_DIR. Host the isolated API service at that exact path
+# so the smoke test exercises the installer's real socket selection.
+export PODMAN_SOCK="$XDG_RUNTIME_DIR/podman/podman.sock"
+mkdir -p "$(dirname "$PODMAN_SOCK")"
+chmod 700 "$(dirname "$PODMAN_SOCK")"
+if [[ -e "$PODMAN_SOCK" ]]; then
+  echo "Refusing to replace an existing Podman socket: $PODMAN_SOCK" >&2
+  exit 1
 fi
 unset CONTAINER_HOST CONTAINER_CONNECTION
 mkdir -p "$XDG_CONFIG_HOME/containers"
@@ -150,6 +159,9 @@ cleanup_job() {
   if [[ -n "$PODMAN_SERVICE_PID" ]]; then
     kill "$PODMAN_SERVICE_PID" 2>/dev/null || true
     wait "$PODMAN_SERVICE_PID" 2>/dev/null || true
+    PODMAN_SERVICE_PID=""
+    rm -f -- "$PODMAN_SOCK"
+    rmdir -- "$(dirname "$PODMAN_SOCK")" 2>/dev/null || true
   fi
   podman --remote=false unshare rm -rf -- "$SMOKE_ROOT" || rm -rf -- "$SMOKE_ROOT"
   exit "$status"

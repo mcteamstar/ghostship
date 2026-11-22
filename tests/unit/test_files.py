@@ -6,32 +6,24 @@ Design notes:
   so _load_or_create_file_secret() picks up the fixed test value.
 - Tests access the module's private functions directly via monkeypatching or
   by importing the module with the env var already set.
-- All I/O dependencies (PodmanClient, lifecycle, httpx2) are already stubbed
-  by conftest.py's _install_transport_stubs call.
+- The shared pytest fixture supplies temporary persistence and blocks external
+  HTTP and Podman access while using the installed runtime libraries.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import os
-import sys
 import time
+import threading
 import unittest
 
 # Fix GA_FILE_SECRET before any files.py import so _load_or_create_file_secret
 # returns the test value rather than reading /data/ or generating a random one.
 _TEST_FILE_SECRET = "test-file-secret-value-32chars!!"
 os.environ["GA_FILE_SECRET"] = _TEST_FILE_SECRET
-
-# Ensure transport stubs are installed (httpx2, starlette, etc.) before import.
-# conftest does this at session scope; when running this file standalone we
-# call it directly.
-try:
-    from tests.unit.conftest import _install_transport_stubs
-    _install_transport_stubs()
-except Exception:
-    pass
 
 try:
     import files as _files
@@ -255,25 +247,24 @@ def _async_run(coro):
         # Restore a fresh running loop so asyncio.get_event_loop() keeps working.
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-try:
-    from starlette.requests import Request as StarletteRequest
-except ImportError:
-    # stub already installed via conftest; get it directly
-    import sys as _sys
-    StarletteRequest = _sys.modules["starlette.requests"].Request
-
-
 class _FakeRequest:
     """Minimal request stub for _handle_file_get / _handle_file_put."""
 
     def __init__(self, crew_id: str, path: str, query_params: dict | None = None,
-                 body_bytes: bytes = b""):
+                 body_bytes: bytes = b"", headers: dict | None = None,
+                 chunks: list[bytes] | None = None, stream_error: Exception | None = None):
         self.path_params = {"crew_id": crew_id, "path": path}
         self.query_params = query_params or {}
         self._body = body_bytes
+        self.headers = headers if headers is not None else {"content-length": str(len(body_bytes))}
+        self._chunks = chunks if chunks is not None else [body_bytes]
+        self._stream_error = stream_error
 
-    async def body(self) -> bytes:
-        return self._body
+    async def stream(self):
+        for chunk in self._chunks:
+            yield chunk
+        if self._stream_error is not None:
+            raise self._stream_error
 
 
 def _valid_get_params(crew_id: str, path: str) -> dict:
@@ -288,6 +279,132 @@ def _valid_put_params(crew_id: str, path: str) -> dict:
     url = _files._sign_upload_url(crew_id, path)
     qs = url.split("?", 1)[1]
     return dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
+
+
+class TestTransferUploadDispatch(unittest.TestCase):
+    """Every mutation mode is delegated to the disposable worker script."""
+
+    def test_upload_modes_use_confined_transfer_script(self):
+        workspace = "/workspace"
+        destination = "/workspace/nested/destination"
+        stage = "/workspace/.kirocrew-transfer-test"
+        staged_file = f"{stage}/payload"
+        cases = [
+            (False, False, False, []),
+            (True, False, False, ["--unpack"]),
+            (False, True, True, ["--bundle", "--force"]),
+        ]
+        for unpack, bundle, force, flags in cases:
+            with self.subTest(unpack=unpack, bundle=bundle, force=force):
+                podman = MagicMock()
+                podman.worker_run.return_value = b"transfer complete"
+                handed_off = []
+                podman.container_archive_put.side_effect = (
+                    lambda *args, **kwargs: handed_off.append(b"".join(args[2]))
+                )
+                outer_tar = io.BytesIO(b"outer tar")
+                with patch.object(
+                    _files,
+                    "_build_outer_transfer_tar",
+                    return_value=(stage, staged_file, outer_tar, 9),
+                ):
+                    result = _files._transfer_upload(
+                        podman,
+                        "crew-container",
+                        workspace,
+                        destination,
+                        b"payload",
+                        unpack,
+                        bundle,
+                        force,
+                        volume_name="gs-vol-crew",
+                    )
+                self.assertEqual(result, "transfer complete")
+                put_args, put_kwargs = podman.container_archive_put.call_args
+                self.assertEqual(put_args[:2], ("crew-container", workspace))
+                self.assertEqual(put_kwargs, {"content_length": 9})
+                self.assertEqual(handed_off, [b"outer tar"])
+                podman.worker_run.assert_called_once_with(
+                    "gs-vol-crew",
+                    ["python3", f"{_files.SCRIPTS_DIR}/transfer_raw.py", *flags],
+                    env={
+                        "GA_TRANSFER_SOURCE": f"{_files.WORKER_MOUNT}/.kirocrew-transfer-test/payload",
+                        "GA_TRANSFER_DEST": f"{_files.WORKER_MOUNT}/nested/destination",
+                        "GA_TRANSFER_STAGE": f"{_files.WORKER_MOUNT}/.kirocrew-transfer-test",
+                        "GA_TRANSFER_WORKSPACE": _files.WORKER_MOUNT,
+                        "GA_TRANSFER_MAX_ARCHIVE_BYTES": str(_files.cfg.ga_max_archive_bytes),
+                        "GA_TRANSFER_MAX_ARCHIVE_MEMBERS": str(_files.cfg.ga_max_archive_members),
+                        "GA_TRANSFER_BUNDLE_STORAGE_ROOT": _files.BUNDLE_STORAGE_ROOT,
+                        "GA_TRANSFER_BUNDLE_STORAGE_LIMIT_BYTES": str(
+                            _files.cfg.ga_max_bundle_storage_bytes
+                        ),
+                    },
+                    writable=True,
+                    tmpfs_size_bytes=(
+                        _files.cfg.ga_max_bundle_storage_bytes if bundle else None
+                    ),
+                )
+
+    def test_stage_fallback_cleanup_receives_workspace(self):
+        podman = MagicMock()
+        _files._cleanup_transfer_stage(
+            podman,
+            "crew-container",
+            "/workspace/.kirocrew-transfer-test",
+            "/workspace",
+        )
+        podman.container_exec_checked.assert_called_once_with(
+            "crew-container",
+            ["python3", f"{_files.SCRIPTS_DIR}/transfer_cleanup.py"],
+            env={
+                "GA_TRANSFER_STAGE": "/workspace/.kirocrew-transfer-test",
+                "GA_TRANSFER_WORKSPACE": "/workspace",
+            },
+        )
+
+    def test_archive_handoff_failure_closes_host_tar_and_cleans_crew_stage(self):
+        outer_tar = io.BytesIO(b"partial tar")
+        podman = MagicMock()
+        podman.container_archive_put.side_effect = RuntimeError("handoff failed")
+        with patch.object(
+            _files,
+            "_build_outer_transfer_tar",
+            return_value=("/workspace/.stage", "/workspace/.stage/payload", outer_tar, 11),
+        ), patch.object(_files, "_cleanup_transfer_stage") as cleanup:
+            with self.assertRaisesRegex(RuntimeError, "handoff failed"):
+                _files._transfer_upload(
+                    podman, "gs-crew", "/workspace", "/workspace/file", b"x", False
+                )
+        self.assertTrue(outer_tar.closed)
+        cleanup.assert_called_once_with(
+            podman, "gs-crew", "/workspace/.stage", "/workspace"
+        )
+
+    def test_worker_budget_failure_becomes_http_budget_error(self):
+        try:
+            from podman import WorkerCommandError
+        except ModuleNotFoundError:
+            from transport.podman import WorkerCommandError
+        podman = MagicMock()
+        podman.worker_run.side_effect = WorkerCommandError(
+            3, "TRANSFER_BUDGET_EXCEEDED: archive output limit"
+        )
+        outer_tar = io.BytesIO(b"outer tar")
+        with patch.object(
+            _files,
+            "_build_outer_transfer_tar",
+            return_value=("/workspace/.stage", "/workspace/.stage/payload", outer_tar, 9),
+        ), patch.object(_files, "_cleanup_transfer_stage"):
+            with self.assertRaises(_files.UploadBudgetExceeded):
+                _files._transfer_upload(
+                    podman,
+                    "gs-crew",
+                    "/workspace",
+                    "/workspace/file",
+                    b"x",
+                    False,
+                    volume_name="gs-vol-crew",
+                )
 
 
 class TestFileGetHandler(unittest.TestCase):
@@ -410,8 +527,13 @@ class TestFilePutHandler(unittest.TestCase):
     """_handle_file_put: PUT handler status-code contract (FP1–FP5)."""
 
     def _put(self, crew_id: str, path: str, query_params: dict | None = None,
-             body: bytes = b"content"):
-        req = _FakeRequest(crew_id, path, query_params, body_bytes=body)
+             body: bytes = b"content", headers: dict | None = None,
+             chunks: list[bytes] | None = None,
+             stream_error: Exception | None = None):
+        req = _FakeRequest(
+            crew_id, path, query_params, body_bytes=body, headers=headers,
+            chunks=chunks, stream_error=stream_error,
+        )
         return _async_run(_files._handle_file_put(req))
 
     # ── FP1 — expired token → 403 ─────────────────────────────────────────
@@ -495,6 +617,90 @@ class TestFilePutHandler(unittest.TestCase):
             resp = self._put("test-crew", "workspace/file.txt", params,
                              body=b"some data")
         self.assertEqual(resp.status_code, 500)
+
+    def test_declared_upload_over_limit_returns_413_before_reading(self):
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        with patch.object(_files.cfg, "ga_max_upload_bytes", 4), \
+             patch.object(_files._lifecycle, "_require_crew", return_value=fake_crew), \
+             patch.object(_files, "_transfer_upload") as transfer:
+            resp = self._put(
+                "test-crew", "workspace/file.txt", params,
+                headers={"content-length": "5"}, chunks=[b"not read"],
+            )
+        self.assertEqual(resp.status_code, 413)
+        transfer.assert_not_called()
+
+    def test_actual_upload_over_limit_without_length_returns_413(self):
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        with patch.object(_files.cfg, "ga_max_upload_bytes", 4), \
+             patch.object(_files._lifecycle, "_require_crew", return_value=fake_crew), \
+             patch.object(_files, "_transfer_upload") as transfer:
+            resp = self._put(
+                "test-crew", "workspace/file.txt", params,
+                headers={}, chunks=[b"1234", b"5"],
+            )
+        self.assertEqual(resp.status_code, 413)
+        transfer.assert_not_called()
+
+    def test_missing_length_exact_limit_streams_to_transfer(self):
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        fake_crew_obj = MagicMock()
+        fake_crew_obj.container = "gs-test-crew"
+
+        request_thread = threading.get_ident()
+
+        def capture_upload(*args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), request_thread)
+            self.assertEqual(args[4].read(), b"1234")
+            self.assertEqual(kwargs["body_size"], 4)
+            return "ok"
+
+        with patch.object(_files.cfg, "ga_max_upload_bytes", 4), \
+             patch.object(_files._lifecycle, "_require_crew", return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_ensure_crew_running", return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_to_crew", return_value=fake_crew_obj), \
+             patch.object(_files, "_get_podman", return_value=MagicMock()), \
+             patch.object(_files, "_transfer_upload", side_effect=capture_upload):
+            resp = self._put(
+                "test-crew", "workspace/file.txt", params,
+                headers={}, chunks=[b"12", b"34"],
+            )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_disconnect_closes_host_stage_and_does_not_handoff(self):
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        host_stage = io.BytesIO()
+        with patch.object(_files._lifecycle, "_require_crew", return_value=fake_crew), \
+             patch.object(_files.tempfile, "TemporaryFile", return_value=host_stage), \
+             patch.object(_files, "_transfer_upload") as transfer:
+            resp = self._put(
+                "test-crew", "workspace/file.txt", params,
+                headers={}, chunks=[b"partial"],
+                stream_error=RuntimeError("client disconnected"),
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(host_stage.closed)
+        transfer.assert_not_called()
+
+    def test_transfer_budget_failure_returns_413(self):
+        params = _valid_put_params("test-crew", "workspace/file.txt")
+        fake_crew = {"container": "gs-test-crew", "status": "running"}
+        fake_crew_obj = MagicMock()
+        fake_crew_obj.container = "gs-test-crew"
+        with patch.object(_files._lifecycle, "_require_crew", return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_ensure_crew_running", return_value=fake_crew), \
+             patch.object(_files._lifecycle, "_to_crew", return_value=fake_crew_obj), \
+             patch.object(_files, "_get_podman", return_value=MagicMock()), \
+             patch.object(
+                 _files, "_transfer_upload",
+                 side_effect=_files.UploadBudgetExceeded("archive output limit"),
+             ):
+            resp = self._put("test-crew", "workspace/file.txt", params)
+        self.assertEqual(resp.status_code, 413)
 
 
 if __name__ == "__main__":

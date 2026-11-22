@@ -149,7 +149,7 @@ def generate_caddy_config(config: CaddyConfig) -> dict:
         main_server["automatic_https"] = auto_https
 
     doc: dict = {
-        "admin": {"listen": "0.0.0.0:2019"},
+        "admin": {"listen": "unix//run/ga-portal-admin/admin.sock|0600"},
         "apps": {
             "http": {
                 "servers": {

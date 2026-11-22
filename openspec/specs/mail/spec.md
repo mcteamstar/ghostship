@@ -7,11 +7,11 @@ Let agents dispatched into the same crew hand off work and reply to each other a
 ## Requirements
 
 ### Requirement: Raven self-coordination dispatch-intent mail convention
-Before spawn, Raven SHALL send a self-addressed marker to `raven@localhost` with subject `dispatching <persona> intent-<uuid>`, and prefix the brief `SDD dispatch <change> <persona> <intent_id>`. On success, it SHALL confirm the gateway task ID and link the token. Check-ins SHALL scan markers: pending blocks one check and is stale only with no matching task or active worker; confirmed is stale when done or absent. An after-write election SHALL allow only the oldest pending marker per persona.
+Before spawn, Raven SHALL send a self-addressed marker to `raven@localhost` with subject `dispatching <persona> intent-<uuid>`, and prefix the brief `SDD dispatch <intent_id> <change> <persona>`. On success, it SHALL confirm the gateway task ID and link the token. Check-ins SHALL scan markers: pending blocks one check and is stale only with no matching task or active worker; confirmed is stale when done or absent. An after-write election SHALL allow only the oldest pending marker per persona.
 
 #### Scenario: Raven writes a tokenized intent before spawning Ghost
 - **WHEN** Raven decides to dispatch Ghost for implementation and confirms all three layered signals are clear
-- **THEN** Raven generates `intent-abc123`, prefixes the task description with `SDD dispatch <change> ghost intent-abc123`, writes `dispatching ghost intent-abc123` to `raven@localhost`, and only then calls `/api/spawn`
+- **THEN** Raven generates `intent-abc123`, prefixes the task description with `SDD dispatch intent-abc123 <change> ghost`, writes `dispatching ghost intent-abc123` to `raven@localhost`, and only then calls `/api/spawn`
 
 #### Scenario: Raven records the gateway-assigned task ID
 - **WHEN** the spawn call returns task ID `abc123`
@@ -87,25 +87,6 @@ Inter-agent subjects SHALL carry complete status, handoff, and request messages 
 #### Scenario: Raven skims all mailboxes by subject
 - **WHEN** Raven reads mailboxes during any task — Captain-loop or direct dispatch
 - **THEN** it reads subject lines from all 8 mailboxes (`/var/mail/ghost`, `/var/mail/spectre`, `/var/mail/banshee`, `/var/mail/wraith`, `/var/mail/reaper`, `/var/mail/raven`, `/var/mail/captain`, `/var/mail/admiral`) to build situational awareness, only opening message bodies when the subject alone is insufficient to understand what action is needed
-
-### Requirement: `pickup` surfaces mail subjects for full situational awareness
-Every `pickup` SHALL return unread subjects and counts only. A task-specific call reads that agent's, Captain's, and Admiral's mailboxes; a crew-wide call reads all persona, Captain, and Admiral mailboxes. Bodies are not read, and mailbox files are not modified.
-
-#### Scenario: pickup on a specific task returns agent, captain, and admiral subjects
-- **WHEN** `pickup` is called with a `task_id` for a Ghost task and all three mailboxes have unread mail
-- **THEN** the response includes `ghost_mail: N, ghost_subjects: [...]`, `captain_mail: N, captain_subjects: [...]`, and `admiral_mail: N, admiral_subjects: [...]`
-
-#### Scenario: crew-wide pickup returns all persona, captain, and admiral subjects
-- **WHEN** `pickup` is called without a `task_id`
-- **THEN** the response includes subject line summaries for every persona mailbox that has unread mail, plus captain and admiral, so the Admiral can assess the full crew state at a glance
-
-#### Scenario: empty mailboxes omitted or shown as zero
-- **WHEN** `pickup` is called and a mailbox has no unread messages
-- **THEN** that mailbox contributes a zero count and an empty subjects list (or is omitted) — no change to response shape when mailboxes are empty
-
-#### Scenario: pickup with no unread mail anywhere
-- **WHEN** `pickup` is called and all mailboxes are empty
-- **THEN** the response is the same shape as today with all mail counts at zero
 
 ### Requirement: Mail addressing and reading conventions
 The system SHALL document and enforce (via STANDING_ORDERS and the mail skill) a consistent set of conventions for how agents send, address, and read mail within a crew.

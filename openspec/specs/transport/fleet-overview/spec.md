@@ -8,6 +8,76 @@ captain state without requiring an active MCP agent session.
 
 ## Requirements
 
+### Requirement: Gateway health field in crews() output
+The `crews()` tool SHALL include a `gateway_healthy: bool` field in each crew entry, reflecting whether the gateway liveness probe succeeded at the time of the call.
+
+#### Scenario: Healthy gateway
+- **WHEN** `crews()` is called and a crew's container is running and its gateway responds to the liveness probe
+- **THEN** that crew's entry includes `gateway_healthy: true`
+
+#### Scenario: Unresponsive gateway
+- **WHEN** `crews()` is called and a crew's container is running but its gateway does not respond to the liveness probe
+- **THEN** that crew's entry includes `gateway_healthy: false`
+
+#### Scenario: Stopped container
+- **WHEN** `crews()` is called and a crew's container is stopped
+- **THEN** that crew's entry includes `gateway_healthy: false`
+
+### Requirement: crews() includes crew image version
+The `crews()` tool SHALL include a `crew_image_version` field in each crew entry, reflecting the version of the crew image that crew was built from. The value SHALL be sourced from the registry, populated at launch time.
+
+#### Scenario: crews() shows version for a running crew
+- **WHEN** `crews()` is called and a crew has `crew_image_version` stored in the registry
+- **THEN** the crew entry includes `crew_image_version` with the stored semver string
+
+#### Scenario: crews() for a crew launched before version tracking
+- **WHEN** `crews()` is called and a crew's registry entry has no `crew_image_version` field
+- **THEN** the crew entry includes `crew_image_version` set to `"unknown"`
+
+### Requirement: Crew list response includes timing metadata
+
+The `crews` tool response SHALL include `created_at` (ISO 8601 UTC, from the existing `crews.json` registry entry) and `last_task_at` (ISO 8601 UTC, the most recent time a task was dispatched on this crew) for each crew entry. `last_task_at` SHALL be `null` if no task has been dispatched on this crew.
+
+#### Scenario: crews list includes created_at
+- **WHEN** `crews` is called
+- **THEN** each entry includes `created_at` derived from the registry
+
+#### Scenario: crews list includes last_task_at after a dispatch
+- **WHEN** at least one task has been dispatched on a crew and `crews` is called
+- **THEN** that crew's entry includes `last_task_at` as an ISO 8601 UTC string
+
+#### Scenario: crews list last_task_at is null for a newly launched crew
+- **WHEN** a crew has been launched but no task has been dispatched
+- **THEN** `last_task_at` is `null`
+
+### Requirement: crews() active_crews reflects actual Podman state
+
+`crews()` SHALL count only registry-running crews confirmed running by Podman. It SHALL report stale entries as stopped and correct their registry status.
+
+#### Scenario: Registry-running crew whose container is actually running
+- **WHEN** `crews()` is called and a crew has `status: "running"` in the registry
+  and its Podman container is confirmed running
+- **THEN** that crew appears with `status: "running"` and is counted in `active_crews`
+
+#### Scenario: Registry-running crew whose container is externally stopped
+- **WHEN** `crews()` is called and a crew has `status: "running"` in the registry
+  but its Podman container is not running
+- **THEN** that crew appears with `status: "stopped"` in the response, is NOT
+  counted in `active_crews`, and the registry entry is corrected to `"stopped"`
+
+#### Scenario: active_crews matches confirmed running container count
+- **WHEN** `crews()` is called after one or more crew containers have been
+  stopped outside ghostship (e.g. via `podman stop` or a VM reboot)
+- **THEN** `active_crews` equals the number of containers that are actually
+  running in Podman, not the number of registry entries with `status: "running"`
+
+### Requirement: Crew listing
+The system SHALL list every registered crew with its status, creation time, and active agent tasks.
+
+#### Scenario: List crews with a mix of states
+- **WHEN** `crews` is called while some crews are running and others are stopped or idle
+- **THEN** the system returns an entry per crew with its known metadata, and an empty `agents` list for any crew whose gateway cannot currently be reached
+
 ### Requirement: `GET /` serves the Radar fleet dashboard
 
 `GET /` SHALL serve the Radar SPA behind Caddy `forward_auth`; unauthenticated users SHALL be redirected to `/dashboard/login?next=/`. The transport bearer middleware SHALL keep `/` public, with session enforcement at Caddy as for `/crews/*/ui`.

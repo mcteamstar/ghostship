@@ -108,7 +108,8 @@ run_integration() {
 
   for python_suite in \
     "$REPO_DIR/tests/integration/test_profile_launch_flow.py" \
-    "$REPO_DIR/tests/integration/test_on_demand_recovery.py"; do
+    "$REPO_DIR/tests/integration/test_on_demand_recovery.py" \
+    "$REPO_DIR/tests/integration/test_crew_gateway_client.py"; do
     printf '\n--- Integration: %s ---\n' "$(basename "$python_suite")"
     if python3 -m pytest "$python_suite"; then
       printf 'Integration Python suite result: PASS (%s)\n' "$(basename "$python_suite")"

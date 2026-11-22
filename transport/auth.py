@@ -78,6 +78,28 @@ def _parse_bearer_token(header_value: str) -> str | None:
     return token
 
 
+def _validated_bearer_token(scope: dict, api_key: str) -> str | None:
+    """Return the bearer token only when it passes the API-key auth check.
+
+    Both bearer authentication and rate-limit identity classification use this
+    helper so malformed, duplicated, missing, or incorrect credentials cannot
+    create a separate limiter bucket.
+    """
+    if not api_key:
+        return None
+    values = [
+        value.decode("latin-1")
+        for name, value in scope.get("headers", [])
+        if name == b"authorization"
+    ]
+    if len(values) != 1:
+        return None
+    token = _parse_bearer_token(values[0])
+    if token is None or not hmac.compare_digest(token, api_key):
+        return None
+    return token
+
+
 # ── Rate-limit configuration ──────────────────────────────────────────────────
 # Per-endpoint sliding-window limits, each overridable via a GA_RATE_LIMIT_*
 # env var in "<count>:<window_secs>" format. GA_RATE_LIMIT_ENABLED is the master
@@ -289,9 +311,9 @@ class RateLimitMiddleware(AsyncMiddlewareBase):
     scopes (WebSocket, lifespan) pass through unchanged. Paths not covered by
     any registered limiter pass through without a rate check.
 
-    Caller identity is a composite key: the source IP alone when no bearer
-    token is presented, or ``SHA-256(token)[:8]:<ip>`` when one is — the raw
-    token value is never stored in limiter state.
+    Caller identity is the source IP unless exactly one well-formed bearer
+    token matches the configured API key. Only then is the bucket key
+    ``SHA-256(token)[:8]:<ip>``; the raw token is never stored in limiter state.
     """
 
     _EXEMPT: frozenset[str] = frozenset({"/health", "/version"})
@@ -372,12 +394,7 @@ class RateLimitMiddleware(AsyncMiddlewareBase):
             await self.app(scope, receive, send)
             return
 
-        # Extract bearer token (best-effort — may be absent or invalid).
-        bearer: str | None = None
-        for k, v in scope.get("headers", []):
-            if k == b"authorization":
-                bearer = _parse_bearer_token(v.decode("latin-1"))
-                break
+        bearer = _validated_bearer_token(scope, self._api_key)
         caller = self._caller_key(scope, bearer)
 
         if not limiter.record(caller):
@@ -449,10 +466,10 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
 
     async def __call__(self, scope, receive, send) -> None:
         # WebSocket upgrades for /crews/<id>/ui/<path> are proxied to the crew
-        # gateway with the session cookie injected. Access is gated by Caddy's
-        # forward_auth upstream (keyed deployments); the transport's bearer check
-        # applies to HTTP scopes only, so WS is dispatched here,
-        # before AsyncMiddlewareBase forwards other non-HTTP scopes downstream.
+        # gateway with the session cookie injected. The transport bearer check
+        # applies to HTTP scopes only, so WS is dispatched here before
+        # AsyncMiddlewareBase forwards other non-HTTP scopes downstream. The WS
+        # handler validates the dashboard session and Origin itself.
         if scope["type"] == "websocket":
             _ws_parts = scope.get("path", "").lstrip("/").split("/")
             if (
@@ -462,7 +479,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             ):
                 # Delegate to the registered ws_proxy handler if present.
                 # The WS handler lives in public_routes (no bearer auth needed —
-                # Caddy's gs_session forward-auth is the gate). Check both dicts.
+                # the handler validates the gs_session itself). Check both dicts.
                 ws_handler = self._public_routes.get(
                     ("WS", "/crews/*/ui")
                 ) or self._routes.get(("WS", "/crews/*/ui"))
@@ -493,7 +510,7 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
 
         Returns True if a public route handled the request.
         Supports exact path keys, the ``/crews/*/ui`` wildcard pattern (crew UI
-        paths are gated by Caddy's gs_session forward-auth, not bearer), and the
+        paths are bearer-exempt; the handler validates the gs_session), and the
         ``POST /crews/*/captain/stop`` crew-internal self-cancel endpoint (the
         handler validates the crew's dashboard session cookie itself, so it is
         bearer-exempt but not unauthenticated).
@@ -507,7 +524,8 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             await response(scope, receive, send)
             return True
 
-        # Pattern match for /crews/{id}/ui[/{path}] — gated by Caddy forward-auth.
+        # Pattern match for /crews/{id}/ui[/{path}] — the handler enforces the
+        # dashboard session gate for both Portal and direct internal callers.
         _path = scope["path"]
         _parts = _path.lstrip("/").split("/")
         if len(_parts) >= 3 and _parts[0] == "crews" and _parts[2] == "ui":
@@ -648,28 +666,9 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             })
             return
 
-        # Extract Authorization headers from the ASGI scope
-        auth_values = [
-            v.decode("latin-1")
-            for k, v in scope.get("headers", [])
-            if k == b"authorization"
-        ]
-
-        # Reject: missing, duplicated, or malformed
-        if len(auth_values) != 1:
-            self._bearer_throttle.record_failure("bearer", source_ip)
-            await self._reject(send, scope)
-            return
-
-        value = auth_values[0]
-        # Must be "Bearer <token>" (case-insensitive scheme)
-        token = _parse_bearer_token(value)
+        # Reuse the same credential check used to classify rate-limit identity.
+        token = _validated_bearer_token(scope, self._key)
         if token is None:
-            self._bearer_throttle.record_failure("bearer", source_ip)
-            await self._reject(send, scope)
-            return
-
-        if not token or not hmac.compare_digest(token, self._key):
             self._bearer_throttle.record_failure("bearer", source_ip)
             await self._reject(send, scope)
             return

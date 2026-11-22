@@ -1,7 +1,7 @@
 """Unit tests for the ga-radar server.py (TRN-286).
 
-Tests call the ASGI app directly without starlette TestClient to avoid
-httpx2/starlette version compatibility issues in the test venv.
+Tests call the ASGI app directly with the installed Starlette and HTTP
+libraries. External HTTP is intercepted by an in-process MockTransport.
 
 Covers:
   - GET /health  — returns 200 {"status": "ok"}
@@ -15,31 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Ensure the radar package is importable without installing.
 # ---------------------------------------------------------------------------
 _RADAR_DIR = Path(__file__).parents[2] / "radar"
-
-# Module names that may have been stubbed by conftest.py for transport tests.
-_STARLETTE_STUB_KEYS = [
-    k for k in ("starlette", "starlette.responses", "starlette.requests",
-                "starlette.routing")
-]
-
-
-def _evict_starlette_stubs() -> None:
-    """Remove conftest stubs so the real starlette can be imported."""
-    stub = sys.modules.get("starlette")
-    if stub is not None and getattr(stub, "_unit_test_stub", False):
-        for key in list(sys.modules.keys()):
-            if key == "starlette" or key.startswith("starlette."):
-                del sys.modules[key]
-
 
 import importlib.util as _importlib_util
 import pytest
@@ -55,8 +38,6 @@ def _import_radar_server():
     if _radar_server_module is not None:
         return _radar_server_module
 
-    _evict_starlette_stubs()
-
     # Use importlib to load radar/server.py under a unique name so it never
     # clobbers sys.modules["server"] (which test_server.py uses for transport).
     spec = _importlib_util.spec_from_file_location(
@@ -69,7 +50,7 @@ def _import_radar_server():
 
 
 # ---------------------------------------------------------------------------
-# Minimal ASGI test harness (no httpx / TestClient dependency).
+# Minimal ASGI test harness that invokes the installed Starlette app in-process.
 # ---------------------------------------------------------------------------
 
 def _run(coro):
@@ -134,12 +115,26 @@ async def _call(app, scope) -> tuple[list[dict], bytes]:
     return messages, _body_of(messages)
 
 
-def _get_httpx():
-    try:
-        import httpx as _httpx
-    except ImportError:
-        import httpx2 as _httpx  # type: ignore[no-redef]
-    return _httpx
+def _mock_transport(server, *, response=None, request_error=False):
+    """Patch the client's transport to return real HTTP responses offline."""
+    client_library = server.httpx
+    if response is None:
+        response = (200, b"{}")
+
+    def handle(request):
+        if request_error:
+            raise client_library.ConnectError("connection refused", request=request)
+        status, content = response
+        return client_library.Response(status, content=content, request=request)
+
+    real_async_client = client_library.AsyncClient
+    transport = client_library.MockTransport(handle)
+
+    def async_client(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    return patch.object(server.httpx, "AsyncClient", side_effect=async_client)
 
 
 # ---------------------------------------------------------------------------
@@ -161,32 +156,6 @@ class TestRadarHealth(unittest.TestCase):
 class TestRadarApiCrewsSuccess(unittest.TestCase):
     """GET /api/crews proxies to transport and returns the payload."""
 
-    def _make_fake_httpx(self, response=None, request_error=False):
-        """Build a minimal httpx module replacement with a controlled AsyncClient."""
-        import types
-        from unittest.mock import AsyncMock, MagicMock
-
-        class _FakeRequestError(Exception):
-            """Stands in for httpx.RequestError inside the patched module."""
-            pass
-
-        fake_resp = MagicMock()
-        fake_resp.status_code = response[0] if response else 200
-        fake_resp.content = (response[1] if response else b'{}')
-        fake_resp.text = (response[1].decode() if response and isinstance(response[1], bytes) else "")
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        if request_error:
-            mock_client.get = AsyncMock(side_effect=_FakeRequestError("connection refused"))
-        else:
-            mock_client.get = AsyncMock(return_value=fake_resp)
-
-        fake_httpx = types.ModuleType("fake_httpx")
-        fake_httpx.AsyncClient = MagicMock(return_value=mock_client)
-        fake_httpx.RequestError = _FakeRequestError
-        return fake_httpx
 
     def test_returns_fleet_payload(self):
         server = _import_radar_server()
@@ -196,10 +165,10 @@ class TestRadarApiCrewsSuccess(unittest.TestCase):
             "max_active_crews": 3,
             "host_memory_available_gb": 8.0,
         }
-        fake_httpx = self._make_fake_httpx(response=(200, json.dumps(mock_payload).encode()))
+        mock_transport = _mock_transport(server, response=(200, json.dumps(mock_payload).encode()))
         scope = _make_scope("GET", "/api/crews")
 
-        with patch.object(server, "httpx", fake_httpx):
+        with mock_transport:
             messages, body = _run(_call(server.app, scope))
 
         self.assertEqual(_status_of(messages), 200)
@@ -212,39 +181,13 @@ class TestRadarApiCrewsSuccess(unittest.TestCase):
 class TestRadarApiCrewsTransportDown(unittest.TestCase):
     """GET /api/crews returns 502 when transport is unreachable."""
 
-    def _make_fake_httpx(self, response=None, request_error=False):
-        """Build a minimal httpx module replacement with a controlled AsyncClient."""
-        import types
-        from unittest.mock import AsyncMock, MagicMock
-
-        class _FakeRequestError(Exception):
-            """Stands in for httpx.RequestError inside the patched module."""
-            pass
-
-        fake_resp = MagicMock()
-        fake_resp.status_code = response[0] if response else 200
-        fake_resp.content = (response[1] if response else b'{}')
-        fake_resp.text = (response[1].decode() if response and isinstance(response[1], bytes) else "")
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        if request_error:
-            mock_client.get = AsyncMock(side_effect=_FakeRequestError("connection refused"))
-        else:
-            mock_client.get = AsyncMock(return_value=fake_resp)
-
-        fake_httpx = types.ModuleType("fake_httpx")
-        fake_httpx.AsyncClient = MagicMock(return_value=mock_client)
-        fake_httpx.RequestError = _FakeRequestError
-        return fake_httpx
 
     def test_returns_502_on_request_error(self):
         server = _import_radar_server()
-        fake_httpx = self._make_fake_httpx(request_error=True)
+        mock_transport = _mock_transport(server, request_error=True)
         scope = _make_scope("GET", "/api/crews")
 
-        with patch.object(server, "httpx", fake_httpx):
+        with mock_transport:
             messages, body = _run(_call(server.app, scope))
 
         self.assertEqual(_status_of(messages), 502)
@@ -254,10 +197,10 @@ class TestRadarApiCrewsTransportDown(unittest.TestCase):
 
     def test_returns_502_on_transport_error_status(self):
         server = _import_radar_server()
-        fake_httpx = self._make_fake_httpx(response=(500, b"Internal Server Error"))
+        mock_transport = _mock_transport(server, response=(500, b"Internal Server Error"))
         scope = _make_scope("GET", "/api/crews")
 
-        with patch.object(server, "httpx", fake_httpx):
+        with mock_transport:
             messages, body = _run(_call(server.app, scope))
 
         self.assertEqual(_status_of(messages), 502)
@@ -320,35 +263,10 @@ class TestRadarApiCrewAgents(unittest.TestCase):
         scope["path_params"] = {"crew_id": crew_id}
         return scope
 
-    def _make_fake_httpx(self, response=None, request_error=False):
-        """Build a minimal httpx module replacement with a controlled AsyncClient."""
-        import types
-        from unittest.mock import AsyncMock, MagicMock
 
-        class _FakeRequestError(Exception):
-            """Stands in for httpx.RequestError inside the patched module."""
-            pass
-
-        fake_resp = MagicMock()
-        fake_resp.status_code = response[0] if response else 200
-        fake_resp.content = (response[1] if response else b'{"agents":[]}')
-        fake_resp.text = (response[1].decode() if response and isinstance(response[1], bytes) else "")
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        if request_error:
-            mock_client.get = AsyncMock(side_effect=_FakeRequestError("connection refused"))
-        else:
-            mock_client.get = AsyncMock(return_value=fake_resp)
-
-        fake_httpx = types.ModuleType("fake_httpx")
-        fake_httpx.AsyncClient = MagicMock(return_value=mock_client)
-        fake_httpx.RequestError = _FakeRequestError
-        return fake_httpx
-
-    def _call_handler(self, crew_id: str, fake_httpx) -> tuple:
+    def _call_handler(self, crew_id: str, *, response=None, request_error=False) -> tuple:
         server = _import_radar_server()
+        mock_transport = _mock_transport(server, response=response, request_error=request_error)
         scope = self._make_agents_scope(crew_id)
         messages, send = _collect_send()
 
@@ -358,7 +276,7 @@ class TestRadarApiCrewAgents(unittest.TestCase):
             resp = await server.api_crew_agents(req)
             await resp(scope, _receive, send)
 
-        with patch.object(server, "httpx", fake_httpx):
+        with mock_transport:
             _run(_invoke())
         return messages, _body_of(messages)
 
@@ -369,8 +287,7 @@ class TestRadarApiCrewAgents(unittest.TestCase):
             {"task_id": "t1", "agent": "ghost", "done": False, "elapsed_secs": 10}
         ]}
         body_bytes = _json.dumps(payload).encode()
-        fake_httpx = self._make_fake_httpx(response=(200, body_bytes))
-        messages, body = self._call_handler("alpha", fake_httpx)
+        messages, body = self._call_handler("alpha", response=(200, body_bytes))
         self.assertEqual(_status_of(messages), 200)
         data = _json.loads(body)
         self.assertIn("agents", data)
@@ -380,8 +297,7 @@ class TestRadarApiCrewAgents(unittest.TestCase):
     def test_returns_502_on_request_error(self):
         """Transport unreachable → 502."""
         import json as _json
-        fake_httpx = self._make_fake_httpx(request_error=True)
-        messages, body = self._call_handler("beta", fake_httpx)
+        messages, body = self._call_handler("beta", request_error=True)
         self.assertEqual(_status_of(messages), 502)
         data = _json.loads(body)
         self.assertIn("error", data)
@@ -389,8 +305,7 @@ class TestRadarApiCrewAgents(unittest.TestCase):
     def test_returns_502_on_transport_error_status(self):
         """Transport returns non-200 → 502."""
         import json as _json
-        fake_httpx = self._make_fake_httpx(response=(404, b"not found"))
-        messages, body = self._call_handler("gamma", fake_httpx)
+        messages, body = self._call_handler("gamma", response=(404, b"not found"))
         self.assertEqual(_status_of(messages), 502)
         data = _json.loads(body)
         self.assertIn("error", data)

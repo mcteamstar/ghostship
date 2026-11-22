@@ -69,15 +69,12 @@ class _BaseRouteTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
         self._store = CredentialStore(self._tmp.name)
         import transport.login as login_mod
         self._orig_store = login_mod._cred_store
+        self.addCleanup(setattr, login_mod, "_cred_store", self._orig_store)
         login_mod._cred_store = self._store
-
-    def tearDown(self) -> None:
-        import transport.login as login_mod
-        login_mod._cred_store = self._orig_store
-        self._tmp.cleanup()
 
 
 # ── Tests for POST /login/{backend}/api-key ───────────────────────────────────
@@ -721,8 +718,8 @@ class _FakeRegistry:
         return False
 
 
-class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
-    """Completion GETs store a credential only while their flow is still pending (TRN-258)."""
+class _CompletionRouteHarness(_BaseRouteTest):
+    """Setup-only base for completion tests; it deliberately collects no cases."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -748,35 +745,69 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
             ("_lc", lambda: self.lc),
         ):
             patcher = patch.object(login_mod, name, value)
-            patcher.start()
             self.addCleanup(patcher.stop)
+            patcher.start()
         for flow in (login_mod.KIRO_FLOW, login_mod.CLAUDE_FLOW, login_mod.CODEX_FLOW):
-            self.addCleanup(setattr, flow, "_pending", None)
+            original_pending = flow._pending
+            self.addCleanup(setattr, flow, "_pending", original_pending)
             flow._pending = None
 
     def _pending(self, container: str, state: str = "started") -> dict:
         return {"container": container, "state": state, "started_at": self._time.time()}
 
-    def test_kiro_completion_cancelled_by_logout_stores_nothing(self):
+    @staticmethod
+    def _stored_payload(backend: str, payload: bytes | str) -> bytes:
+        if isinstance(payload, str):
+            payload = payload.encode()
+        if backend in {"claude", "codex"}:
+            import base64
+            return base64.b64encode(payload)
+        return payload
+
+
+class TestCompletionCommitsOnlyWhileCurrent(_CompletionRouteHarness):
+    """Completion GETs store a credential only while their flow is still pending (TRN-258)."""
+
+    # Coverage map: cancellation -> test_completion_cancelled_between_poll_and_commit_for_each_backend;
+    # storage retry -> test_store_failure_keeps_flow_pending_and_allows_retry_for_each_backend;
+    # propagation -> test_propagation_failure_after_commit_does_not_change_outcome_for_each_backend;
+    # profile isolation -> test_completion_propagates_only_to_matching_backend_and_profile_crews.
+
+    def test_completion_cancelled_between_poll_and_commit_for_each_backend(self):
         import transport.login as login_mod
-        login_mod.KIRO_FLOW._pending = self._pending("ga-login-k1")
-        self.crews["k-1"] = {"status": "running", "container": "c-k1", "acp_backend": "kiro"}
+        cases = (
+            ("kiro", login_mod.KIRO_FLOW, login_mod._handle_login_get, "ga-login-k1", "started", "kiro-auth-rows"),
+            ("claude", login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "ga-claude-login-c1", "awaiting_code", b"tar-bytes"),
+            ("codex", login_mod.CODEX_FLOW, login_mod._handle_codex_login_get, "ga-codex-login-c1", "started", b"tar-bytes"),
+        )
+        for backend, flow, handler, container, state, result in cases:
+            with self.subTest(backend=backend):
+                self.crews.clear()
+                self.written.clear()
+                self.injected.clear()
+                flow._pending = self._pending(container, state)
 
-        def poll_then_logout(podman, container, *_a, **_k):
-            # Logout's abort lands between the poll and the commit.
-            login_mod.KIRO_FLOW.abort(podman)
-            return "kiro-auth-rows"
+                def poll_then_logout(*_args, _flow=flow, _result=result, **_kwargs):
+                    # Logout's abort lands between the poll and the commit.
+                    _flow.abort(self.podman)
+                    return _result
 
-        self.lc._read_auth_from_crew = poll_then_logout
-        from transport.login import _handle_login_get, _handle_login_kiro_get
-        resp = _run(_handle_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "cancelled"})
-        self.assertIsNone(self._store.get("kiro"))
-        self.assertEqual(self.written, [])
-        self.assertEqual(self.injected, [])
-        status = _json_data(_run(_handle_login_kiro_get(_make_request())))
-        self.assertIsNone(status["pending_flow"])
-        self.assertFalse(status["configured"])
+                if backend == "kiro":
+                    self.lc._read_auth_from_crew = poll_then_logout
+                    resp = _run(handler(_make_request()))
+                else:
+                    with patch.object(flow, "poll", side_effect=poll_then_logout):
+                        resp = _run(handler(_make_request()))
+                self.assertEqual(_json_data(resp), {"status": "cancelled"})
+                self.assertIsNone(self._store.get(backend))
+                self.assertEqual(self.written, [])
+                self.assertEqual(self.injected, [])
+                self.assertIsNone(flow.state)
+
+                if backend == "kiro":
+                    status = _json_data(_run(login_mod._handle_login_kiro_get(_make_request())))
+                    self.assertIsNone(status["pending_flow"])
+                    self.assertFalse(status["configured"])
 
     def test_kiro_completion_injects_only_into_kiro_crews(self):
         import transport.login as login_mod
@@ -794,22 +825,6 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         self.assertEqual(sorted(self.injected), ["c-kiro", "c-nofield"])
         self.assertEqual(self._store.get("kiro")["method"], "builder-id")
         self.assertIsNone(login_mod.KIRO_FLOW.state)
-
-    def test_claude_completion_cancelled_by_logout_stores_nothing(self):
-        import transport.login as login_mod
-        login_mod.CLAUDE_FLOW._pending = self._pending("ga-claude-login-c1", "awaiting_code")
-
-        def poll_then_logout(podman):
-            login_mod.CLAUDE_FLOW.abort(podman)
-            return b"tar-bytes"
-
-        from transport.login import _handle_claude_login_get
-        with patch.object(login_mod.CLAUDE_FLOW, "poll", side_effect=poll_then_logout):
-            resp = _run(_handle_claude_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "cancelled"})
-        self.assertIsNone(self._store.get("claude"))
-        self.assertEqual(self.written, [])
-        self.assertIsNone(login_mod.CLAUDE_FLOW.state)
 
     def test_claude_completion_commits_when_current(self):
         import transport.login as login_mod
@@ -838,19 +853,38 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
                 self.assertEqual(base64.b64decode(self._store.get(backend, "work")["payload"]), b"synthetic archive")
                 self.assertEqual(self.written, [])
 
-    def test_oauth_store_failure_keeps_pending_flow(self):
+    def test_store_failure_keeps_flow_pending_and_allows_retry_for_each_backend(self):
         import transport.login as login_mod
-        for flow, handler in (
-            (login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get),
-            (login_mod.CODEX_FLOW, login_mod._handle_codex_login_get),
-        ):
-            with self.subTest(flow=type(flow).__name__):
-                flow._pending = {**self._pending("login-container"), "profile": "work"}
-                with patch.object(flow, "poll", return_value=b"synthetic archive"), patch.object(self._store, "put", side_effect=OSError("write failed")):
-                    resp = _run(handler(_make_request()))
+        cases = (
+            ("kiro", login_mod.KIRO_FLOW, login_mod._handle_login_get, "started", "synthetic rows"),
+            ("claude", login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "awaiting_code", b"synthetic archive"),
+            ("codex", login_mod.CODEX_FLOW, login_mod._handle_codex_login_get, "started", b"synthetic archive"),
+        )
+        for backend, flow, handler, state, payload in cases:
+            with self.subTest(backend=backend):
+                flow._pending = {**self._pending("login-container", state), "profile": "work"}
+                self.written.clear()
+                if backend == "kiro":
+                    self.lc._read_auth_from_crew = lambda podman, container, *_a, _payload=payload, **_k: _payload
+
+                def complete():
+                    if backend == "kiro":
+                        return _run(handler(_make_request()))
+                    with patch.object(flow, "poll", return_value=payload):
+                        return _run(handler(_make_request()))
+
+                with patch.object(self._store, "put", side_effect=OSError("write failed")):
+                    resp = complete()
                 self.assertEqual(resp.status_code, 500)
                 self.assertIsNotNone(flow.state)
+                self.assertIsNone(self._store.get(backend, "work"))
                 self.assertEqual(self.written, [])
+
+                resp = complete()
+                self.assertEqual(_json_data(resp), {"status": "complete"})
+                self.assertIsNone(flow.state)
+                stored = self._store.get(backend, "work")
+                self.assertEqual(stored["payload"], self._stored_payload(backend, payload))
 
     def test_oauth_store_failure_does_not_expose_exception_secret(self):
         import transport.login as login_mod
@@ -865,58 +899,67 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         self.assertNotIn(marker, resp.body.decode())
         self.assertNotIn(marker, " ".join(captured.output))
 
-    def test_codex_rotation_only_updates_matching_profile_crews(self):
+    def test_completion_propagates_only_to_matching_backend_and_profile_crews(self):
         import transport.login as login_mod
-        sent = []
-        self.lc._inject_codex_auth = lambda podman, container, data: sent.append((container, data))
-        self.crews.update({
-            "selected": {"status": "running", "container": "c-selected", "acp_backend": "codex", "acp_profile": "work"},
-            "other": {"status": "running", "container": "c-other", "acp_backend": "codex", "acp_profile": "personal"},
-            "stopped": {"status": "stopped", "container": "c-stopped", "acp_backend": "codex", "acp_profile": "work"},
-            "other-backend": {"status": "running", "container": "c-claude", "acp_backend": "claude", "acp_profile": "work"},
-        })
-        login_mod.CODEX_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
-        with patch.object(login_mod.CODEX_FLOW, "poll", return_value=b"synthetic archive"):
-            resp = _run(login_mod._handle_codex_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "complete"})
-        self.assertEqual(sent, [("c-selected", b"synthetic archive")])
+        cases = (
+            ("kiro", login_mod.KIRO_FLOW, login_mod._handle_login_get, "_inject_auth", "claude", "started", "synthetic rows"),
+            ("claude", login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "_inject_claude_auth", "codex", "awaiting_code", b"synthetic archive"),
+            ("codex", login_mod.CODEX_FLOW, login_mod._handle_codex_login_get, "_inject_codex_auth", "claude", "started", b"synthetic archive"),
+        )
+        for backend, flow, handler, inject_name, other_backend, state, payload in cases:
+            with self.subTest(backend=backend):
+                sent = []
+                self.crews.clear()
+                self.crews.update({
+                    "selected": {"status": "running", "container": "c-selected", "acp_backend": backend, "acp_profile": "work"},
+                    "other": {"status": "running", "container": "c-other", "acp_backend": backend, "acp_profile": "personal"},
+                    "stopped": {"status": "stopped", "container": "c-stopped", "acp_backend": backend, "acp_profile": "work"},
+                    "other-backend": {"status": "running", "container": "c-mismatch", "acp_backend": other_backend, "acp_profile": "work"},
+                })
+                self._store.put(backend, "api-key", b"other-credential", profile="personal")
+                setattr(self.lc, inject_name, lambda podman, container, _data: sent.append(container))
+                flow._pending = {**self._pending("login-container", state), "profile": "work"}
+                if backend == "kiro":
+                    self.lc._read_auth_from_crew = lambda podman, container, *_a, _payload=payload, **_k: _payload
+                    resp = _run(handler(_make_request()))
+                else:
+                    with patch.object(flow, "poll", return_value=payload):
+                        resp = _run(handler(_make_request()))
+                self.assertEqual(_json_data(resp), {"status": "complete"})
+                self.assertEqual(sent, ["c-selected"])
+                self.assertEqual(
+                    self._store.get(backend, "work")["payload"],
+                    self._stored_payload(backend, payload),
+                )
+                self.assertEqual(self._store.get(backend, "personal")["payload"], b"other-credential")
 
-    def test_claude_rotation_only_updates_matching_profile_crews(self):
+    def test_propagation_failure_after_commit_does_not_change_outcome_for_each_backend(self):
         import transport.login as login_mod
-        sent = []
-        self.lc._inject_claude_auth = lambda podman, container, data: sent.append((container, data))
-        self.crews.update({
-            "selected": {"status": "running", "container": "c-selected", "acp_backend": "claude", "acp_profile": "work"},
-            "other": {"status": "running", "container": "c-other", "acp_backend": "claude", "acp_profile": "personal"},
-            "stopped": {"status": "stopped", "container": "c-stopped", "acp_backend": "claude", "acp_profile": "work"},
-            "other-backend": {"status": "running", "container": "c-codex", "acp_backend": "codex", "acp_profile": "work"},
-        })
-        self._store.put("claude", "oauth", b"other-credential", profile="personal")
-        login_mod.CLAUDE_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
-        with patch.object(login_mod.CLAUDE_FLOW, "poll", return_value=b"synthetic archive"):
-            resp = _run(login_mod._handle_claude_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "complete"})
-        self.assertEqual(sent, [("c-selected", b"synthetic archive")])
-        self.assertEqual(self._store.get("claude", "personal")["payload"], b"other-credential")
-
-    def test_oauth_propagation_failure_does_not_change_login_outcome(self):
-        import transport.login as login_mod
-        for backend, flow, handler, inject_name in (
-            ("claude", login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "_inject_claude_auth"),
-            ("codex", login_mod.CODEX_FLOW, login_mod._handle_codex_login_get, "_inject_codex_auth"),
-        ):
+        cases = (
+            ("kiro", login_mod.KIRO_FLOW, login_mod._handle_login_get, "_inject_auth", "started", "synthetic rows"),
+            ("claude", login_mod.CLAUDE_FLOW, login_mod._handle_claude_login_get, "_inject_claude_auth", "awaiting_code", b"synthetic archive"),
+            ("codex", login_mod.CODEX_FLOW, login_mod._handle_codex_login_get, "_inject_codex_auth", "started", b"synthetic archive"),
+        )
+        for backend, flow, handler, inject_name, state, payload in cases:
             with self.subTest(backend=backend):
                 self.crews.clear()
                 self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": backend, "acp_profile": "work"}
-                flow._pending = {**self._pending("login-container"), "profile": "work"}
+                flow._pending = {**self._pending("login-container", state), "profile": "work"}
                 injection = MagicMock(side_effect=OSError("synthetic error"))
                 setattr(self.lc, inject_name, injection)
-                with patch.object(flow, "poll", return_value=b"synthetic archive"):
+                if backend == "kiro":
+                    self.lc._read_auth_from_crew = lambda podman, container, *_a, _payload=payload, **_k: _payload
                     resp = _run(handler(_make_request()))
+                else:
+                    with patch.object(flow, "poll", return_value=payload):
+                        resp = _run(handler(_make_request()))
                 self.assertEqual(resp.status_code, 200)
                 self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["selected"]})
                 self.assertIsNone(flow.state)
-                self.assertIsNotNone(self._store.get(backend, "work"))
+                self.assertEqual(
+                    self._store.get(backend, "work")["payload"],
+                    self._stored_payload(backend, payload),
+                )
                 self.assertEqual(injection.call_count, 1)
 
     def test_one_failing_crew_does_not_stop_injection_into_next(self):
@@ -955,76 +998,6 @@ class TestCompletionCommitsOnlyWhileCurrent(_BaseRouteTest):
         self.assertEqual(_json_data(resp), {"status": "complete"})
         self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
         self.assertEqual(self.written, [])
-
-    def test_kiro_store_failure_can_retry_same_flow(self):
-        import transport.login as login_mod
-        flow = login_mod.KIRO_FLOW
-        flow._pending = {**self._pending("login-container"), "profile": "work"}
-        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "synthetic rows"
-        with patch.object(self._store, "put", side_effect=OSError("write failed")):
-            resp = _run(login_mod._handle_login_get(_make_request()))
-        self.assertEqual(resp.status_code, 500)
-        self.assertIsNotNone(flow.state)
-        resp = _run(login_mod._handle_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "complete"})
-        self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
-
-    def test_kiro_propagation_failure_does_not_change_login_outcome(self):
-        import transport.login as login_mod
-        flow = login_mod.KIRO_FLOW
-        flow._pending = {**self._pending("login-container"), "profile": "work"}
-        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "synthetic rows"
-        self.crews["selected"] = {"status": "running", "container": "c-selected", "acp_backend": "kiro", "acp_profile": "work"}
-        injection = MagicMock(side_effect=OSError("synthetic error"))
-        self.lc._inject_auth = injection
-        resp = _run(login_mod._handle_login_get(_make_request()))
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(_json_data(resp), {"status": "complete", "propagation_failed": ["selected"]})
-        self.assertIsNone(flow.state)
-        self.assertEqual(self._store.get("kiro", "work")["payload"], b"synthetic rows")
-        self.assertEqual(injection.call_count, 1)
-
-    def test_named_kiro_completion_only_updates_matching_running_crews(self):
-        import transport.login as login_mod
-        login_mod.KIRO_FLOW._pending = {**self._pending("login-container"), "profile": "work"}
-        self.lc._read_auth_from_crew = lambda podman, container, *_a, **_k: "synthetic rows"
-        self.crews.update({
-            "matching": {"status": "running", "container": "c-work", "acp_backend": "kiro", "acp_profile": "work"},
-            "other": {"status": "running", "container": "c-other", "acp_backend": "kiro", "acp_profile": "personal"},
-            "stopped": {"status": "stopped", "container": "c-stopped", "acp_backend": "kiro", "acp_profile": "work"},
-        })
-        resp = _run(login_mod._handle_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "complete"})
-        self.assertEqual(self.injected, ["c-work"])
-
-    def test_codex_store_failure_can_retry_same_flow(self):
-        import transport.login as login_mod
-        flow = login_mod.CODEX_FLOW
-        flow._pending = {**self._pending("login-container"), "profile": "work"}
-        with patch.object(flow, "poll", return_value=b"synthetic archive"):
-            with patch.object(self._store, "put", side_effect=OSError("write failed")):
-                resp = _run(login_mod._handle_codex_login_get(_make_request()))
-            self.assertEqual(resp.status_code, 500)
-            self.assertIsNotNone(flow.state)
-            resp = _run(login_mod._handle_codex_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "complete"})
-        self.assertIsNone(flow.state)
-        self.assertIsNotNone(self._store.get("codex", "work"))
-
-    def test_codex_completion_cancelled_by_logout_writes_nothing(self):
-        import transport.login as login_mod
-        login_mod.CODEX_FLOW._pending = self._pending("ga-codex-login-c1")
-
-        def poll_then_logout(podman):
-            login_mod.CODEX_FLOW.abort(podman)
-            return b"tar-bytes"
-
-        from transport.login import _handle_codex_login_get
-        with patch.object(login_mod.CODEX_FLOW, "poll", side_effect=poll_then_logout):
-            resp = _run(_handle_codex_login_get(_make_request()))
-        self.assertEqual(_json_data(resp), {"status": "cancelled"})
-        self.assertEqual(self.written, [])
-        self.assertIsNone(login_mod.CODEX_FLOW.state)
 
 
 if __name__ == "__main__":
@@ -1208,7 +1181,7 @@ class TestFlowNotAbortedByDifferentProfileLogout(_LogoutHarness):
         self.assertEqual(_json_data(resp)["status"], "logged_out")
 
 
-class TestKiroIdcCompletionWaitsForProfile(TestCompletionCommitsOnlyWhileCurrent):
+class TestKiroIdcCompletionWaitsForProfile(_CompletionRouteHarness):
     """Identity Center completion stores a credential only once kiro-cli has
     written api.codewhisperer.profile; until then it reports pending, and it
     never stores a profile-less credential."""
@@ -1226,7 +1199,6 @@ class TestKiroIdcCompletionWaitsForProfile(TestCompletionCommitsOnlyWhileCurrent
         super().setUp()
         from transport.lifecycle import _auth_payload_has_profile
         self.lc._auth_payload_has_profile = _auth_payload_has_profile
-        # Drop the parent's tests from this subclass's run.
 
     def _idc_pending(self, container: str) -> dict:
         p = self._pending(container)
@@ -1283,12 +1255,6 @@ class TestKiroIdcCompletionWaitsForProfile(TestCompletionCommitsOnlyWhileCurrent
         from transport.login import _handle_login_get
         _run(_handle_login_get(_make_request()))
         self.assertEqual(seen["retries"], 0)
-
-
-# Parent tests already run in their own class; do not repeat them here.
-for _name in [n for n in vars(TestCompletionCommitsOnlyWhileCurrent) if n.startswith("test_")]:
-    setattr(TestKiroIdcCompletionWaitsForProfile, _name, None)
-del _name
 
 
 class TestAuthPayloadHasProfile(unittest.TestCase):

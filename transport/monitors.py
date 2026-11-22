@@ -90,6 +90,12 @@ except ModuleNotFoundError:
     )
 
 # ── lifecycle bindings (injected, NOT imported — see below) ───────────────────
+try:
+    from crew_gateway import GatewayAcceptanceUnknown
+except ModuleNotFoundError:
+    from .crew_gateway import GatewayAcceptanceUnknown
+
+
 # monitors needs a handful of runtime functions and constants from lifecycle
 # (_ensure_crew_running, _crew_api, _crew_api_with_recovery, _mint_cookie and
 # the loop constants). We deliberately do NOT import them at module load: doing
@@ -166,159 +172,169 @@ def _schedule_monitor() -> None:
     while True:
         # ── Interval sleep ───────────────────────────────────────────────────
         time.sleep(_SCHEDULE_MONITOR_INTERVAL)
-        try:
-            with registry:
-                crew_items = list(registry._reg["crews"].items())
+        _schedule_monitor_tick()
 
-            now = time.time()
-            for crew_id, info in crew_items:
-                schedules = info.get("schedules", [])
-                for sched in schedules:
-                    if not sched.get("enabled", True):
-                        continue
-                    # Captain entries are driven by _captain_monitor, not here
-                    if sched.get("type") == "captain":
-                        continue
-                    next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
-                    if next_fire > now:
-                        continue
 
-                    # Job is due — wake the crew and fire
-                    try:
-                        crew = _ensure_crew_running(info, crew_id)
-                    except Exception as e:
-                        logger.warning(
-                            "Schedule monitor: crew %s won't start for job %s: %s",
-                            crew_id, sched.get("job_id"), e,
-                        )
-                        # Advance next_fire_at and persist
-                        _advance_next_fire_at(sched)
-                        with registry:
-                            for s in registry.get_schedules(crew_id):
-                                if s.get("job_id") == sched.get("job_id"):
-                                    s["next_fire_at"] = sched["next_fire_at"]
-                                    break
-                        continue
+def _schedule_monitor_tick() -> None:
+    """Run one monitor scan with the loop’s existing error boundary."""
+    try:
+        with registry:
+            crew_items = list(registry._reg["crews"].items())
 
-                    # Check gateway enabled state — gateway is source of truth.
-                    # After waking the crew, fetch /api/crons and check whether this
-                    # specific job is still enabled. The registry may lag behind a
-                    # `kirocrew cron pause` issued inside the container (syncs on
-                    # restart). Fail-open: if the fetch raises, proceed.
-                    job_id = sched.get("job_id")
-                    try:
-                        cron_payload = _crew_api(crew, "GET", "/api/crons")
-                        gateway_jobs = (
-                            cron_payload.get("jobs", [])
-                            if isinstance(cron_payload, dict)
-                            else []
-                        )
-                        gateway_job = next(
-                            (
-                                j
-                                for j in gateway_jobs
-                                if isinstance(j, dict) and j.get("id") == job_id
-                            ),
-                            None,
-                        )
-                        if gateway_job is not None and not gateway_job.get("enabled", True):
-                            logger.info(
-                                "Schedule monitor: job %s on crew %s is disabled in"
-                                " gateway — skipping and syncing registry",
-                                job_id,
-                                crew_id,
-                            )
-                            with registry:
-                                for s in registry.get_schedules(crew_id):
-                                    if s.get("job_id") == job_id:
-                                        s["enabled"] = False
-                                        break
-                            continue
-                    except Exception as e:
-                        logger.warning(
-                            "Schedule monitor: could not fetch gateway cron state"
-                            " for job %s on crew %s: %s — proceeding",
+        now = time.time()
+        for crew_id, info in crew_items:
+            schedules = info.get("schedules", [])
+            for sched in schedules:
+                if not sched.get("enabled", True):
+                    continue
+                # Captain entries are driven by _captain_monitor, not here
+                if sched.get("type") == "captain":
+                    continue
+                next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
+                if next_fire > now:
+                    continue
+
+                # Job is due — wake the crew and fire
+                try:
+                    crew = _ensure_crew_running(info, crew_id)
+                except Exception as e:
+                    logger.warning(
+                        "Schedule monitor: crew %s won't start for job %s: %s",
+                        crew_id, sched.get("job_id"), e,
+                    )
+                    # Advance next_fire_at and persist
+                    _advance_next_fire_at(sched)
+                    with registry:
+                        for s in registry.get_schedules(crew_id):
+                            if s.get("job_id") == sched.get("job_id"):
+                                s["next_fire_at"] = sched["next_fire_at"]
+                                break
+                    continue
+
+                # Check gateway enabled state — gateway is source of truth.
+                # After waking the crew, fetch /api/crons and check whether this
+                # specific job is still enabled. The registry may lag behind a
+                # `kirocrew cron pause` issued inside the container (syncs on
+                # restart). Fail-open: if the fetch raises, proceed.
+                job_id = sched.get("job_id")
+                try:
+                    cron_payload = _crew_api(crew, "GET", "/api/crons")
+                    gateway_jobs = (
+                        cron_payload.get("jobs", [])
+                        if isinstance(cron_payload, dict)
+                        else []
+                    )
+                    gateway_job = next(
+                        (
+                            j
+                            for j in gateway_jobs
+                            if isinstance(j, dict) and j.get("id") == job_id
+                        ),
+                        None,
+                    )
+                    if gateway_job is not None and not gateway_job.get("enabled", True):
+                        logger.info(
+                            "Schedule monitor: job %s on crew %s is disabled in"
+                            " gateway — skipping and syncing registry",
                             job_id,
                             crew_id,
-                            e,
                         )
-                        # Fail-open: proceed to fire if gateway unreachable after wake.
-
-                    # Fire the tick
-                    fired = False
-                    try:
-                        tick_body: dict[str, Any] = {
-                            "task": sched.get("message", ""),
-                            "agent": sched.get("agent", "ghost"),
-                            "keep": True,
-                        }
-                        if sched.get("model"):
-                            tick_body["model"] = sched["model"]
-                        _crew_api_with_recovery(
-                            crew, crew_id, "POST", "/api/spawn", json=tick_body,
-                        )
-                        fired = True
-                    except Exception as e:
-                        logger.error(
-                            "Schedule monitor: tick dropped — failed to fire job %s on crew %s: %s",
-                            sched.get("job_id"), crew_id, e,
-                        )
-
-                    if fired:
-                        # Advance next_fire_at in registry only on success
-                        # Write last_checkin_at for captain check-ins
-                        _advance_next_fire_at(sched)
                         with registry:
                             for s in registry.get_schedules(crew_id):
-                                if s.get("job_id") == sched.get("job_id"):
-                                    s["next_fire_at"] = sched["next_fire_at"]
-                                    if (
-                                        sched.get("name") == "captain"
-                                        and sched.get("agent") == "raven"
-                                    ):
-                                        from datetime import datetime as _datetime, timezone as _tz
-                                        s["last_checkin_at"] = _datetime.now(_tz.utc).isoformat()
+                                if s.get("job_id") == job_id:
+                                    s["enabled"] = False
                                     break
+                        continue
+                except Exception as e:
+                    logger.warning(
+                        "Schedule monitor: could not fetch gateway cron state"
+                        " for job %s on crew %s: %s — proceeding",
+                        job_id,
+                        crew_id,
+                        e,
+                    )
+                    # Fail-open: proceed to fire if gateway unreachable after wake.
 
-                    # H-2: For one-shot (delay) jobs, disable the
-                    # schedule in the registry FIRST (durable safety gate that
-                    # prevents the annual cron expression from replaying if the
-                    # gateway DELETE fails), then best-effort delete the cron
-                    # from the gateway.
-                    if sched.get("one_shot"):
-                        job_id = sched.get("job_id")
-                        if job_id:
-                            # Step 1: mark disabled in registry (durable gate)
-                            try:
-                                with registry:
-                                    for _s in registry.get_schedules(crew_id):
-                                        if _s.get("job_id") == job_id:
-                                            _s["enabled"] = False
-                                            _s["next_fire_at"] = _NEVER_FIRE_AT
-                                            break
-                            except Exception as e:
-                                logger.warning(
-                                    "Schedule monitor: could not disable one-shot cron %s in registry: %s",
-                                    job_id, e,
-                                )
-                            # Step 2: best-effort DELETE from gateway
-                            try:
-                                _crew_api_with_recovery(
-                                    crew, crew_id, "DELETE", f"/api/crons/{job_id}"
-                                )
-                                logger.info(
-                                    "Schedule monitor: deleted one-shot cron %s from gateway after fire",
-                                    job_id,
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "Schedule monitor: could not delete one-shot cron %s from gateway: %s",
-                                    job_id, e,
-                                )
+                # Fire the tick
+                advance_tick = False
+                try:
+                    tick_body: dict[str, Any] = {
+                        "task": sched.get("message", ""),
+                        "agent": sched.get("agent", "ghost"),
+                        "keep": True,
+                    }
+                    if sched.get("model"):
+                        tick_body["model"] = sched["model"]
+                    _crew_api_with_recovery(
+                        crew, crew_id, "POST", "/api/spawn", json=tick_body,
+                    )
+                    advance_tick = True
+                except GatewayAcceptanceUnknown:
+                    advance_tick = True
+                    logger.warning(
+                        "Schedule monitor: acceptance unknown for job %s on crew %s; advancing tick",
+                        sched.get("job_id"), crew_id,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Schedule monitor: tick dropped — failed to fire job %s on crew %s: %s",
+                        sched.get("job_id"), crew_id, e,
+                    )
 
-        except Exception as e:
-            logger.warning("Schedule monitor error: %s", e)
+                if advance_tick:
+                    # An ambiguous write cannot safely replay the same tick.
+                    # Write last_checkin_at for captain check-ins
+                    _advance_next_fire_at(sched)
+                    with registry:
+                        for s in registry.get_schedules(crew_id):
+                            if s.get("job_id") == sched.get("job_id"):
+                                s["next_fire_at"] = sched["next_fire_at"]
+                                if (
+                                    sched.get("name") == "captain"
+                                    and sched.get("agent") == "raven"
+                                ):
+                                    from datetime import datetime as _datetime, timezone as _tz
+                                    s["last_checkin_at"] = _datetime.now(_tz.utc).isoformat()
+                                break
 
+                # H-2: For one-shot (delay) jobs, disable the
+                # schedule in the registry FIRST (durable safety gate that
+                # prevents the annual cron expression from replaying if the
+                # gateway DELETE fails), then best-effort delete the cron
+                # from the gateway.
+                if sched.get("one_shot"):
+                    job_id = sched.get("job_id")
+                    if job_id:
+                        # Step 1: mark disabled in registry (durable gate)
+                        try:
+                            with registry:
+                                for _s in registry.get_schedules(crew_id):
+                                    if _s.get("job_id") == job_id:
+                                        _s["enabled"] = False
+                                        _s["next_fire_at"] = _NEVER_FIRE_AT
+                                        break
+                        except Exception as e:
+                            logger.warning(
+                                "Schedule monitor: could not disable one-shot cron %s in registry: %s",
+                                job_id, e,
+                            )
+                        # Step 2: best-effort DELETE from gateway
+                        try:
+                            _crew_api_with_recovery(
+                                crew, crew_id, "DELETE", f"/api/crons/{job_id}"
+                            )
+                            logger.info(
+                                "Schedule monitor: deleted one-shot cron %s from gateway after fire",
+                                job_id,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Schedule monitor: could not delete one-shot cron %s from gateway: %s",
+                                job_id, e,
+                            )
+
+    except Exception as e:
+        logger.warning("Schedule monitor error: %s", e)
 
 # ── Idle monitor ─────────────────────────────────────────────────────────────
 
@@ -399,216 +415,219 @@ def _idle_monitor() -> None:
     while True:
         # ── Interval sleep ───────────────────────────────────────────────────
         time.sleep(max(GA_IDLE_TIMEOUT_SECS, 10))
+        _idle_monitor_tick()
+
+
+def _idle_monitor_tick() -> None:
+    """Run one monitor scan with the loop’s existing error boundary."""
+    try:
         try:
+            podman = _get_podman()
+        except Exception:
+            return
+
+        with registry:
+            crew_items = list(registry._reg["crews"].items())
+
+        now = time.time()
+        for crew_id, info in crew_items:
+            if info.get("status") == "auth_required":
+                continue
             try:
-                podman = _get_podman()
-            except Exception:
+                if not podman.container_is_running(info["container"]):
+                    continue
+            except Exception as e:
+                logger.warning(
+                    "Idle monitor: transient Podman error for crew %s — skipping: %s",
+                    crew_id, e,
+                )
                 continue
 
-            with registry:
-                crew_items = list(registry._reg["crews"].items())
+            last_used = info.get("last_used", 0)
+            idle_secs = now - last_used
+            if idle_secs < GA_IDLE_TIMEOUT_SECS:
+                continue
 
-            now = time.time()
-            for crew_id, info in crew_items:
-                if info.get("status") == "auth_required":
+            crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
+            cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
+
+            # Check for active dispatched tasks before stopping.
+            try:
+                r = _http.get(
+                    f"{crew_url}/api/spawn",
+                    headers={"Cookie": cookie, "Origin": crew_url},
+                    timeout=5.0,
+                )
+                if r.status_code in (401, 403):
+                    # Cookie expired — attempt refresh and retry
+                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                    if new_cookie:
+                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                        with registry:
+                            if crew_id in registry._reg["crews"]:
+                                registry._reg["crews"][crew_id]["cookie"] = new_cookie
+                        r = _http.get(
+                            f"{crew_url}/api/spawn",
+                            headers={"Cookie": cookie, "Origin": crew_url},
+                            timeout=5.0,
+                        )
+                    else:
+                        # Can't verify activity — skip this crew (fail-open)
+                        _note_idle_skip(crew_id, "spawn check: cookie refresh failed")
+                        continue
+                if r.status_code != 200:
+                    # Activity is unknown after any non-success response — fail open.
+                    _note_idle_skip(crew_id, f"spawn check: HTTP {r.status_code}")
                     continue
+                payload = r.json()
+                if not isinstance(payload, dict):
+                    # A successful response with an unusable shape is still unknown activity.
+                    _note_idle_skip(crew_id, "spawn check: unexpected response")
+                    continue
+                agents = payload.get("agents")
+                if not isinstance(agents, list):
+                    _note_idle_skip(crew_id, "spawn check: no agent list")
+                    continue
+                active = [
+                    agent for agent in agents
+                    if isinstance(agent, dict) and not agent.get("done")
+                ]
+                if active:
+                    # Tasks still running — update last_used and skip.
+                    _note_idle_skip(crew_id, "tasks running")
+                    _touch_crew(crew_id)
+                    continue
+            except Exception as e:
+                _note_idle_skip(crew_id, f"spawn check error: {type(e).__name__}")
+                continue
+
+            # Captain schedule entries are transport-side (type=="captain") and
+            # have no corresponding gateway cron job.  Check the registry directly
+            # before going to /api/crons so that a crew with an active captain
+            # check-in schedule is never idle-stopped between check-ins.
+            if any(
+                s.get("type") == "captain"
+                and s.get("enabled", True)
+                and s.get("next_fire_at", _NEVER_FIRE_AT) < _NEVER_FIRE_AT
+                for s in info.get("schedules", [])
+            ):
+                _note_idle_skip(crew_id, "captain check-in scheduled")
+                _touch_crew(crew_id)
+                continue
+
+            # Cron executions do not appear in /api/spawn.  The gateway exposes
+            # their running and last-completed timestamps through /api/crons —
+            # and an enabled job that hasn't fired yet (its interval can
+            # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
+            # just one that already has.
+            try:
+                r = _http.get(
+                    f"{crew_url}/api/crons",
+                    headers={"Cookie": cookie, "Origin": crew_url},
+                    timeout=5.0,
+                )
+                if r.status_code in (401, 403):
+                    # Cookie expired — attempt refresh and retry
+                    new_cookie = _mint_cookie(podman, info["container"], crew_url)
+                    if new_cookie:
+                        cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
+                        with registry:
+                            if crew_id in registry._reg["crews"]:
+                                registry._reg["crews"][crew_id]["cookie"] = new_cookie
+                        r = _http.get(
+                            f"{crew_url}/api/crons",
+                            headers={"Cookie": cookie, "Origin": crew_url},
+                            timeout=5.0,
+                        )
+                    else:
+                        # Can't verify activity — skip this crew (fail-open)
+                        _note_idle_skip(crew_id, "cron check: cookie refresh failed")
+                        continue
+                if r.status_code != 200:
+                    # Activity is unknown after any non-success response — fail open.
+                    _note_idle_skip(crew_id, f"cron check: HTTP {r.status_code}")
+                    continue
+                cron_payload = r.json()
+                if not isinstance(cron_payload, dict):
+                    # A successful response with an unusable shape is still unknown activity.
+                    _note_idle_skip(crew_id, "cron check: unexpected response")
+                    continue
+                if not isinstance(cron_payload.get("jobs"), list):
+                    _note_idle_skip(crew_id, "cron check: no job list")
+                    continue
+                if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
+                    cron_payload
+                ):
+                    _note_idle_skip(crew_id, "cron job enabled or recently ran")
+                    _touch_crew(crew_id)
+                    continue
+            except Exception as e:
+                _note_idle_skip(crew_id, f"cron check error: {type(e).__name__}")
+                continue
+
+            # Serialize the final stop with this crew's wake/restart path.
+            # This is separate from _registry_lock, which still is not held
+            # across the potentially slow Podman operations.
+            with _get_crew_lifecycle_lock(crew_id):
                 try:
                     if not podman.container_is_running(info["container"]):
                         continue
                 except Exception as e:
                     logger.warning(
-                        "Idle monitor: transient Podman error for crew %s — skipping: %s",
-                        crew_id, e,
+                        "Idle monitor: transient Podman recheck error for "
+                        "crew %s — skipping: %s", crew_id, e,
                     )
                     continue
 
-                last_used = info.get("last_used", 0)
-                idle_secs = now - last_used
-                if idle_secs < GA_IDLE_TIMEOUT_SECS:
-                    continue
-
-                crew_url = f"http://{info['container']}:{CREW_GATEWAY_PORT}"
-                cookie = f"mc_token_{CREW_GATEWAY_PORT}={info['cookie']}"
-
-                # Check for active dispatched tasks before stopping.
-                try:
-                    r = _http.get(
-                        f"{crew_url}/api/spawn",
-                        headers={"Cookie": cookie, "Origin": crew_url},
-                        timeout=5.0,
-                    )
-                    if r.status_code in (401, 403):
-                        # Cookie expired — attempt refresh and retry
-                        new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                        if new_cookie:
-                            cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                            with registry:
-                                if crew_id in registry._reg["crews"]:
-                                    registry._reg["crews"][crew_id]["cookie"] = new_cookie
-                            r = _http.get(
-                                f"{crew_url}/api/spawn",
-                                headers={"Cookie": cookie, "Origin": crew_url},
-                                timeout=5.0,
-                            )
-                        else:
-                            # Can't verify activity — skip this crew (fail-open)
-                            _note_idle_skip(crew_id, "spawn check: cookie refresh failed")
-                            continue
-                    if r.status_code != 200:
-                        # Activity is unknown after any non-success response — fail open.
-                        _note_idle_skip(crew_id, f"spawn check: HTTP {r.status_code}")
-                        continue
-                    payload = r.json()
-                    if not isinstance(payload, dict):
-                        # A successful response with an unusable shape is still unknown activity.
-                        _note_idle_skip(crew_id, "spawn check: unexpected response")
-                        continue
-                    agents = payload.get("agents")
-                    if not isinstance(agents, list):
-                        _note_idle_skip(crew_id, "spawn check: no agent list")
-                        continue
-                    active = [
-                        agent for agent in agents
-                        if isinstance(agent, dict) and not agent.get("done")
-                    ]
-                    if active:
-                        # Tasks still running — update last_used and skip.
-                        _note_idle_skip(crew_id, "tasks running")
-                        _touch_crew(crew_id)
-                        continue
-                except Exception as e:
-                    _note_idle_skip(crew_id, f"spawn check error: {type(e).__name__}")
-                    continue
-
-                # Captain schedule entries are transport-side (type=="captain") and
-                # have no corresponding gateway cron job.  Check the registry directly
-                # before going to /api/crons so that a crew with an active captain
-                # check-in schedule is never idle-stopped between check-ins.
-                if any(
-                    s.get("type") == "captain"
-                    and s.get("enabled", True)
-                    and s.get("next_fire_at", _NEVER_FIRE_AT) < _NEVER_FIRE_AT
-                    for s in info.get("schedules", [])
-                ):
-                    _note_idle_skip(crew_id, "captain check-in scheduled")
-                    _touch_crew(crew_id)
-                    continue
-
-                # Cron executions do not appear in /api/spawn.  The gateway exposes
-                # their running and last-completed timestamps through /api/crons —
-                # and an enabled job that hasn't fired yet (its interval can
-                # exceed GA_IDLE_TIMEOUT_SECS) must also keep the crew alive, not
-                # just one that already has.
-                try:
-                    r = _http.get(
-                        f"{crew_url}/api/crons",
-                        headers={"Cookie": cookie, "Origin": crew_url},
-                        timeout=5.0,
-                    )
-                    if r.status_code in (401, 403):
-                        # Cookie expired — attempt refresh and retry
-                        new_cookie = _mint_cookie(podman, info["container"], crew_url)
-                        if new_cookie:
-                            cookie = f"mc_token_{CREW_GATEWAY_PORT}={new_cookie}"
-                            with registry:
-                                if crew_id in registry._reg["crews"]:
-                                    registry._reg["crews"][crew_id]["cookie"] = new_cookie
-                            r = _http.get(
-                                f"{crew_url}/api/crons",
-                                headers={"Cookie": cookie, "Origin": crew_url},
-                                timeout=5.0,
-                            )
-                        else:
-                            # Can't verify activity — skip this crew (fail-open)
-                            _note_idle_skip(crew_id, "cron check: cookie refresh failed")
-                            continue
-                    if r.status_code != 200:
-                        # Activity is unknown after any non-success response — fail open.
-                        _note_idle_skip(crew_id, f"cron check: HTTP {r.status_code}")
-                        continue
-                    cron_payload = r.json()
-                    if not isinstance(cron_payload, dict):
-                        # A successful response with an unusable shape is still unknown activity.
-                        _note_idle_skip(crew_id, "cron check: unexpected response")
-                        continue
-                    if not isinstance(cron_payload.get("jobs"), list):
-                        _note_idle_skip(crew_id, "cron check: no job list")
-                        continue
-                    if _cron_activity_since(cron_payload, last_used) or _cron_has_enabled_job(
-                        cron_payload
-                    ):
-                        _note_idle_skip(crew_id, "cron job enabled or recently ran")
-                        _touch_crew(crew_id)
-                        continue
-                except Exception as e:
-                    _note_idle_skip(crew_id, f"cron check error: {type(e).__name__}")
-                    continue
-
-                # Serialize the final stop with this crew's wake/restart path.
-                # This is separate from _registry_lock, which still is not held
-                # across the potentially slow Podman operations.
-                with _get_crew_lifecycle_lock(crew_id):
-                    try:
-                        if not podman.container_is_running(info["container"]):
-                            continue
-                    except Exception as e:
-                        logger.warning(
-                            "Idle monitor: transient Podman recheck error for "
-                            "crew %s — skipping: %s", crew_id, e,
+                stop_now = time.time()
+                stop_failed = False
+                with registry:
+                    live_entry = registry._reg.get("crews", {}).get(crew_id, {})
+                    live_last_used = live_entry.get("last_used", 0)
+                    if stop_now - live_last_used < GA_IDLE_TIMEOUT_SECS:
+                        _note_idle_skip(
+                            crew_id,
+                            "last_used advanced during checks — skipping stop",
                         )
                         continue
-
-                    stop_now = time.time()
-                    stop_failed = False
-                    with registry:
-                        live_entry = registry._reg.get("crews", {}).get(crew_id, {})
-                        live_last_used = live_entry.get("last_used", 0)
-                        if stop_now - live_last_used < GA_IDLE_TIMEOUT_SECS:
-                            _note_idle_skip(
-                                crew_id,
-                                "last_used advanced during checks — skipping stop",
-                            )
-                            continue
-                        # Double-stop guard: another idle tick may have left a
-                        # claim behind; only one monitor may stop this crew.
-                        if live_entry.get("_stopping"):
-                            _note_idle_skip(
-                                crew_id, "stop already in progress — skipping",
-                            )
-                            continue
-                        # Claim the stop under the registry lock, then release
-                        # it before container_stop. The lifecycle lock stays
-                        # held until state write-back is complete.
-                        if crew_id in registry._reg["crews"]:
-                            registry._reg["crews"][crew_id]["_stopping"] = True
-
-                    logger.info(
-                        "Crew %s idle for %.0fs — stopping container",
-                        crew_id, stop_now - live_last_used,
-                    )
-                    try:
-                        podman.container_stop(info["container"])
-                    except Exception as e:
-                        # One crew's stop failure must not end idle reaping for every crew.
-                        logger.warning("Could not stop idle crew %s: %s", crew_id, e)
-                        stop_failed = True
-
-                    # Re-acquire the registry lock to write back the result and
-                    # clear the in-flight marker before releasing the lifecycle lock.
-                    with registry:
-                        if crew_id in registry._reg["crews"]:
-                            registry._reg["crews"][crew_id].pop("_stopping", None)
-                            if not stop_failed:
-                                registry._reg["crews"][crew_id]["status"] = "stopped"
-                    if not stop_failed:
-                        _idle_skip_reasons.pop(crew_id, None)
-                    if stop_failed:
+                    # Double-stop guard: another idle tick may have left a
+                    # claim behind; only one monitor may stop this crew.
+                    if live_entry.get("_stopping"):
+                        _note_idle_skip(
+                            crew_id, "stop already in progress — skipping",
+                        )
                         continue
-        except Exception:
-            # Never let one bad iteration end idle reaping for the process.
-            logger.exception("Idle monitor iteration failed; retrying next interval")
+                    # Claim the stop under the registry lock, then release
+                    # it before container_stop. The lifecycle lock stays
+                    # held until state write-back is complete.
+                    if crew_id in registry._reg["crews"]:
+                        registry._reg["crews"][crew_id]["_stopping"] = True
 
+                logger.info(
+                    "Crew %s idle for %.0fs — stopping container",
+                    crew_id, stop_now - live_last_used,
+                )
+                try:
+                    podman.container_stop(info["container"])
+                except Exception as e:
+                    # One crew's stop failure must not end idle reaping for every crew.
+                    logger.warning("Could not stop idle crew %s: %s", crew_id, e)
+                    stop_failed = True
 
+                # Re-acquire the registry lock to write back the result and
+                # clear the in-flight marker before releasing the lifecycle lock.
+                with registry:
+                    if crew_id in registry._reg["crews"]:
+                        registry._reg["crews"][crew_id].pop("_stopping", None)
+                        if not stop_failed:
+                            registry._reg["crews"][crew_id]["status"] = "stopped"
+                if not stop_failed:
+                    _idle_skip_reasons.pop(crew_id, None)
+                if stop_failed:
+                    continue
+    except Exception:
+        # Never let one bad iteration end idle reaping for the process.
+        logger.exception("Idle monitor iteration failed; retrying next interval")
 
 # ── Captain monitor ───────────────────────────────────────────────────────────
 
@@ -632,108 +651,112 @@ def _captain_monitor() -> None:
     # _steer_captain_checkin and _dispatch_captain_checkin are top-level
     # imports from captain_engine (TRN-242); no deferred import needed here.
     while True:
-        next_wakeup = time.time() + _CAPTAIN_MONITOR_INTERVAL  # initialised before try so sleep line is always defined
-        try:
-            with registry:
-                crew_items = list(registry._reg["crews"].items())
+        next_wakeup = _captain_monitor_tick()
+        sleep_secs = max(1.0, next_wakeup - time.time())
+        time.sleep(sleep_secs)
 
-            now = time.time()
-            next_wakeup = now + _CAPTAIN_MONITOR_INTERVAL
 
-            for crew_id, info in crew_items:
-                schedules = info.get("schedules", [])
-                for sched in schedules:
-                    if sched.get("type") != "captain":
-                        continue
-                    if not sched.get("enabled", True):
-                        continue
-                    next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
-                    # Track earliest upcoming fire for sleep duration
-                    if next_fire > now and next_fire < next_wakeup:
-                        next_wakeup = next_fire
-                    if next_fire > now:
-                        continue
+def _captain_monitor_tick() -> float:
+    """Run one Captain scan and return its next dynamic wake time."""
+    next_wakeup = time.time() + _CAPTAIN_MONITOR_INTERVAL  # initialised before try so sleep line is always defined
+    try:
+        with registry:
+            crew_items = list(registry._reg["crews"].items())
 
-                    # Entry is due — wake the crew and steer/dispatch
-                    try:
-                        crew = _ensure_crew_running(info, crew_id)
-                    except Exception as e:
-                        logger.warning(
-                            "Captain monitor: crew %s won't start for check-in: %s",
-                            crew_id, e,
-                        )
-                        _advance_next_fire_at(sched)
-                        with registry:
-                            for s in registry.get_schedules(crew_id):
-                                if s.get("type") == "captain":
-                                    s["next_fire_at"] = sched["next_fire_at"]
-                                    break
-                        continue
+        now = time.time()
+        next_wakeup = now + _CAPTAIN_MONITOR_INTERVAL
 
-                    # ── Sentinel check (TRN-243) ─────────────────────────────
-                    # Before dispatching Raven, check whether the workspace
-                    # sentinel file exists.  If so, Raven has signalled
-                    # completion — pause the schedule and skip this tick.
-                    try:
-                        try:
-                            from captain import (  # container
-                                _read_sentinel_file,
-                                _parse_sentinel_file,
-                            )
-                        except ModuleNotFoundError:
-                            from transport.captain import (  # local dev  # type: ignore[no-redef]
-                                _read_sentinel_file,
-                                _parse_sentinel_file,
-                            )
-                        try:
-                            from crew import Crew as _Crew  # container
-                        except ModuleNotFoundError:
-                            from transport.crew import Crew as _Crew  # local dev
-                        _c = _Crew.from_dict(crew_id, info)
-                        sentinel_content = _read_sentinel_file(_get_podman(), _c.container)
-                        if sentinel_content is not None:
-                            parsed = _parse_sentinel_file(sentinel_content)
-                            logger.info(
-                                "Captain monitor: sentinel file found for crew %s "
-                                "(captain_id=%s completed_at=%s) — auto-pausing schedule",
-                                crew_id,
-                                parsed.get("captain_id", "?"),
-                                parsed.get("completed_at", "?"),
-                            )
-                            with registry:
-                                for s in registry.get_schedules(crew_id):
-                                    if s.get("type") == "captain":
-                                        s["enabled"] = False
-                                        break
-                            continue
-                    except Exception as sentinel_exc:
-                        logger.warning(
-                            "Captain monitor: sentinel check failed for crew %s: %s",
-                            crew_id, sentinel_exc,
-                        )
-                    # ── end sentinel check ───────────────────────────────────
+        for crew_id, info in crew_items:
+            schedules = info.get("schedules", [])
+            for sched in schedules:
+                if sched.get("type") != "captain":
+                    continue
+                if not sched.get("enabled", True):
+                    continue
+                next_fire = sched.get("next_fire_at", _NEVER_FIRE_AT)
+                # Track earliest upcoming fire for sleep duration
+                if next_fire > now and next_fire < next_wakeup:
+                    next_wakeup = next_fire
+                if next_fire > now:
+                    continue
 
-                    # _steer_captain_checkin is imported at module top from
-                    # captain_engine (TRN-242) — no call-time import needed.
-                    try:
-                        _steer_captain_checkin(crew, crew_id)
-                    except Exception as e:
-                        logger.error(
-                            "Captain monitor: check-in failed for crew %s: %s",
-                            crew_id, e,
-                        )
-
-                    # Advance next_fire_at in registry
+                # Entry is due — wake the crew and steer/dispatch
+                try:
+                    crew = _ensure_crew_running(info, crew_id)
+                except Exception as e:
+                    logger.warning(
+                        "Captain monitor: crew %s won't start for check-in: %s",
+                        crew_id, e,
+                    )
                     _advance_next_fire_at(sched)
                     with registry:
                         for s in registry.get_schedules(crew_id):
                             if s.get("type") == "captain":
                                 s["next_fire_at"] = sched["next_fire_at"]
                                 break
+                    continue
 
-        except Exception:
-            logger.exception("Captain monitor iteration failed; retrying next interval")
+                # ── Sentinel check (TRN-243) ─────────────────────────────
+                # Before dispatching Raven, check whether the workspace
+                # sentinel file exists.  If so, Raven has signalled
+                # completion — pause the schedule and skip this tick.
+                try:
+                    try:
+                        from captain import (  # container
+                            _read_sentinel_file,
+                            _parse_sentinel_file,
+                        )
+                    except ModuleNotFoundError:
+                        from transport.captain import (  # local dev  # type: ignore[no-redef]
+                            _read_sentinel_file,
+                            _parse_sentinel_file,
+                        )
+                    try:
+                        from crew import Crew as _Crew  # container
+                    except ModuleNotFoundError:
+                        from transport.crew import Crew as _Crew  # local dev
+                    _c = _Crew.from_dict(crew_id, info)
+                    sentinel_content = _read_sentinel_file(_get_podman(), _c.container)
+                    if sentinel_content is not None:
+                        parsed = _parse_sentinel_file(sentinel_content)
+                        logger.info(
+                            "Captain monitor: sentinel file found for crew %s "
+                            "(captain_id=%s completed_at=%s) — auto-pausing schedule",
+                            crew_id,
+                            parsed.get("captain_id", "?"),
+                            parsed.get("completed_at", "?"),
+                        )
+                        with registry:
+                            for s in registry.get_schedules(crew_id):
+                                if s.get("type") == "captain":
+                                    s["enabled"] = False
+                                    break
+                        continue
+                except Exception as sentinel_exc:
+                    logger.warning(
+                        "Captain monitor: sentinel check failed for crew %s: %s",
+                        crew_id, sentinel_exc,
+                    )
+                # ── end sentinel check ───────────────────────────────────
 
-        # Sleep until the next due entry, or _CAPTAIN_MONITOR_INTERVAL
-        sleep_secs = max(1.0, next_wakeup - time.time())
-        time.sleep(sleep_secs)
+                # _steer_captain_checkin is imported at module top from
+                # captain_engine (TRN-242) — no call-time import needed.
+                try:
+                    _steer_captain_checkin(crew, crew_id)
+                except Exception as e:
+                    logger.error(
+                        "Captain monitor: check-in failed for crew %s: %s",
+                        crew_id, e,
+                    )
+
+                # Advance next_fire_at in registry
+                _advance_next_fire_at(sched)
+                with registry:
+                    for s in registry.get_schedules(crew_id):
+                        if s.get("type") == "captain":
+                            s["next_fire_at"] = sched["next_fire_at"]
+                            break
+
+    except Exception:
+        logger.exception("Captain monitor iteration failed; retrying next interval")
+    return next_wakeup

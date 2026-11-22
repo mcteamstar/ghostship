@@ -3,7 +3,7 @@ name: ghostship-capability
 description: Configure what ghostship crews can do — agent personas, skills, steering, MCP server catalogue, security policies, crew compositions, and environment variables. Use when the task is about changing what agents know or can access, adding a new composition, wiring an MCP server into the catalogue, or tuning configuration — not about installing ghostship (ghostship-admin) or driving an already-running fleet (ghostship-command).
 metadata:
   author: ghostship
-  version: "0.13.0"
+  version: "0.13.1"
 ---
 
 # Ghostship Capability
@@ -66,9 +66,11 @@ replacing existing guidance.
 Then add `"scout"` to `manifest.json`'s `agents` list (or keep `"*"` to
 load all agents automatically).
 
-**Change the default model** — either edit the `model` field per-agent, or
-set `KC_MODEL_OVERRIDE` / `KC_MODEL_DEFAULT` in `ghostship.conf` to apply
-globally without touching agent files.
+**Change model selection** — use `model.default` for the global fallback,
+`backends.<backend>.model.default` for a backend fallback, or
+`backends.<backend>.model.override` to force a model for that backend. A
+per-agent model takes precedence over defaults; the backend override takes
+precedence over per-agent pins. See `docs/configuration.md`.
 
 ---
 
@@ -179,10 +181,11 @@ For HTTP servers:
 ```
 
 Secrets like `${MY_SERVER_TOKEN}` are resolved from the transport environment
-at crew setup time — set them in `ghostship.conf`:
+at crew setup time. Supply them through the deployment's environment or secret
+mechanism; keep secret values out of the YAML config and the MCP catalogue:
 
 ```bash
-# ghostship.conf
+# Example runtime environment (do not put literal secrets in ghostship.yaml)
 MY_SERVER_TOKEN="sk-..."
 ```
 
@@ -276,26 +279,27 @@ nuked and relaunched — `evac` anything needed first, then
 
 ---
 
-## Configuration — `ghostship.conf`
+## Configuration — `config/ghostship.yaml`
 
-Operator-level env vars that tune transport behaviour. Copy the example and
-edit only what you need:
+Operator-level settings use YAML. Copy the example and edit only what you need:
 
 ```bash
-cp config/ghostship.conf.example config/ghostship.conf
-./install.sh --config config/ghostship.conf
+cp config/ghostship.yaml.example config/ghostship.yaml
+./install.sh --config config/ghostship.yaml
 ```
 
-Key variables (full reference: `docs/configuration.md`):
+Common settings (full reference: `docs/configuration.md`):
 
-| Variable | Purpose |
-|:---------|:--------|
-| `KC_MODEL_OVERRIDE` | Force a specific model for all crew agents |
-| `KC_MODEL_DEFAULT` | Global model fallback (lower precedence than per-agent `model`) |
-| `GA_API_KEY` | Bearer key locking the MCP/REST endpoint — set via `install.sh --api-key <key>`, delivered as a Podman secret |
-| `GA_MAX_ACTIVE_CREWS` | Max simultaneously running crew containers |
-| `GA_MIN_FREE_MEM_GB` | Memory floor before a new crew is allowed to start |
-| `GA_IDLE_STOP_SECS` | Seconds idle before a crew container is stopped |
+| YAML setting | Purpose |
+|:-------------|:--------|
+| `model.default` | Global model fallback |
+| `backends.<backend>.model.default` | Backend-specific model fallback |
+| `backends.<backend>.model.override` | Force a model for one backend |
+| `crew.max_active` | Maximum simultaneously running crew containers |
+| `crew.memory.min_free_mem_gb` | Available-memory floor before starting a crew |
+| `crew.idle_timeout_secs` | Idle duration before a crew container is stopped |
 
-Secrets referenced in the MCP catalogue (e.g. `${MY_TOKEN}`) must be set
-here — they're injected into the transport environment at install time.
+Secrets referenced in the MCP catalogue (e.g. `${MY_TOKEN}`) must be supplied
+through the deployment's runtime environment or secret mechanism; they're
+injected into the transport environment at install time. Do not put secret
+values in the YAML config or the MCP catalogue.

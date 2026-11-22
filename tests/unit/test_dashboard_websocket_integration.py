@@ -176,7 +176,11 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
             port_range_start=64058,
             port_range_size=64,
         )
-        with patch("transport.caddy.httpx.put", return_value=MagicMock(status_code=200, text=""), create=True) as put:
+        with patch(
+            "transport.caddy._caddy_admin_client.put",
+            return_value=MagicMock(status_code=200, text=""),
+            create=True,
+        ) as put:
             portal.register_crew("alpha", 64058)
 
         config = put.call_args.kwargs["json"]
@@ -369,7 +373,7 @@ class TestDashboardWebSocketIntegration(unittest.TestCase):
                     port_range_size=1,
                 )
                 with patch(
-                    "transport.caddy.httpx.put",
+                    "transport.caddy._caddy_admin_client.put",
                     return_value=SimpleNamespace(status_code=200, text=""),
                 ) as register:
                     portal.register_crew("alpha", caddy_port)

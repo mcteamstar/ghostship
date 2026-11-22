@@ -24,12 +24,31 @@ import select
 import tarfile
 import threading
 import time
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
+
+try:
+    from crew_gateway import (
+        CrewGatewayClient, CrewUnresponsiveError, _GATEWAY_DETAIL_LIMIT,
+        _crew_cookie, _crew_url, _gateway_error_detail, _spawn_backend,
+        _unresponsive_error,
+    )
+except ModuleNotFoundError:
+    from .crew_gateway import (
+        CrewGatewayClient, CrewUnresponsiveError, _GATEWAY_DETAIL_LIMIT,
+        _crew_cookie, _crew_url, _gateway_error_detail, _spawn_backend,
+        _unresponsive_error,
+    )
+
+
+try:
+    from task_service import TaskService, _resolve_dispatch_slot
+except ModuleNotFoundError:
+    from .task_service import TaskService, _resolve_dispatch_slot
+
 
 try:
     from config import Config  # container: flat /app/
@@ -73,7 +92,6 @@ try:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
-        _write_batch,
         _write_secret_file,
         registry,
     )
@@ -87,7 +105,6 @@ except ModuleNotFoundError:
         _advance_next_fire_at,
         _get_crew,
         _touch_crew,
-        _write_batch,
         _write_secret_file,
         registry,
     )
@@ -100,14 +117,10 @@ except ModuleNotFoundError:
 try:
     from captain import (  # container: flat /app/
         _resolve_orders_dir,
-        _read_all_mail_counts,
-        _read_all_mail_subjects,
     )
 except ModuleNotFoundError:
     from transport.captain import (  # local dev
         _resolve_orders_dir,
-        _read_all_mail_counts,
-        _read_all_mail_subjects,
     )
 
 try:
@@ -332,8 +345,6 @@ _startup_generation: dict[str, int] = {}
 
 # Per-crew recovery locks: prevent concurrent recovery races within
 # _crew_api_with_recovery.
-_recovery_locks: dict[str, threading.Lock] = {}
-_recovery_locks_lock = threading.Lock()
 
 # Per-crew ACP warm markers. Maps crew_id → warmed_at (monotonic seconds)
 # recording the last successful prewarm. Guarded by its own lock, mirroring the
@@ -343,11 +354,7 @@ _recovery_locks_lock = threading.Lock()
 _warm_markers: dict[str, float] = {}
 _warm_markers_lock = threading.Lock()
 
-# Bounded in-process memory: _task_timestamps completed entries are evicted once
-# their completed_at is older than cfg.ga_task_timestamp_ttl_secs (env-overridable);
-# _warm_markers entries are evicted once older than _WARM_MARKER_TTL_SECS.
-# The warm-marker TTL is floored at one hour via `_warm_marker_ttl_secs()`;
-# `ga_task_timestamp_ttl_secs` has no floor.
+# Warm markers expire after the TTL, which has a one-hour floor.
 
 
 def _warm_marker_ttl_secs() -> float:
@@ -378,18 +385,6 @@ def _to_crew(crew_id: str, crew) -> Crew:
     if isinstance(crew, Crew):
         return crew
     return Crew.from_dict(crew_id, crew)
-
-
-def _crew_url(crew) -> str:
-    if isinstance(crew, Crew):
-        return crew.gateway_url()
-    return f"http://{crew['container']}:{CREW_GATEWAY_PORT}"
-
-
-def _crew_cookie(crew) -> str:
-    if isinstance(crew, Crew):
-        return crew.cookie_header()
-    return f"mc_token_{CREW_GATEWAY_PORT}={crew['cookie']}"
 
 
 _DASHBOARD_COOKIE_PATH = "/home/kirocrew/.kiro/crew/.dashboard_cookie"
@@ -429,53 +424,6 @@ def _write_dashboard_cookie(podman: "PodmanClient", container: str, cookie: str)
             "Failed to write dashboard cookie to %s in %s: %s",
             _DASHBOARD_COOKIE_PATH, container, exc,
         )
-        return False
-
-
-# TRN-220: headers the transport host must never send to a crew gateway.
-# These select the gateway's INTERNAL auth path, which KiroCrew 0.9.0
-# (PR #2424 / issue #302) now peer-cred-gates over the unix socket: a caller
-# whose OS UID does not match the gateway's `kirocrew` process is rejected even
-# with a valid shared secret. The transport host runs under a different UID, so
-# any internal-secret call from here would be rejected. The transport always
-# uses the external dashboard-cookie path instead.
-_FORBIDDEN_INTERNAL_HEADERS = ("X-Internal-Secret", "X-Session-Key")
-
-
-def _crew_api(crew: dict, method: str, path: str, **kw: Any) -> Any:
-    url = _crew_url(crew)
-    # TRN-220: authenticate on the external cookie path (Cookie + Origin) only.
-    # Never attach the internal-secret headers — see _FORBIDDEN_INTERNAL_HEADERS.
-    headers = {"Cookie": _crew_cookie(crew), "Origin": url}
-    caller_headers = kw.pop("headers", None)
-    if caller_headers:
-        for h in _FORBIDDEN_INTERNAL_HEADERS:
-            if h in caller_headers:
-                raise ValueError(
-                    f"TRN-220: {h} must not be sent on the transport cookie path"
-                )
-        headers.update(caller_headers)
-    r = _http.request(
-        method, f"{url}{path}",
-        headers=headers,
-        **kw,
-    )
-    r.raise_for_status()
-    return r.json()
-
-
-# ── Self-healing: liveness probe, cookie refresh, retry wrapper ───────────────
-
-def _probe_gateway(crew_url: str) -> bool:
-    """Perform a lightweight liveness probe against the gateway root.
-
-    GET {crew_url}/ with a 5-second timeout. Returns True on any 2xx
-    response, False on non-2xx, connection refused, timeout, or any error.
-    """
-    try:
-        r = _http.get(f"{crew_url}/", timeout=5.0)
-        return 200 <= r.status_code < 300
-    except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
         return False
 
 
@@ -528,331 +476,34 @@ def _refresh_cookie(crew, crew_id: str) -> bool:
     return True
 
 
+# The shared client also serves flat container entry points and local callers
+# which import lifecycle without assembling the HTTP application.
+_gateway_client = CrewGatewayClient(
+    _http,
+    refresh_cookie=lambda crew, crew_id: _refresh_cookie(crew, crew_id),
+    restore_crew=lambda crew, crew_id: _ensure_crew_running(crew, crew_id),
+    removed_crew=_NUKED_DURING_RESTART,
+)
+
+
+def _crew_api(crew: dict, method: str, path: str, **kw: Any) -> Any:
+    return _gateway_client.request(crew, method, path, **kw)
+
+
+def _crew_api_with_recovery(crew: dict, crew_id: str, method: str, path: str, **kw: Any) -> Any:
+    return _gateway_client.request_with_recovery(crew, crew_id, method, path, **kw)
+
+
+def _probe_gateway(crew_url: str) -> bool:
+    return _gateway_client.probe(crew_url)
+
+
 def _get_recovery_lock(crew_id: str) -> threading.Lock:
-    """Return or create a per-crew lock for serialising recovery attempts."""
-    with _recovery_locks_lock:
-        return _recovery_locks.setdefault(crew_id, threading.Lock())
+    return _gateway_client.recovery_lock(crew_id)
 
 
-class CrewUnresponsiveError(RuntimeError):
-    """Raised when all recovery attempts for a crew have been exhausted."""
-    pass
-
-
-def _phase0_transient_503(
-    crew: dict,
-    method: str,
-    path: str,
-    **kw: Any,
-) -> Any:
-    """Phase 0: task still spawning — short bounded retry on 503.
-
-    On 503 from a per-task /api/spawn/* route, KiroCrew's own task record
-    already reports elapsed > 0 before the agent process has finished
-    forking/registering enough to serve the route.  Short bounded retry —
-    this is transient and self-resolving within a couple of seconds.
-
-    Re-raises the last 503 error if all retries are exhausted.
-    Raises any non-503 HTTPStatusError immediately without retrying.
-
-    Note (D6): a 503 here means the task process is still starting and has not
-    served the route yet — the request was not acted upon, so retrying is safe
-    for any method (including POST). The idempotency guard D6 adds is for a
-    connection reset (_phase2_dead_gateway), not this transient-503 path.
-    """
-    last_exc: Exception | None = None
-    for _attempt in range(4):
-        time.sleep(1.0)
-        try:
-            return _crew_api(crew, method, path, **kw)
-        except httpx.HTTPStatusError as retry_exc:
-            if retry_exc.response.status_code != 503:
-                raise
-            last_exc = retry_exc
-    raise last_exc
-
-
-# Upper bound on how much of a gateway error body is echoed back to callers.
-_GATEWAY_DETAIL_LIMIT = 500
-_COOKIE_PATTERN = re.compile(r"mc_token_\d+=[^;\s\"']+")
-_BEARER_PATTERN = re.compile(r"(?i)Authorization\s*:\s*Bearer\s+\S+")
-_GS_SESSION_PATTERN = re.compile(r"gs_session=[^;\s\"']+")
-_GS_CSRF_PATTERN = re.compile(r"gs_csrf=[^;\s\"']+")
-
-
-def _gateway_error_detail(exc: BaseException | None, crew: dict | None) -> tuple[str, bool]:
-    """Describe the gateway's final HTTP error for a give-up message.
-
-    Returns ``(suffix, is_client_error)``. ``suffix`` is empty unless *exc* is
-    an ``httpx.HTTPStatusError``; otherwise it carries the status code and the
-    response body, with the crew's cookie and any ``mc_token_<port>=`` value
-    redacted, whitespace collapsed and the body truncated to
-    ``_GATEWAY_DETAIL_LIMIT`` characters.
-    """
-    if not isinstance(exc, httpx.HTTPStatusError):
-        return "", False
-    status = exc.response.status_code
-    # best-effort: response body read can fail on incomplete/closed streams; fallback is an empty string
-    try:
-        body = exc.response.text or ""
-    except Exception:
-        body = ""
-    cookie = (crew or {}).get("cookie")
-    if cookie:
-        body = body.replace(cookie, "[redacted]")
-    body = _COOKIE_PATTERN.sub("mc_token=[redacted]", body)
-    body = _BEARER_PATTERN.sub("Authorization: Bearer [redacted]", body)
-    body = _GS_SESSION_PATTERN.sub("gs_session=[redacted]", body)
-    body = _GS_CSRF_PATTERN.sub("gs_csrf=[redacted]", body)
-    body = " ".join(body.split())[:_GATEWAY_DETAIL_LIMIT]
-    return f" Last gateway response: HTTP {status}: {body}", 400 <= status < 500
-
-
-def _unresponsive_error(
-    crew_id: str,
-    what: str,
-    crew: dict | None,
-    last_exc: BaseException | None,
-) -> CrewUnresponsiveError:
-    """Build the give-up error, carrying the gateway's last HTTP error if any.
-
-    A 4xx means the gateway is up and refused the request, so the usual
-    "check crew status" suggestion is replaced with one that points at the
-    gateway's own response.
-    """
-    detail, client_error = _gateway_error_detail(last_exc, crew)
-    if client_error:
-        suggestion = "The crew gateway rejected the request; see the response above."
-    else:
-        suggestion = "Suggestion: check crew status with crews() or try again in a moment."
-    return CrewUnresponsiveError(
-        f"crew {crew_id} is unresponsive — {what}.{detail} {suggestion}"
-    )
-
-
-def _phase1_stale_cookie(
-    crew: dict,
-    crew_id: str,
-    method: str,
-    path: str,
-    *,
-    trigger_exc: BaseException | None = None,
-    **kw: Any,
-) -> Any:
-    """Phase 1: stale cookie — attempt cookie refresh then retry once.
-
-    On 400/401/403 from a running container, refreshes the session cookie
-    and retries the request.  If the refresh fails or the retry fails,
-    escalates to Phase 2 (full gateway restart).
-
-    Returns the API result on success.
-    Raises CrewUnresponsiveError if Phase 2 restart also fails.
-
-    Note (D6): a stale-cookie failure is a 400/401/403 — the gateway REJECTED
-    the request at auth and did not act on it, so retrying after a cookie
-    refresh cannot duplicate a side effect even for a POST. The idempotency
-    guard that D6 adds lives in _phase2_dead_gateway (a connection reset, where
-    the request MAY have been accepted before the socket dropped), not here.
-    """
-    logger.info(
-        "Crew %s stale-cookie phase — attempting cookie refresh",
-        crew_id,
-    )
-    last_exc: BaseException | None = trigger_exc
-    if _refresh_cookie(crew, crew_id):
-        try:
-            return _crew_api(crew, method, path, **kw)
-        except Exception as _retry_exc:
-            last_exc = _retry_exc
-            logger.warning(
-                "Crew %s phase-1 retry failed after cookie refresh: %s — "
-                "escalating to full restart",
-                crew_id, _retry_exc,
-            )
-
-    # Phase 1 failed — escalate to full restart
-    logger.info(
-        "Crew %s cookie refresh failed or retry failed — "
-        "escalating to full restart",
-        crew_id,
-    )
-    try:
-        crew = _ensure_crew_running(crew, crew_id)
-    except RuntimeError:
-        raise _unresponsive_error(
-            crew_id,
-            "transport attempted cookie refresh and container restart but "
-            "the gateway did not recover",
-            crew, last_exc,
-        )
-    # TRN-238 QA-2: crew was nuked during the restart — the registry entry is
-    # gone, so there is nothing to call the API against. Surface a clear error.
-    if crew is _NUKED_DURING_RESTART:
-        raise CrewUnresponsiveError(
-            f"crew {crew_id} was removed (nuked) during restart — no longer exists."
-        )
-    try:
-        return _crew_api(crew, method, path, **kw)
-    except Exception as final_exc:
-        raise _unresponsive_error(
-            crew_id,
-            "transport attempted cookie refresh and container restart but "
-            "the gateway did not recover",
-            crew,
-            final_exc if isinstance(final_exc, httpx.HTTPStatusError) else last_exc,
-        )
-
-
-def _phase2_dead_gateway(
-    crew: dict,
-    crew_id: str,
-    method: str,
-    path: str,
-    **kw: Any,
-) -> Any:
-    """Phase 2: connection error — probe then restart only if dead.
-
-    On a connection error from a running container, first probes liveness.
-    If the gateway is alive (transient error), retries directly.
-    If the gateway is dead, restarts via _ensure_crew_running and retries.
-
-    Returns the API result on success.
-    Raises CrewUnresponsiveError if the gateway cannot be recovered.
-
-    Non-idempotent methods (POST, PATCH, DELETE) are NOT retried after a
-    gateway restart — the request may have been accepted before the connection
-    was cut, and a blind retry would duplicate the side-effect.  The caller
-    receives a CrewUnresponsiveError and can choose to retry explicitly.
-    """
-    _IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "OPTIONS"})
-    logger.info(
-        "Crew %s connection-error phase — probing gateway liveness",
-        crew_id,
-    )
-    crew_url = _crew_url(crew)
-    if _probe_gateway(crew_url):
-        # Gateway is actually alive — transient error, retry directly
-        try:
-            return _crew_api(crew, method, path, **kw)
-        except Exception as retry_exc:
-            raise _unresponsive_error(
-                crew_id,
-                "gateway responded to liveness probe but API call failed twice",
-                crew, retry_exc,
-            )
-    logger.info(
-        "Crew %s gateway confirmed dead — restarting",
-        crew_id,
-    )
-    try:
-        crew = _ensure_crew_running(crew, crew_id)
-    except RuntimeError:
-        raise CrewUnresponsiveError(
-            f"crew {crew_id} is unresponsive — transport attempted "
-            f"container restart but the gateway did not recover. "
-            f"Suggestion: check crew status with crews() or try "
-            f"again in a moment."
-        )
-    # TRN-238 QA-2: crew was nuked during the restart — nothing to call against.
-    if crew is _NUKED_DURING_RESTART:
-        raise CrewUnresponsiveError(
-            f"crew {crew_id} was removed (nuked) during restart — no longer exists."
-        )
-    if method.upper() not in _IDEMPOTENT_METHODS:
-        raise CrewUnresponsiveError(
-            f"crew {crew_id} gateway restarted after a connection reset on a "
-            f"{method} request — not retrying a non-idempotent call to avoid "
-            f"duplicating side-effects. Re-issue the request to proceed."
-        )
-    try:
-        return _crew_api(crew, method, path, **kw)
-    except Exception as retry_exc:
-        raise _unresponsive_error(
-            crew_id,
-            "transport attempted container restart but the gateway did not recover",
-            crew, retry_exc,
-        )
-
-
-def _spawn_backend(crew: Crew | dict) -> str:
-    """Select the gateway backend from the crew record, including legacy crews."""
-    backend = (crew.acp_backend if isinstance(crew, Crew) else crew.get("acp_backend")) or "kiro"
-    if backend not in ("kiro", "claude", "codex"):
-        raise ValueError(f"Unsupported crew backend: {backend}")
-    return backend
-
-
-def _crew_api_with_recovery(
-    crew: dict,
-    crew_id: str,
-    method: str,
-    path: str,
-    **kw: Any,
-) -> Any:
-    """Wrap _crew_api with three-phase recovery logic.
-
-    Phase 0 (task still spawning): On 503 from a per-task /api/spawn/*
-    route, KiroCrew's own task record already reports elapsed > 0 before
-    the agent process has finished forking/registering enough to serve
-    the route. Short bounded retry — this is transient and self-resolving
-    within a couple of seconds, not a dead gateway.
-
-    Phase 1 (stale cookie): On 400/401/403 from a running container,
-    attempt cookie refresh then retry once.
-
-    Phase 2 (dead gateway): On connection error from a running container,
-    confirm via liveness probe then restart via _ensure_crew_running and
-    retry once.
-
-    If phase 1 cookie refresh fails, escalates to phase 2.
-    At most one retry per failure class — no infinite loops.
-
-    NON-REENTRANT CONTRACT (D1 — do not reintroduce the deadlock):
-    This function holds ``_get_recovery_lock(crew_id)`` for the entire call,
-    INCLUDING any phase-1/phase-2 sub-call into ``_ensure_crew_running``. The
-    per-crew recovery lock is a plain ``threading.Lock`` (non-reentrant), so a
-    code path reached *while this lock is held* must NOT call
-    ``_crew_api_with_recovery`` again for the same crew — doing so blocks
-    forever trying to re-acquire the lock. Concretely: ``_ensure_crew_running``
-    (reached via phase 2) calls ``_enroll_crew_members``, which therefore uses
-    ``_crew_api`` DIRECTLY (best-effort, its own try/except) and never
-    ``_crew_api_with_recovery``. Any new caller of ``_enroll_crew_members`` — or
-    any new sub-call added under this lock — must preserve that: route
-    gateway calls through ``_crew_api``, not through recovery, so the lock is
-    never re-entered. See design.md D1.
-    """
-    if method == "POST" and path == "/api/spawn":
-        kw["json"] = {**kw["json"], "backend": _spawn_backend(crew)}
-
-    lock = _get_recovery_lock(crew_id)
-    with lock:
-        # First attempt
-        try:
-            return _crew_api(crew, method, path, **kw)
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status == 503:
-                # ── Phase 0: transient 503 while task process is still starting ──
-                return _phase0_transient_503(crew, method, path, **kw)
-            if status not in (400, 401, 403):
-                raise
-            # ── TRN-230: 400 on /continue means session is gone, not a stale cookie.
-            # Phase-1 cookie refresh cannot recover a finished session — re-raise so
-            # the caller (_steer_captain_checkin) can handle it as "session gone".
-            # TRN-238 QA-3: match only a path whose final segment is "continue"
-            # (path.endswith("/continue")), not any path merely containing the
-            # substring "continue". A route like /api/continue-session/abc or
-            # /api/foo?note=continue must NOT trigger this session-gone bypass.
-            if status == 400 and path.endswith("/continue"):
-                raise
-            # ── Phase 1: stale cookie ─────────────────────────────────────────
-            return _phase1_stale_cookie(
-                crew, crew_id, method, path, trigger_exc=e, **kw
-            )
-
-        except (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError, OSError):
-            # ── Phase 2: connection error / dead gateway ──────────────────────
-            return _phase2_dead_gateway(crew, crew_id, method, path, **kw)
+def _forget_gateway_crew(crew_id: str) -> None:
+    _gateway_client.forget_crew(crew_id)
 
 
 def _require_crew(crew_id: str | None) -> dict:
@@ -1564,7 +1215,7 @@ def _reconcile_registry() -> None:
     # increments its generation before it can start the container, so stale
     # Podman observations cannot overwrite that newer lifecycle state.
     with _launcher._startup_events_lock:
-        startup_in_progress = set(_launcher._startup_events)
+        startup_in_progress = set(_launcher._startup_cycles)
         with registry:
             snapshot = dict(registry._reg["crews"])
             snapshot_created_at: dict[str, str | None] = {
@@ -1621,7 +1272,7 @@ def _reconcile_registry() -> None:
 
                 def _snapshot_is_current(cid: str, live_entry: dict) -> bool:
                     return (
-                        cid not in _launcher._startup_events
+                        cid not in _launcher._startup_cycles
                         and _launcher._startup_generation.get(cid, 0)
                         == snapshot_generation.get(cid, 0)
                         and live_entry.get("container") == snapshot_containers.get(cid)
@@ -1829,45 +1480,6 @@ def _patch_crew_config(
     except Exception as e:
         logger.warning("Config patch failed for %s: %s", container, e)
 
-
-def _resolve_dispatch_slot(
-    agent: str,
-    slot: bool | None,
-    crew,
-) -> tuple[str | None, str | None]:
-    """Resolve the effective slot and parent_session for a dispatch.
-
-    Returns (effective_slot, parent_session).
-
-    Two modes:
-
-    - ``slot=None`` (default): let the system decide. An enrolled agent routes
-      to its member DM slot (``parent_session="dashboard:member-<slug>"``),
-      echoing ``"<slug>"`` as the slot name. An unenrolled agent routes headless
-      (``(None, None)``) — no session is created.
-    - ``slot=False``: explicit headless, regardless of enrollment —
-      ``(None, None)``.
-
-    ``True`` is a legacy value, not a distinct slot mode. It logs a warning
-    and is treated as ``None``: enrolled agents use their member slot, while
-    unenrolled agents remain headless. MCP callers cannot pass string-valued
-    slots because the dispatch tool schema accepts only boolean or null.
-    """
-    if isinstance(crew, Crew):
-        enrolled: frozenset[str] = frozenset(crew.enrolled_agents or [])
-    else:
-        enrolled = frozenset(crew.get("enrolled_agents") or [])
-    if slot is True:
-        logger.warning(
-            "_resolve_dispatch_slot: slot=True is not a valid value; "
-            "treating as slot=None (member-slot or headless resolution proceeds normally)"
-        )
-        slot = None
-    if slot is None and agent in enrolled:
-        # Echo the agent name (clean) not "member-<agent>" (implementation detail).
-        return agent, f"dashboard:member-{agent}"
-    # slot=None for an unenrolled agent, or slot=False for anyone → headless.
-    return None, None
 
 
 def _deployed_agent_names(podman: PodmanClient, container: str) -> list[str]:
@@ -2831,144 +2443,6 @@ except ModuleNotFoundError:
 _schedule_monitor = _monitors._schedule_monitor
 _idle_monitor = _monitors._idle_monitor
 _captain_monitor = _monitors._captain_monitor
-# ── Batch pickup ────────────────────────────────────────────────────
-# cfg.ga_pickup_max_poll_secs caps the wall time of one _pickup_batch call,
-# mirroring the single-task pickup internal cap (default 30 s). Resolved from
-# cfg at startup.
-
-_BATCH_POLL_INTERVAL_SECS = 3
-
-
-def _pickup_batch(
-    crew: dict,
-    crew_id: str,
-    task_ids: list[str],
-    podman: "PodmanClient",
-    container: str,
-    timeout_secs: int,
-    pickup_single,
-    read_all_mail_counts,
-    batch_id: str | None = None,
-    update_batch_status=None,
-) -> dict:
-    """Blocking multi-task pickup: collect results for every id in *task_ids*.
-
-    Orchestrates per-round sequential calls to ``pickup_single(timeout_secs=0)``
-    for each task id, aggregating into a dict keyed by task_id. The whole call
-    is capped at ``cfg.ga_pickup_max_poll_secs`` of wall time (each round polls all
-    members once, then sleeps 3 s). A task the gateway does not know about (404
-    / missing) is marked ``{"done": false, "lost": true, ...}`` rather than
-    raising, so the other members' results survive.
-
-    ``pickup_single`` and ``read_all_mail_counts`` are injected by the caller
-    (server.py) to avoid a lifecycle->server import cycle. ``update_batch_status``
-    (optional) is called with (crew_id, batch_id, "complete") when every task is
-    done and a ``batch_id`` is known.
-
-    Response shape::
-
-        {
-          "<task_id>": {<single-task pickup shape> | lost-marker},
-          ...,
-          "done": bool,          # True only when every member is done
-          "completed_tasks": int,
-          "total_tasks": int,
-          "reason": "timeout" | "admiral_mail",   # only when it applies
-        }
-    """
-    total = len(task_ids)
-
-    # Cap the batch wall time at cfg.ga_pickup_max_poll_secs regardless of the
-    # requested timeout — identical to the single-task internal cap contract.
-    capped_timeout = min(max(0, timeout_secs), cfg.ga_pickup_max_poll_secs)
-
-    # Admiral-mail early-return baseline read before the first round.
-    if capped_timeout > 0:
-        initial_counts = read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-
-    deadline = time.monotonic() + capped_timeout
-
-    def _poll_round() -> tuple[dict, int]:
-        """Poll every task once; return (results, done_count)."""
-        results: dict[str, Any] = {}
-        done_count = 0
-        for tid in task_ids:
-            res = pickup_single(crew, crew_id, tid, podman, container, 0)
-            # Lost member: gateway returns 404 for an unknown task id. The
-            # single-task path surfaces that as an error string; normalise it
-            # to an explicit lost marker so the batch survives.
-            err = res.get("error", "") if isinstance(res, dict) else ""
-            if err and ("404" in str(err) or "not found" in str(err).lower()):
-                res = {
-                    "task_id": tid,
-                    "done": False,
-                    "lost": True,
-                    "error": "task not found in gateway",
-                }
-            results[tid] = res
-            if res.get("done"):
-                done_count += 1
-                # Per-task status (H-3): mark the task complete in
-                # _task_timestamps so callers polling pickup can observe
-                # per-task completion within this process session.
-                with _task_timestamps_lock:
-                    if tid in _task_timestamps:
-                        _task_timestamps[tid]["status"] = "complete"
-                        if _task_timestamps[tid]["completed_at"] is None:
-                            _task_timestamps[tid]["completed_at"] = datetime.now(timezone.utc).isoformat()
-        return results, done_count
-
-    while True:
-        results, done_count = _poll_round()
-        all_done = done_count == total and total > 0
-
-        out: dict[str, Any] = dict(results)
-        out["done"] = all_done
-        out["completed_tasks"] = done_count
-        out["total_tasks"] = total
-
-        if all_done:
-            if batch_id is not None and update_batch_status is not None:
-                try:
-                    update_batch_status(crew_id, batch_id, "complete")
-                except Exception as exc:  # best-effort; do not fail the pickup
-                    logger.warning(
-                        "Could not mark batch %s complete: %s",
-                        batch_id, exc,
-                    )
-            return out
-
-        # Snapshot mode (timeout_secs == 0): one query per task, no blocking.
-        if capped_timeout == 0:
-            return out
-
-        # Admiral-mail early-return: re-read the count and bail if it grew.
-        admiral_mail = read_all_mail_counts(podman, container).get("admiral", 0)
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            out["reason"] = "timeout"
-            return out
-
-        time.sleep(min(_BATCH_POLL_INTERVAL_SECS, remaining))
-
-
-# ── Task timestamp tracking ──────────────────────────────────────────
-# In-memory per-task created/started/completed timestamps. Written by the
-# dispatch tools (worker threads) and read-modified-written by the pickup
-# handlers (worker threads). Lives here alongside pickup/dispatch; server.py
-# imports these names so its dispatch tools share the same objects.
-_task_timestamps: dict[str, dict] = {}
-# Guards all read-modify-write access to _task_timestamps. The dict is written
-# by dispatch (worker thread) and read-modified-written by pickup handlers
-# (worker threads); without this lock those accesses race.
-_task_timestamps_lock = threading.Lock()
 
 
 def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
@@ -2981,354 +2455,25 @@ def _record_last_task_at(crew_id: str | None, created_at: str) -> None:
         logger.warning("Could not update last_task_at for crew %s: %s", crew_id, exc)
 
 
-def _dispatch_batch(
-    tasks: list[str],
-    agent: str,
-    crew_id: str | None,
-    model: str | None,
-    slot: bool | None = None,
-) -> dict:
-    """Sequentially dispatch a batch of tasks; record a batch entry.
+_task_service = TaskService(
+    config=cfg,
+    require_crew=_require_crew,
+    ensure_running=_ensure_crew_running,
+    to_crew=_to_crew,
+    validate_agent=_validate_agent,
+    call_gateway=_crew_api_with_recovery,
+    get_podman=_get_podman,
+    sign_in=_kiro_signin,
+    record_last_task_at=_record_last_task_at,
+)
 
-    Validation (size, agent, model) has already run in ``dispatch``. On the
-    first CrewUnresponsiveError or unexpected failure the loop breaks and a
-    ``partial`` batch is recorded with the task_ids assigned so far.
-
-    ``slot`` follows the same two-mode semantics as single-task dispatch:
-    ``None`` (default) routes an enrolled agent to its shared member DM slot and
-    an unenrolled agent headless; ``False`` is explicit headless for everyone.
-    All tasks in the batch share the one resolved slot (member or headless);
-    per-task slot names are not generated.
-    """
-    # Size validation.
-    max_tasks = cfg.ga_batch_max_tasks
-    if len(tasks) == 0 or len(tasks) == 1:
-        return {"error": "tasks must contain at least 2 items; use task= for a single dispatch"}
-    if len(tasks) > max_tasks:
-        return {"error": f"tasks exceeds maximum batch size of {max_tasks}"}
-
-    try:
-        crew = _ensure_crew_running(_require_crew(crew_id), crew_id)
-    except (ValueError, KeyError, RuntimeError) as e:
-        return {"error": str(e)}
-
-    if (denied := _kiro_signin().dispatch_guard(crew_id, crew)) is not None:
-        return denied
-
-    # Resolve effective slot and shared parent_session using the unified helper.
-    # effective_slot is either the agent name (member slot) or None (headless);
-    # all tasks in the batch share the one resolved parent_session.
-    effective_slot, shared_parent_session = _resolve_dispatch_slot(agent, slot, crew)
-
-    batch_id = str(uuid.uuid4())
-    task_ids: list[str] = []
-    now = datetime.now(timezone.utc)
-    created_at = now.isoformat()
-    dispatch_error: str | None = None
-
-    for t in tasks:
-        body: dict[str, Any] = {"task": t, "agent": agent, "keep": True}
-        if model is not None:
-            body["model"] = model
-        if shared_parent_session is not None:
-            body["parent_session"] = shared_parent_session
-
-        try:
-            result = _crew_api_with_recovery(
-                crew, crew_id, "POST", "/api/spawn", json=body,
-            )
-        except (CrewUnresponsiveError, RuntimeError, ValueError) as e:
-            dispatch_error = str(e)
-            break
-        tid = result.get("id")
-        if not tid:
-            dispatch_error = "spawn returned no task id"
-            break
-        task_ids.append(tid)
-        # Per-task timestamp + last_task_at, using this task's response time.
-        task_created = datetime.now(timezone.utc).isoformat()
-        with _task_timestamps_lock:
-            _task_timestamps[tid] = {
-                "created_at": task_created,
-                "started_at": None,
-                "completed_at": None,
-                "status": "pending",
-            }
-        _record_last_task_at(crew_id, task_created)
-
-    # Echo the effective slot: the agent name (member slot) or None (headless).
-    response_slot: str | None = effective_slot
-
-    if dispatch_error is None:
-        # Task 2.5: full success.
-        _write_batch(crew_id, batch_id, task_ids, status="pending", created_at=created_at)
-        response: dict[str, Any] = {
-            "batch_id": batch_id,
-            "task_ids": task_ids,
-            "crew_id": crew_id,
-            "status": "dispatched",
-            "agent": agent,
-            "slot": response_slot,
-            "created_at": created_at,
-        }
-        return response
-
-    # Task 2.6: partial failure. Record what was started; surface the error.
-    _write_batch(crew_id, batch_id, task_ids, status="partial", created_at=created_at)
-    response = {
-        "batch_id": batch_id,
-        "task_ids": task_ids,
-        "crew_id": crew_id,
-        "status": "partial",
-        "agent": agent,
-        "slot": response_slot,
-        "created_at": created_at,
-        "error": dispatch_error,
-    }
-    return response
-
-
-def _pickup_single(
-    crew: dict,
-    crew_id: str,
-    task_id: str,
-    podman: PodmanClient,
-    container: str,
-    timeout_secs: int,
-) -> dict:
-    """Single-task pickup with optional polling and mail state."""
-    # Capture initial admiral mail count for early-return detection using a
-    # single batched exec rather than a dedicated _mail_count call.
-    if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-    deadline = time.monotonic() + timeout_secs
-
-    while True:
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "GET", f"/api/spawn/{task_id}")
-        except CrewUnresponsiveError as e:
-            return {"error": str(e), "task_id": task_id, "crew_id": crew_id}
-        done = r.get("done", False)
-
-        # Single exec reads all mailboxes at once.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
-        agent_persona = r.get("agent", "")
-        agent_mail = mail_counts.get(agent_persona, 0) if agent_persona else 0
-        admiral_mail = mail_counts.get("admiral", 0)
-
-        # Populate task timestamps
-        now = datetime.now(timezone.utc)
-        with _task_timestamps_lock:
-            ts = _task_timestamps.get(task_id, {})
-            elapsed = r.get("elapsed", 0)
-            if ts and elapsed and elapsed > 0 and ts.get("started_at") is None:
-                ts["started_at"] = now.isoformat()
-            if ts and done and ts.get("completed_at") is None:
-                ts["completed_at"] = now.isoformat()
-            # Snapshot ts under the lock so the post-lock reads below see a stable
-            # copy rather than a live reference that a concurrent _pickup_single
-            # or _dispatch_batch could mutate after release.
-            ts = dict(ts)
-
-            # Evict completed-task timestamp entries older than TTL so
-            # _task_timestamps does not grow without bound over the process life.
-            _evict_cutoff = (
-                now - timedelta(seconds=cfg.ga_task_timestamp_ttl_secs)
-            ).isoformat()
-            _to_evict = [
-                k
-                for k, v in _task_timestamps.items()
-                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
-            ]
-            for k in _to_evict:
-                _task_timestamps.pop(k, None)
-
-        out: dict[str, Any] = {
-            "task_id": r.get("id"),
-            "crew_id": crew_id,
-            "done": done,
-            "turns": r.get("turns", 0),
-            "last_tool": r.get("last_tool", ""),
-            "elapsed_secs": int(r.get("elapsed", 0)),
-            "result": r.get("result", ""),
-            "error": r.get("error", ""),
-            "outcome": r.get("outcome", ""),
-            "agent_mail": agent_mail,
-            "created_at": ts.get("created_at") if ts else None,
-            "started_at": ts.get("started_at") if ts else None,
-            "completed_at": ts.get("completed_at") if ts else None,
-        }
-        if done and out["error"]:
-            explained = _kiro_signin().explain_failure(crew_id, crew, out["error"])
-            if explained:
-                out.update(explained)
-
-        # Include subject lines for the agent persona, raven, captain, and admiral.
-        # captain/admiral come from the single _read_all_mail_subjects exec above
-        # (same shape: [{subject, received_at}]). The admiral_mail count above is
-        # still used for the reason="admiral_mail" early-return signal.
-        if agent_persona:
-            out[f"{agent_persona}_subjects"] = mail_subjects.get(agent_persona, [])
-        raven_subjects = mail_subjects.get("raven", [])
-        if raven_subjects:
-            out["raven_subjects"] = raven_subjects
-        captain_subjects = mail_subjects.get("captain", [])
-        admiral_subjects = mail_subjects.get("admiral", [])
-        out["captain_subjects"] = captain_subjects
-        out["captain_mail"] = len(captain_subjects)
-        out["admiral_subjects"] = admiral_subjects
-        out["admiral_mail"] = len(admiral_subjects)
-
-        if done or timeout_secs == 0:
-            return out
-
-        # Check for admiral mail early-return
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            if not done:
-                out["reason"] = "timeout"
-            return out
-
-        # F-03 audit: @mcp.tool() handlers are dispatched via run_in_executor
-        # (confirmed: MCPServer.streamable_http_app wraps sync handlers in the
-        # default thread-pool executor). time.sleep blocks the worker thread,
-        # not the event loop — safe, no conversion to asyncio.sleep needed.
-        time.sleep(min(3, remaining))
-
-
-def _pickup_list(
-    crew: dict,
-    crew_id: str,
-    podman: PodmanClient,
-    container: str,
-    timeout_secs: int,
-) -> dict:
-    """List-all pickup with optional polling and mail state."""
-    # Capture initial admiral mail count for early-return detection using a
-    # single batched exec rather than a dedicated _mail_count call.
-    if timeout_secs > 0:
-        initial_counts = _read_all_mail_counts(podman, container)
-        initial_admiral_mail = initial_counts.get("admiral", 0)
-    else:
-        initial_admiral_mail = 0
-    deadline = time.monotonic() + timeout_secs
-
-    while True:
-        try:
-            r = _crew_api_with_recovery(crew, crew_id, "GET", "/api/spawn")
-        except CrewUnresponsiveError as e:
-            return {"error": str(e), "crew_id": crew_id}
-        agents = r.get("agents", [])
-
-        # Check if any task is done
-        any_done = any(a.get("done", False) for a in agents)
-
-        # Single exec reads all mailboxes at once; split into persona summary
-        # and admiral count for the response surface.
-        mail_counts = _read_all_mail_counts(podman, container)
-        mail_subjects = _read_all_mail_subjects(podman, container)
-        mail_summary: dict[str, int] = {
-            name: mail_counts[name]
-            for name in PERSONA_NAMES
-            if mail_counts.get(name, 0) > 0
-        }
-        admiral_mail = mail_counts.get("admiral", 0)
-
-        # Snapshot the timestamp entries for the listed agents under the lock,
-        # then build the response list from the snapshot so the comprehension
-        # does not read _task_timestamps concurrently with writes.
-        with _task_timestamps_lock:
-            # Evict completed-task timestamp entries older than TTL first
-            # (reading _task_timestamps), then snapshot the survivors.
-            _evict_cutoff = (
-                datetime.now(timezone.utc)
-                - timedelta(seconds=cfg.ga_task_timestamp_ttl_secs)
-            ).isoformat()
-            _to_evict = [
-                k
-                for k, v in _task_timestamps.items()
-                if v.get("completed_at") is not None and v["completed_at"] < _evict_cutoff
-            ]
-            for k in _to_evict:
-                _task_timestamps.pop(k, None)
-            _ts_snapshot = {
-                a.get("id", ""): dict(_task_timestamps.get(a.get("id", ""), {}))
-                for a in agents
-            }
-
-        task_list = [
-            {
-                "task_id": a.get("id"),
-                "crew_id": crew_id,
-                "task": a.get("task", "")[:80],
-                "agent": a.get("agent", ""),
-                "done": a.get("done", False),
-                "elapsed_secs": int(a.get("elapsed", 0)),
-                "last_tool": a.get("last_tool", ""),
-                "outcome": a.get("outcome", ""),
-                "error": a.get("error", ""),
-                # Include per-task timestamps (null if missing)
-                "created_at": _ts_snapshot.get(a.get("id", ""), {}).get("created_at"),
-                "started_at": _ts_snapshot.get(a.get("id", ""), {}).get("started_at"),
-                "completed_at": _ts_snapshot.get(a.get("id", ""), {}).get("completed_at"),
-            }
-            for a in agents
-        ]
-        # List view: explain sign-in failures from the recorded state only,
-        # never probing the crew once per listed task.
-        for entry in task_list:
-            if entry["done"] and entry["error"]:
-                explained = _kiro_signin().explain_failure(
-                    crew_id, crew, entry["error"], probe=False,
-                )
-                if explained:
-                    entry.update(explained)
-
-        # Build subject summaries for all persona mailboxes + captain + admiral.
-        # captain/admiral come from the single _read_all_mail_subjects exec above.
-        subjects_summary: dict[str, list[str]] = {}
-        for name in PERSONA_NAMES:
-            subs = mail_subjects.get(name, [])
-            if subs:
-                subjects_summary[f"{name}_subjects"] = subs
-        captain_subjects = mail_subjects.get("captain", [])
-        admiral_subjects = mail_subjects.get("admiral", [])
-        subjects_summary["captain_subjects"] = captain_subjects
-        subjects_summary["captain_mail"] = len(captain_subjects)
-        subjects_summary["admiral_subjects"] = admiral_subjects
-        subjects_summary["admiral_mail"] = len(admiral_subjects)
-
-        out: dict[str, Any] = {
-            "crew_id": crew_id,
-            "tasks": task_list,
-            "mail_summary": mail_summary,
-            "agent_subjects": mail_subjects,
-            **subjects_summary,
-        }
-
-        if any_done or timeout_secs == 0:
-            return out
-
-        # Check for admiral mail early-return
-        if admiral_mail > initial_admiral_mail:
-            out["reason"] = "admiral_mail"
-            return out
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            out["reason"] = "timeout"
-            return out
-
-        # F-03: same as _pickup_single — time.sleep is safe in executor thread.
-        time.sleep(min(3, remaining))
+# Compatibility exports for existing Python callers.
+_dispatch_batch = _task_service._dispatch_batch
+_pickup_batch = _task_service._pickup_batch
+_pickup_single = _task_service._pickup_single
+_pickup_list = _task_service._pickup_list
+_task_timestamps = _task_service._task_timestamps
+_task_timestamps_lock = _task_service._task_timestamps_lock
 
 
 _cron_activity_since = _monitors._cron_activity_since

@@ -14,60 +14,15 @@ Covers:
 
 from __future__ import annotations
 
-import sys
 import tempfile
-import types
 import unittest
 from unittest.mock import patch
-
-# transport.tools imports transport.files, which needs real starlette routing
-# that the unit-test stubs (conftest) don't provide. launch never signs file
-# URLs, so a stand-in exposing the two imported names is enough.
-if "transport.files" not in sys.modules:
-    try:
-        import transport.files  # noqa: F401
-    except ImportError:
-        _files_stub = types.ModuleType("transport.files")
-        _files_stub._sign_file_url = lambda *a, **k: ""
-        _files_stub._sign_upload_url = lambda *a, **k: ""
-        sys.modules["transport.files"] = _files_stub
 
 from tests.fakes import FakePodmanClient
 from transport.config import Config
 from transport.credentials import CredentialStore
 
 from tests.unit.test_lifecycle import _patch_registry_backing
-
-
-def _crypto_modules() -> dict:
-    """Stand-ins for the Ed25519 imports launch makes inline; conftest's
-    cryptography stub is not a package, and the key bytes don't matter here."""
-
-    class _Pub:
-        def public_bytes(self, *a):
-            return b"\x01" * 32
-
-    class Ed25519PrivateKey:
-        @classmethod
-        def generate(cls):
-            return cls()
-
-        def private_bytes(self, *a):
-            return b"\x02" * 32
-
-        def public_key(self):
-            return _Pub()
-
-    ed = types.ModuleType("cryptography.hazmat.primitives.asymmetric.ed25519")
-    ed.Ed25519PrivateKey = Ed25519PrivateKey
-    ser = types.ModuleType("cryptography.hazmat.primitives.serialization")
-    for name in ("Encoding", "PrivateFormat", "PublicFormat"):
-        setattr(ser, name, types.SimpleNamespace(Raw="raw"))
-    ser.NoEncryption = lambda: None
-    return {
-        "cryptography.hazmat.primitives.asymmetric.ed25519": ed,
-        "cryptography.hazmat.primitives.serialization": ser,
-    }
 
 
 class _EnvRecordingPodman(FakePodmanClient):
@@ -110,7 +65,6 @@ class _LaunchHarness(unittest.TestCase):
             return _start
 
         patchers = [
-            patch.dict(sys.modules, _crypto_modules()),
             patch.object(tools, "GA_CREW_ACP_BACKEND", "claude"),
             patch.object(login_mod, "cfg", Config(ga_crew_agent=self.ENABLED)),
             patch.object(tools, "_get_podman", return_value=self.podman),
@@ -132,6 +86,42 @@ class _LaunchHarness(unittest.TestCase):
     def created_env(self) -> dict:
         env, = self.podman.created_envs
         return env
+
+
+class TestLaunchCorsPublicOrigin(_LaunchHarness):
+    """launch passes the public transport origin into the crew container."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.put("claude", "setup-token", "claude-token")
+
+    def test_external_public_url_path_is_removed_from_cors_origin(self):
+        config = Config(
+            ga_host_url="https://academy.example.test:8443/portal/transport/",
+            ga_portal_host="192.0.2.88",
+            port=65111,
+        )
+
+        with patch.object(self.tools, "cfg", config):
+            result = self.launch()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(
+            self.created_env()["KIROCREW_CORS_ORIGINS"],
+            "http://gs-crew-a:5476,https://academy.example.test:8443",
+        )
+
+    def test_portal_host_fallback_includes_non_default_port(self):
+        config = Config(ga_portal_host="portal.example.test", port=65123)
+
+        with patch.object(self.tools, "cfg", config):
+            result = self.launch()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(
+            self.created_env()["KIROCREW_CORS_ORIGINS"],
+            "http://gs-crew-a:5476,http://portal.example.test:65123",
+        )
 
 
 class TestBackendSelection(_LaunchHarness):

@@ -66,6 +66,16 @@ PORT: int = _cfg.port
 GA_API_KEY: str = ""
 GA_DASHBOARD_PORT_RANGE_START: int = _cfg.ga_dashboard_port_range_start
 GA_DASHBOARD_PORT_RANGE_SIZE: int = 1024
+CADDY_ADMIN_SOCKET: str = "/run/ga-portal-admin/admin.sock"
+CADDY_ADMIN_BASE_URL: str = "http://localhost:2019"
+
+
+def _create_caddy_admin_client() -> httpx.Client:
+    """Build the HTTP client that reaches Caddy only through its Unix socket."""
+    return httpx.Client(transport=httpx.HTTPTransport(uds=CADDY_ADMIN_SOCKET))
+
+
+_caddy_admin_client = _create_caddy_admin_client()
 
 
 # ── UI port pool ──────────────────────────────────────────────────────────────
@@ -226,7 +236,7 @@ class CaddyPortal:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                resp = httpx.put(url, json=server_obj, timeout=5.0)
+                resp = _caddy_admin_client.put(url, json=server_obj, timeout=5.0)
                 if resp.status_code in (200, 201):
                     logger.info(
                         "Registered Caddy server crew-%s on port %d", crew_id, port
@@ -258,7 +268,7 @@ class CaddyPortal:
         """
         url = f"{_caddy_admin_url()}/id/crew-{crew_id}"
         try:
-            resp = httpx.delete(url, timeout=5.0)
+            resp = _caddy_admin_client.delete(url, timeout=5.0)
             if resp.status_code in (200, 204):
                 logger.info("Deregistered Caddy server crew-%s", crew_id)
             elif resp.status_code == 404:
@@ -316,8 +326,8 @@ def _release_dashboard_port(port: int) -> None:
 # ── Caddy admin API helpers ────────────────────────────────────────────────────
 
 def _caddy_admin_url() -> str:
-    """Return the Caddy admin API base URL."""
-    return "http://ga-portal:2019"
+    """Return the HTTP URL used over the permissioned Caddy admin socket."""
+    return CADDY_ADMIN_BASE_URL
 
 
 def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None:
@@ -347,7 +357,8 @@ def _caddy_register_crew(crew_id: str, port: int, crew_cookie: str = "") -> None
 def _caddy_deregister_crew(crew_id: str) -> None:
     """Thin wrapper over ``CaddyPortal.deregister_crew`` (module-default portal).
 
-    Calls ``DELETE /config/id/crew-{crew_id}`` on the Caddy admin API.
+    Calls ``DELETE /config/id/crew-{crew_id}`` on the Caddy admin API through
+    the shared Unix socket.
     Handles 404 gracefully (server already removed). Logs a warning on other
     failures; does not raise so ``nuke`` is never blocked by Caddy errors.
     """

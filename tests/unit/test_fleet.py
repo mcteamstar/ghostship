@@ -14,6 +14,8 @@ import json
 import unittest
 from unittest.mock import patch
 
+import httpx2 as httpx
+
 from tests.fakes import FakePodmanClient
 
 
@@ -174,9 +176,23 @@ class TestBuildCrewsPayloadRunningCrew(unittest.TestCase):
         }
 
     def _call(self) -> dict:
-        with patch.object(self._reg_mod, "_load_registry", return_value=self._registry_data), \
-             patch("transport.lifecycle._probe_gateway", return_value=True):
-            return self._build_crews_payload(self._podman)
+        from transport import lifecycle
+        from transport.crew_gateway import CrewGatewayClient
+
+        with httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, request=request, json={"status": "ok"})
+            )
+        ) as http:
+            gateway = CrewGatewayClient(
+                http,
+                refresh_cookie=lambda *_: False,
+                restore_crew=lambda crew, *_: crew,
+                removed_crew=object(),
+            )
+            with patch.object(self._reg_mod, "_load_registry", return_value=self._registry_data), \
+                 patch.object(lifecycle, "_gateway_client", gateway):
+                return self._build_crews_payload(self._podman)
 
     def test_returns_one_crew(self):
         result = self._call()

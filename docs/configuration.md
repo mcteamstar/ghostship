@@ -18,11 +18,15 @@ These variables are written into the transport container's environment by `insta
 | `PODMAN_SOCKET` | `/run/user/1000/podman/podman.sock` | Podman socket path. On Linux uses host uid (`id -u`); on macOS uses the `podman machine` guest uid (`podman machine ssh -- id -u`), which may differ. |
 | `GA_HOST_URL` | derived from `HOST` | Public base URL baked into presigned `evac`/`supply` links and crew CORS origins (`network.host_url`, `--public-url`). When unset: `http://localhost:<PORT>` for a loopback or wildcard `HOST`, `http://<HOST>:<PORT>` for a specific address. Set it explicitly for a DNS name or TLS. |
 | `GA_FILE_SECRET` | unset (generated once, stored in `DATA_DIR/ga-file-secret`) | HMAC secret signing presigned file URLs. The stored secret survives transport restarts. `install.sh` does not pass an override. |
+| `GA_MAX_UPLOAD_BYTES` | `268435456` (256 MiB) | Positive integer byte ceiling for every `supply` request body, including plain files, archives, and bundles. Oversized declared lengths are rejected before reading; actual bytes are counted while streaming. Configure as `transfer.max_upload_bytes`. |
+| `GA_MAX_ARCHIVE_BYTES` | `1073741824` (1 GiB) | Positive integer ceiling for the combined expanded regular-file bytes extracted from one archive. Configure as `transfer.max_archive_bytes`. |
+| `GA_MAX_ARCHIVE_MEMBERS` | `100000` | Positive integer ceiling for archive members parsed during staging. Configure as `transfer.max_archive_members`. |
+| `GA_MAX_BUNDLE_STORAGE_BYTES` | `2147483648` (2 GiB) | Positive integer ceiling for one bundle checkout’s Git objects, temporary Git files, and checkout tree. Each bundle uses a disposable worker with a size-limited tmpfs; uploads fail safely before Git starts if the bound cannot be confirmed. Configure as `transfer.max_bundle_storage_bytes`. |
 | `TRANSPORT_DATA_DIR` | `/data` (pinned) | Container-side data directory the transport reads/writes. Effectively pinned to `/data` in the standard install: `DATA_DIR` is always bind-mounted as `/data`. Changing it would require a custom compose override. |
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`), from `network.api_key` or `install.sh --api-key <key>`. Resolution order: `--api-key` > `network.api_key` > the key saved by an earlier `--api-key` (`--api-key ""` clears the saved key). `network.api_key` has three states: a string enables auth; unset is fine on a loopback `HOST`, but on any other `HOST` the install warns and aborts and the transport refuses to start; `false` is the explicit opt-out that allows unauthenticated non-loopback access (for deployments behind their own auth layer — Tailscale, VPN, reverse proxy) with a warning. **Never log, print, or embed this value.** See [auth.md](auth.md). |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. On Linux, checked against `MemAvailable` from `/proc/meminfo`; if unavailable or malformed, the start fails closed. On non-Linux hosts, uses Podman info (`memAvailable`, falling back to `memFree`). Polled every 5 s for up to 60 s. Set to `0` to disable. |
+| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. On Linux, checked against `MemAvailable` from `/proc/meminfo`; if unavailable or malformed, the start fails closed. On non-Linux hosts, uses Podman info (`memAvailable`, falling back to `memFree`). The gate takes one reading and rejects a start immediately when available memory is below the threshold; it does not wait or poll. Set to `0` to disable. |
 | `GA_START_MEM_ESTIMATE_GB` | `1.0` | Memory (GB) assumed for each crew start still in flight. Subtracted from the live reading when admitting another start, so concurrent wakes cannot pass the `GA_MIN_FREE_MEM_GB` gate on the same free memory. Raise it for heavy crew comps. |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) for Ghost Academy. Set to `false` to use the default socket. |
 | `GA_MACHINE_CPUS` | `8` | vCPUs for the dedicated Podman machine VM (macOS only; a cap, not a reservation). Ignored on Linux. |
@@ -53,7 +57,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of host ports in the dashboard proxy port range. Config-file-only. |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
-| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:f4c6c72656e60ed21fd02a86d2b631735660d58d9d0806f7b464acbd3ccb9a26` — the pinned KiroCrew v0.13.0 multi-arch index digest; bundled Kiro CLI 2.27.1)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
+| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1` — the pinned KiroCrew v0.13.1 multi-arch index digest; bundled Kiro CLI 2.27.1)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path on the **host** to an operator-managed directory of additional standing-order template `.md` files. Must be an absolute path (error otherwise). When set and the path exists, it is bind-mounted read-only at `/mnt/orders` inside the container; the container receives `GA_ORDERS_DIR=/mnt/orders`. A warning is logged if the path is set but missing. Config-file-only. |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. See [portal.md](portal.md) for mode descriptions. Unrecognised values fall back to `off` with a WARNING. |
@@ -62,7 +66,9 @@ These variables are written into the transport container's environment by `insta
 | `GA_PORTAL_SESSION_TTL_SECS` | `86400` | TTL (seconds) for `gs_session` cookies issued by `/dashboard/login`. Sessions are in-memory and reset on transport restart. |
 | `GA_TRANSPORT_SECRET` | _(auto-generated by `install.sh`)_ | **Not user-settable directly.** Shared secret between `ga-portal` (Caddy) and `ga-transport`. Generated with `openssl rand -hex 32`, stored as Podman secret `ga-transport-secret`. Caddy injects it as `X-Transport-Token` on every upstream request; the transport rejects requests with a missing or wrong token with HTTP 401. Preserved across reinstalls. To rotate: delete the `ga-transport-secret` Podman secret and re-run `install.sh`. |
 | `GA_TRUSTED_PROXY_CIDR` | _(unset)_ | Comma-separated CIDR ranges for trusted immediate proxy peers (e.g. `10.0.0.0/8,172.16.0.0/12`). For rate-limit keys, `X-Forwarded-For` is consulted only when the ASGI peer address falls within one of these ranges; the first address in the header is used. When unset or empty, or when the peer is outside the ranges, the ASGI peer address is used. Leave unset when the transport is not behind a reverse proxy, or list only the proxy's own CIDR. Configure only proxies that sanitize or overwrite this header, since a trusted peer can influence rate-limit identity. |
-| `GA_REQUIRE_SECRET_ON_EXTERNAL_BIND` | `false` | Set to `true` to make the transport refuse to start if `GA_TRANSPORT_SECRET` is missing and `GA_TRANSPORT_BIND` is a concrete non-loopback address. With the default `false`, that condition logs a `CRITICAL` warning and continues. This guard checks the transport's internal secret and bind; the separate API-key check uses `GA_API_KEY` against Caddy's published address (`HOST`). |
+| `GA_REQUIRE_SECRET_ON_EXTERNAL_BIND` | `false` | Set to `true` to make the transport refuse to start when `GA_TRANSPORT_SECRET` is missing and `GA_TRANSPORT_BIND` is a wildcard or specific non-loopback address. When unset or `false` (the default), the guard logs a `CRITICAL` warning and continues in pass-through mode. This guard checks the transport's internal secret and bind; the separate API-key check uses `GA_API_KEY` against Caddy's published address (`HOST`). |
+
+Archive parsing also limits extended metadata to 64 KiB per parser read, 4 MiB total, and 16 nested headers. Transfers that exceed these limits return HTTP 413.
 
 **Git identity and Claude attribution are separate.** `GA_GIT_AUTHOR_NAME` and `GA_GIT_AUTHOR_EMAIL` (or `crew.git.author.name` and `crew.git.author.email` in `config/ghostship.yaml`) set the author and committer identity of crew commits. They do not control attribution text. Claude crews add no `Co-Authored-By` trailer to commits and no "Generated with Claude Code" text to PR descriptions. The claude toolchain bakes that setting into the crew image as a Claude Code managed setting, so no config is needed. Existing claude crews keep the image they launched with, so relaunch them after `ghostship upgrade`.
 
@@ -88,6 +94,10 @@ The following variables are functional but not listed in `config/ghostship.yaml.
 | `gs-worker-{token}` (disposable) | none (`netns: none`) |
 
 Crew and login containers on `ga-starboard` can dial `ga-transport` at the TCP layer but are blocked at the application layer by `GA_TRANSPORT_SECRET`. `ga-portal` and `ga-radar` cannot reach crew containers by hostname. See `docs/architecture.md` for the full security model.
+
+Caddy's admin API is outside the network topology: it listens on a Unix socket in the dedicated `ga-portal-admin` volume, mounted read-write by `ga-portal` and read-only by `ga-transport`. `ga-radar` and crews do not mount the socket volume, and TCP port 2019 is neither listened on nor published.
+
+The disposable worker keeps stopped-crew reads on a read-only workspace mount. Upload processing uses the same image with the workspace volume writable as uid 1000; bundle Git work runs in a per-operation, size-limited tmpfs. To exercise rootless tmpfs enforcement after install on Linux and macOS, run `tests/manual/test_rootless_tmpfs_limit.sh` against the same Podman engine.
 
 > **Internal constant — not user-settable:**
 > `CREW_GATEWAY_PORT` (`5476`) is the port the transport uses to reach each crew container's gateway over `ga-starboard`. It is defined in `transport/constants.py:21` and imported everywhere else.
@@ -236,6 +246,10 @@ installs where you want full control.
 CLI flags (`--port`, `--public-url`, `--identity-provider`, …) take precedence
 over **all** config-file layers.
 
+Podman is provisioned only after this configuration has been resolved. Its
+machine selection and resources (`machine.dedicated`, `machine.name`, and
+`machine.resources.*`) use the same precedence described above.
+
 > **⚠️ No ambient-environment-variable tier.** Exporting a shell variable has
 > no effect on `install.sh` — the built-in default applies when no config file
 > or flag provides a value. Use a config file instead.
@@ -244,6 +258,14 @@ over **all** config-file layers.
 
 The optional per-user override file lets you keep machine-specific or personal
 settings out of the repo config:
+
+On Linux, `XDG_CONFIG_HOME` selects the location of this YAML file, while
+`XDG_DATA_HOME` selects Ghostship's host data directory and `XDG_RUNTIME_DIR`
+selects the runtime directory used for the Podman socket. These variables select
+paths; they do not themselves set the machine name, dedicated-machine choice,
+or resource limits. Values in the XDG YAML file still override repository YAML
+according to the resolution order above. macOS uses the paths shown in the table
+and the Podman machine's guest socket.
 
 | OS | Path |
 |:---|:-----|
@@ -336,7 +358,7 @@ The Podman socket and unsandboxed crew runtime are additional deployment risks n
 
 The transport applies per-endpoint HTTP rate limiting via a `RateLimitMiddleware` ASGI layer that sits **outside** bearer-auth middleware, so every caller — including unauthenticated `/login` requests — is subject to limits.
 
-Each limiter is a sliding window keyed on caller identity: source IP alone when no bearer token is presented, or `SHA-256(token)[:8]:<ip>` when one is (the raw token is never stored). The source IP is the immediate ASGI peer address unless that peer falls within a CIDR in `GA_TRUSTED_PROXY_CIDR`. Only for a trusted peer does the middleware consult `X-Forwarded-For`, using its first address; when the header is absent, it falls back to the ASGI peer address. An unset or empty CIDR list means forwarded headers are ignored. Configure only proxies that sanitize or overwrite `X-Forwarded-For`, because the middleware trusts its first address from a peer in the configured ranges.
+Each limiter is a sliding window keyed on caller identity: source IP alone unless exactly one well-formed bearer token matches the configured API key, in which case the key is `SHA-256(token)[:8]:<ip>` (the raw token is never stored). Missing, malformed, duplicated, and incorrect credentials share the source-IP bucket. The source IP is the immediate ASGI peer address unless that peer falls within a CIDR in `GA_TRUSTED_PROXY_CIDR`. Only for a trusted peer does the middleware consult `X-Forwarded-For`, using its first address; when the header is absent, it falls back to the ASGI peer address. An unset or empty CIDR list means forwarded headers are ignored. Configure only proxies that sanitize or overwrite `X-Forwarded-For`, because the middleware trusts its first address from a peer in the configured ranges.
 
 When a caller exceeds a limit:
 
@@ -349,6 +371,8 @@ Rate limit exceeded. Retry after <window_secs> seconds.
 ```
 
 `Retry-After` is the full window duration. `/health` and `/version` are unconditionally exempt. Paths not matched by any registered limiter pass through without a rate check.
+
+Each endpoint limiter tracks at most 10,000 caller buckets. Expired buckets are swept across callers during admissions. At capacity, a new caller receives the existing 429 response while active caller buckets remain in place; the caller can retry after an active bucket expires.
 
 Per-endpoint limits are configured via the `GA_RATE_LIMIT_*` env vars. See the env var table above.
 
@@ -374,6 +398,8 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 ```
 
 The new image is built at install time. Existing crews use the old image until nuked and re-called-down.
+
+Ghostship does not bundle or provision KiroCrew apps. KiroCrew 0.13.1 restores an app-backend flow that can mint a local owner token through `/api/token/local` ([upstream change](https://github.com/kirodotdev/KiroCrew/pull/40367)); operators who choose to install KiroCrew apps should treat those apps as trusted code.
 
 ## Updating academy/ and crews/
 
@@ -475,28 +501,21 @@ Every crew launched by the transport receives fixed headless-optimised values wr
 
 ### Knowledge auto-ingest
 
-ghostship does **not** enable knowledge auto-ingest for any crew. As of KiroCrew
-0.9.0 (PR #2448) knowledge auto-ingest — the artifact watcher, the agent
-"auto-add documents" path, and folder ingestion — is **opt-in** rather than
-default-on: a fresh install ingests nothing and spends nothing on extraction
-until an operator switches it on.
+Ghostship does not write `knowledge.*` settings into crew configuration. The
+historical KiroCrew 0.9.0 check (PR #2448) found that its artifact watcher,
+"auto-add documents" path, and folder ingestion were opt-in. That check used
+`ghcr.io/kirodotdev/kirocrew:0.9.0` (`kiro_crew` 0.9.0), not the current pinned
+base image, so it does not establish the defaults in KiroCrew 0.13.1.
 
-The disabled posture is **not pinned** in `config.local.json`; it relies on the
-verified upstream default. Verification against the pinned base image's gateway
-(`ghcr.io/kirodotdev/kirocrew:0.9.0`, `kiro_crew` 0.9.0) showed the
-`knowledge` config section has **no single `auto_ingest` boolean** to pin — the
-ingest toggles are separate fields (`knowledge.auto_ingest_artifacts`,
-`knowledge.auto_add_documents`), each already defaulting to `false`. Pinning a
-`knowledge.auto_ingest` key would be an inert dead key, so none is written (see
-`openspec` change `trn-223-kc090-knowledge-autoingest-optin`, decision D1 =
-Option B).
+The 0.9.0 check also found no single `knowledge.auto_ingest` boolean; the
+separate `knowledge.auto_ingest_artifacts` and `knowledge.auto_add_documents`
+fields defaulted to `false`. Pinning `knowledge.auto_ingest` would therefore
+have been an inert setting at that time (see archived OpenSpec change
+`trn-223-kc090-knowledge-autoingest-optin`, decision D1 = Option B).
 
-**Open item:** because the posture is the upstream default rather than an
-explicit pin, a future KiroCrew release that flips any ingest toggle's default to
-`true` would enable it inside crew containers with no ghostship guard. The
-regression tripwire for this lives in
-`tests/unit/test_trn223_knowledge_autoingest.py`, which asserts the upstream
-toggles still default to `false` and fails CI loudly if that changes.
+**Open item:** re-check these field names and defaults against the current
+pinned image before relying on the historical disabled-default behavior. No
+current-image regression test is present.
 
 An operator who *wants* knowledge built from the mounted worktree must opt in
 explicitly by setting the relevant `knowledge.*` toggle in the crew's config.

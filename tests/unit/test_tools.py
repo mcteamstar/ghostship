@@ -5,8 +5,7 @@ Covers:
   the nuke-specific cleanup helper and returns an accurate teardown status
 - schedule(): missing name error; invalid interval error; action='cancel' non-
   existent job returns structured error
-- dispatch(): crew not found returns {"error": ...}; gateway unreachable returns
-  {"error": ...}
+- task adapters forward MCP arguments and retain registry-error compatibility
 - resource_agents and resource_jobs MCP resource handlers: correct shape with
   empty and non-empty registry
 - supply / evac stopped-crew branches
@@ -17,6 +16,7 @@ from __future__ import annotations
 import types
 import sys
 import unittest
+from urllib.parse import urlsplit
 from unittest.mock import MagicMock, patch
 
 import transport.registry as _reg_mod
@@ -392,49 +392,46 @@ class TestSchedule(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
 
-# ── TestDispatch ──────────────────────────────────────────────────────────────
+# ── Task MCP adapters ──────────────────────────────────────────────────────────────
 
-class TestDispatch(unittest.TestCase):
-    """dispatch(): error paths for crew not found and gateway unreachable."""
+class TestTaskAdapters(unittest.TestCase):
+    def test_forward_arguments_and_return_service_result(self):
+        from transport import tools
 
-    def _call(self, **kwargs):
-        try:
-            from tools import dispatch  # container flat /app/
-        except ModuleNotFoundError:
-            from transport.tools import dispatch  # local dev
-        return dispatch(**kwargs)
+        cases = [
+            ("dispatch", {"tasks": ["first", "second"], "crew_id": "crew", "slot": False},
+             (None, "ghost", "crew", None, ["first", "second"], False),
+             {"task_ids": ["first-id", "second-id"], "status": "dispatched"}),
+            ("pickup", {"task_ids": ["first-id"], "crew_id": "crew", "timeout_secs": 5},
+             (None, "crew", 5, None, ["first-id"]), {"done": False, "total_tasks": 1}),
+            ("steer", {"task_id": "first-id", "message": "continue", "crew_id": "crew", "force": True},
+             ("first-id", "continue", "crew", True), {"error": "gateway unreachable"}),
+        ]
+        for name, arguments, expected_call, result in cases:
+            with self.subTest(tool=name), patch.object(tools, "_task_service") as service:
+                operation = getattr(service, name)
+                operation.return_value = result
+                self.assertIs(getattr(tools, name)(**arguments), result)
+                operation.assert_called_once_with(*expected_call)
 
-    def test_crew_not_found_returns_error(self):
-        """dispatch to a non-existent crew returns {"error": ...}."""
-        _patch_registry(self, {})
-        registry._reg = {"crews": {}}
-        with patch("transport.tools._require_crew", side_effect=KeyError("not found")):
-            result = self._call(task="do work", crew_id="missing-crew")
-        self.assertIn("error", result)
+    def test_adapters_share_the_lifecycle_service(self):
+        from transport import lifecycle, tools
 
-    def test_gateway_unreachable_returns_error(self):
-        """dispatch when gateway is unreachable returns {"error": ...}."""
-        crew_id = "unreachable-crew"
-        _patch_registry(self, {crew_id: _fake_crew_dict(crew_id)})
-        registry._reg = {"crews": {crew_id: _fake_crew_dict(crew_id)}}
+        service = tools._task_service
+        self.assertIs(service, lifecycle._task_service)
+        for helper in ("_dispatch_batch", "_pickup_single", "_pickup_batch", "_pickup_list"):
+            self.assertIs(getattr(lifecycle, helper).__self__, service)
+        self.assertIs(lifecycle._task_timestamps, service._task_timestamps)
+        self.assertIs(lifecycle._task_timestamps_lock, service._task_timestamps_lock)
 
-        try:
-            from lifecycle import CrewUnresponsiveError  # container flat /app/
-        except ModuleNotFoundError:
-            from transport.lifecycle import CrewUnresponsiveError  # local dev
+    def test_registry_corruption_is_a_structured_tool_error(self):
+        from transport import tools
 
-        with (
-            patch("transport.tools._require_crew",
-                  return_value=_fake_crew_dict(crew_id)),
-            patch("transport.tools._ensure_crew_running",
-                  return_value=_fake_crew_dict(crew_id)),
-            patch("transport.tools._crew_api_with_recovery",
-                  side_effect=CrewUnresponsiveError("gateway unreachable")),
-            patch("transport.tools._resolve_dispatch_slot",
-                  return_value=(None, None)),
-        ):
-            result = self._call(task="do work", crew_id=crew_id)
-        self.assertIn("error", result)
+        with patch.object(tools, "_task_service") as service:
+            service.dispatch.side_effect = _reg_mod.RegistryCorruptError("invalid registry")
+            self.assertEqual(tools.dispatch(task="work", crew_id="crew"), {
+                "error": "registry corrupt — crews.json.corrupt preserved for inspection",
+            })
 
 
 # ── TestResourceAgents ────────────────────────────────────────────────────────
@@ -590,6 +587,52 @@ class TestEvacStoppedCrew(unittest.TestCase):
         """evac with path traversal returns error dict."""
         result = self._call(path="../../etc/passwd", crew_id="any-crew")
         self.assertIn("error", result)
+
+
+class TestPresignedPublicUrls(unittest.TestCase):
+    """The supply and evac tool responses use the configured public authority."""
+
+    def test_supply_and_evac_urls_use_explicit_url_or_portal_fallback(self):
+        from transport.config import Config
+        import transport.files as files
+        import transport.tools as tools
+
+        crew = {"container": "gs-url-check"}
+        cases = (
+            (
+                "explicit public URL wins",
+                Config(
+                    ga_host_url="https://files.example.test:9443/",
+                    ga_portal_host="192.0.2.99",
+                    port=65001,
+                ),
+                ("https", "files.example.test", 9443),
+            ),
+            (
+                "portal host fallback keeps configured port",
+                Config(ga_portal_host="portal.example.test", port=65123),
+                ("http", "portal.example.test", 65123),
+            ),
+        )
+
+        for label, config, expected_authority in cases:
+            with self.subTest(label=label):
+                with (
+                    patch.object(files, "cfg", config),
+                    patch.object(tools, "_require_crew", return_value=crew),
+                    patch.object(tools, "_ensure_crew_running", return_value=crew),
+                    patch.object(tools, "_bg_prewarm"),
+                    patch.object(tools._security, "audit_auth_event"),
+                ):
+                    supply = tools.supply(path="repo/input.tar", crew_id="url-check")
+                    evac = tools.evac(path="repo/result.txt", crew_id="url-check")
+
+                for response, field in ((supply, "delivery_url"), (evac, "url")):
+                    parsed = urlsplit(response[field])
+                    self.assertEqual(
+                        (parsed.scheme, parsed.hostname, parsed.port),
+                        expected_authority,
+                    )
 
 
 # ── TestGetCrewAgents ─────────────────────────────────────────────────────────

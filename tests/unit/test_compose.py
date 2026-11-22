@@ -96,10 +96,38 @@ class TestMinimalConfig:
         doc = _parsed(_minimal_config())
         assert "ga-portal-data" in doc["volumes"]
 
+    def test_admin_socket_volume_is_mounted_only_by_portal_and_transport(self) -> None:
+        doc = _parsed(_minimal_config())
+        services = doc["services"]
+        portal_mounts = services["ga-portal"]["volumes"]
+        transport_mounts = services["ga-transport"]["volumes"]
+
+        assert "ga-portal-admin:/run/ga-portal-admin:rw" in portal_mounts
+        assert "ga-portal-admin:/run/ga-portal-admin:ro" in transport_mounts
+        assert all(
+            not mount.startswith("ga-portal-admin:")
+            for mount in services["ga-radar"].get("volumes", [])
+        )
+        assert "ga-portal-admin" in doc["volumes"]
+        assert all("2019" not in port for port in services["ga-portal"]["ports"])
+
     def test_transport_secret_bind_guard_defaults_to_false(self) -> None:
         doc = _parsed(_minimal_config())
         env = doc["services"]["ga-transport"]["environment"]
         assert env["GA_REQUIRE_SECRET_ON_EXTERNAL_BIND"] == "false"
+
+    def test_transfer_budgets_are_passed_to_transport(self) -> None:
+        doc = _parsed(_minimal_config(
+            ga_max_upload_bytes="1234",
+            ga_max_archive_bytes="2345",
+            ga_max_archive_members="3456",
+            ga_max_bundle_storage_bytes="4567",
+        ))
+        env = doc["services"]["ga-transport"]["environment"]
+        assert env["GA_MAX_UPLOAD_BYTES"] == "1234"
+        assert env["GA_MAX_ARCHIVE_BYTES"] == "2345"
+        assert env["GA_MAX_ARCHIVE_MEMBERS"] == "3456"
+        assert env["GA_MAX_BUNDLE_STORAGE_BYTES"] == "4567"
 
     def test_service_order(self) -> None:
         """Service insertion order must be ga-transport, ga-radar, ga-portal."""
