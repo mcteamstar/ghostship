@@ -34,11 +34,17 @@
 # TRN-322: pin KiroCrew v0.13.0 stable (2026-11-20).
 #           KiroCrew version: v0.13.0 (kiro-cli 2.27.1). Linux amd64 and arm64.
 #           Digest: sha256:f4c6c72656e60ed21fd02a86d2b631735660d58d9d0806f7b464acbd3ccb9a26. Verified: 2026-11-20.
+# TRN-363: pin KiroCrew v0.13.1 stable (2026-11-22).
+#           KiroCrew revision: e9178c0 (kiro-cli 2.27.1). Linux amd64 and arm64.
+#           Index: sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1.
+#           amd64: sha256:a6b29dacc90f862c7f81cf1065d36f413f586609f479a1f42fad278de5754861.
+#           arm64: sha256:2a6477e5acbbf1d411a2128264bbb9d47f9811c6d66840195a187fa954fb7d3d.
+#           Verified: 2026-11-22; 11 migrations (0-10), schema matches seed on both architectures.
 # ⚠️  The graduation-layer DB seed (crews/_base/graduation/seed_kiro_db.py) MUST
-#     be re-verified against this exact base image before release — see TRN-271
-#     tasks.md §1/§5. Bumping this pin without that verification is the silent
-#     auth-injection regression the change guards against.
-ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:f4c6c72656e60ed21fd02a86d2b631735660d58d9d0806f7b464acbd3ccb9a26
+#     be re-verified against this exact base image before release. Follow the
+#     active upgrade change's image and seed checks; skipping them risks a silent
+#     auth-injection regression.
+ARG KC_BASE_IMAGE=ghcr.io/kirodotdev/kirocrew@sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1
 FROM ${KC_BASE_IMAGE}
 
 USER root

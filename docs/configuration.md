@@ -57,7 +57,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_DASHBOARD_PORT_RANGE_START` | `64058` | First host port in the dashboard proxy port range. Config-file-only. |
 | `GA_DASHBOARD_PORT_RANGE_SIZE` | `64` | Number of host ports in the dashboard proxy port range. Config-file-only. |
 | `GA_PICKUP_MAX_POLL_SECS` | `30` | Cap, in seconds, on one polling round of `pickup(..., timeout_secs=N)`. A capped round returns `"reason": "timeout"`; call again to keep waiting. |
-| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:f4c6c72656e60ed21fd02a86d2b631735660d58d9d0806f7b464acbd3ccb9a26` — the pinned KiroCrew v0.13.0 multi-arch index digest; bundled Kiro CLI 2.27.1)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
+| `KC_BASE_IMAGE` | _(Containerfile default, currently `ghcr.io/kirodotdev/kirocrew@sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1` — the pinned KiroCrew v0.13.1 multi-arch index digest; bundled Kiro CLI 2.27.1)_ | KiroCrew base image for the crew build. `install.sh` passes it as a build arg only when set; otherwise the admission Containerfile's `ARG` default applies. |
 | `GA_DASHBOARD_DEFAULT` | `false` | When `true`, every `launch()` call allocates a dashboard by default. Equivalent to always passing `dashboard=True`. Explicit `dashboard=False` on a `launch()` call overrides this. |
 | `GA_ORDERS_DIR` | _(unset)_ | Path on the **host** to an operator-managed directory of additional standing-order template `.md` files. Must be an absolute path (error otherwise). When set and the path exists, it is bind-mounted read-only at `/mnt/orders` inside the container; the container receives `GA_ORDERS_DIR=/mnt/orders`. A warning is logged if the path is set but missing. Config-file-only. |
 | `GA_PORTAL_TLS_MODE` | `off` | TLS mode for Caddy-owned listeners. See [portal.md](portal.md) for mode descriptions. Unrecognised values fall back to `off` with a WARNING. |
@@ -398,6 +398,8 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
 ```
 
 The new image is built at install time. Existing crews use the old image until nuked and re-called-down.
+
+Ghostship does not bundle or provision KiroCrew apps. KiroCrew 0.13.1 restores an app-backend flow that can mint a local owner token through `/api/token/local` ([upstream change](https://github.com/kirodotdev/KiroCrew/pull/40367)); operators who choose to install KiroCrew apps should treat those apps as trusted code.
 
 ## Updating academy/ and crews/
 

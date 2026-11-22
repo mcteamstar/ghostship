@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from transport.config import (
@@ -179,8 +180,26 @@ class TestConfigDefaults(unittest.TestCase):
         self.assertEqual(self.cfg.kiro_api_key, "")
 
     def test_kc_base_image_is_pinned_digest(self):
-        # Must contain a sha256 digest (TRN-219)
-        self.assertIn("sha256:", self.cfg.kc_base_image)
+        expected = (
+            "ghcr.io/kirodotdev/kirocrew@sha256:"
+            "080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1"
+        )
+        self.assertEqual(
+            self.cfg.kc_base_image,
+            expected,
+        )
+
+    def test_kc_base_image_default_matches_admission_containerfile(self):
+        containerfile = (
+            Path(__file__).resolve().parents[2]
+            / "crews" / "_base" / "admission" / "Containerfile"
+        )
+        pin = next(
+            line.split("=", 1)[1]
+            for line in containerfile.read_text().splitlines()
+            if line.startswith("ARG KC_BASE_IMAGE=")
+        )
+        self.assertEqual(self.cfg.kc_base_image, pin)
 
 
 # ── Config.from_env() ─────────────────────────────────────────────────────────
@@ -193,6 +212,12 @@ class TestConfigFromEnv(unittest.TestCase):
         with patch.dict("os.environ", {"PORT": "9000"}):
             cfg = Config.from_env()
         self.assertEqual(cfg.port, 9000)
+
+    def test_kc_base_image_override_from_env(self):
+        override = "ghcr.io/example/kirocrew:custom-test"
+        with patch.dict("os.environ", {"KC_BASE_IMAGE": override}):
+            cfg = Config.from_env()
+        self.assertEqual(cfg.kc_base_image, override)
 
     def test_host_env_does_not_set_transport_bind(self):
         # HOST is ga-portal's published address; the transport never reads it.

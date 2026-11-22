@@ -2,6 +2,14 @@
 
 ## v0.13.1
 
+- Upgrade the crew base to KiroCrew 0.13.1 at multi-arch index digest
+  `sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1`
+  (Kiro CLI 2.27.1). The release includes queued-message handoff after
+  cancellation/restart, dashboard reconnect fixes, and shell-safety false
+  positive fixes. Image and database schema checks pass on amd64 and arm64;
+  live runtime checks remain pending.
+- Ghostship does not provision KiroCrew apps. Operators installing apps should
+  treat them as trusted code because app backends can mint a local owner token.
 - Pace Captain dispatches to avoid overwhelming crew resources.
 - Confine crew uploads to their intended workspace and bound rate-limiter state.
 - Preserve accepted results when a batch dispatch is only partially completed.

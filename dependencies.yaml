@@ -12,18 +12,18 @@ components:
       - {kind: manual, path: bin/lib/install_main.py, term: KC_BASE_IMAGE}
     source: {type: github_release, repository: kirodotdev/KiroCrew}
     version_policy: Immutable GHCR digest pin. GitHub release tags are candidates only; correlate each release with the published image digest before an upgrade.
-    compatibility: {status: unknown, evidence: TRN-322}
-    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-20, outcome: image-and-schema-verified-runtime-unverified, next_review: 2026-12-20, evidence: TRN-322}
-    notes: Stable KiroCrew v0.13.0 index verified for Linux amd64 and arm64. Live Codex E2E passed on Corsair and Carrier. Operator verified Kiro and Claude on Corsair.
+    compatibility: {status: unknown, evidence: TRN-363}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-22, outcome: image-and-schema-verified-runtime-unverified, next_review: 2026-12-22, evidence: TRN-363}
+    notes: Stable KiroCrew v0.13.1 pinned to index sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1 (amd64 sha256:a6b29dacc90f862c7f81cf1065d36f413f586609f479a1f42fad278de5754861; arm64 sha256:2a6477e5acbbf1d411a2128264bbb9d47f9811c6d66840195a187fa954fb7d3d). Revision e9178c0; bundled Kiro CLI 2.27.1. Both architecture DBs have migrations 0-10, eight tables and two indexes matching the seed; admission builds were inspected for both architectures. Live runtime checks are pending. Ghostship provisions no KiroCrew apps; operators who install apps must trust their local owner-token capability.
   - id: kiro-cli
     name: Kiro CLI bundled in KiroCrew
     category: derived component
     declarations: [{kind: derived, path: crews/_base/admission/Containerfile, parents: [kirocrew-image]}]
     source: {type: derived, parent: kirocrew-image}
     version_policy: Inherited from the pinned KiroCrew image; verify the installed label and migration schema at each image upgrade.
-    compatibility: {status: unknown, evidence: TRN-322}
-    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-20, outcome: image-version-and-schema-verified-runtime-unverified, next_review: 2026-12-20, evidence: TRN-322}
-    notes: Image label and marker report Kiro CLI 2.27.1. The initialized arm64 chat database matches the existing seed.
+    compatibility: {status: unknown, evidence: TRN-363}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-22, outcome: image-version-and-schema-verified-runtime-unverified, next_review: 2026-12-22, evidence: TRN-363}
+    notes: The 0.13.1 image label, version marker and both admission builds report Kiro CLI 2.27.1. The initialized amd64 and arm64 chat databases match the existing seed; live runtime checks are pending.
   - id: codex-acp
     name: Codex ACP adapter
     category: agent adapter

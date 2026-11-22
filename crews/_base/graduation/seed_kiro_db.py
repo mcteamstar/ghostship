@@ -1,42 +1,18 @@
 """Pre-seed the kiro-cli SQLite DB with schema and migrations.
 
-The KiroCrew v0.12.2 image includes kiro-cli 2.27.1. Static inspection of the
-published amd64 image layer found the main kiro-cli settings migrations
-000_migration_table through 005_auth_table, plus the kiro-cli-chat and
-kiro-cli-chat-v2 migration sequence through 010_pinned_bin_versions. The chat
-sequence is the active task runtime and extends the shared data.sqlite3 schema:
-11 migration rows, versions 0 through 10, maximum version 10.
+Verified 2026-11-22 against the KiroCrew v0.13.1 GHCR index
+sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1,
+amd64 manifest sha256:a6b29dacc90f862c7f81cf1065d36f413f586609f479a1f42fad278de5754861,
+and arm64 manifest sha256:2a6477e5acbbf1d411a2128264bbb9d47f9811c6d66840195a187fa954fb7d3d.
+Both images label the bundled Kiro CLI as 2.27.1. Running
+``kiro-cli-chat whoami`` in fresh, network-isolated containers initialized the
+same ``data.sqlite3`` schema on both architectures: 11 chat migrations
+(versions 0 through 10), eight tables, and the two explicit conversation
+indexes. The rows, columns, and indexes match ``SCHEMA_SQL``; the seed is
+unchanged for this pin.
 
-On 2026-11-20, KiroCrew v0.13.0 arm64 initialized the same migration rows,
-tables and indexes with Kiro CLI 2.27.1.
-
-Previously verified 2026-11-14 against KiroCrew v0.12.2 index
-sha256:e5c09209758348ec658c45a06853d4faa3b19fb93c0699ab8eca9c39e32d569e,
-amd64 manifest sha256:6f177f87c3850b7dd1f4a81f55f835ca516be55564910ff0a769f6dc9013bc72,
-and CLI layer
-sha256:0e379673fd4478ede08d7b098838c62f39a4da711d9497dcd726f1fc05176cdc.
-The image label dev.kirocrew.kiro-cli.version and the
-/usr/local/share/kirocrew/kiro-cli-version marker both identify 2.27.1.
-Migration 006 changes state.value to BLOB; 007 and 008 add the conversation
-tables and indexes; 009 and 010 add extracted_kas_versions and
-pinned_bin_versions. The auth_kv definition is unchanged.
-
-The v0.12.0 baseline used the same CLI version and had migrations 000 through
-005 in /usr/local/bin/kiro-cli; its image did not include the chat executable
-migration sequence. The former seed therefore matched the main executable but
-did not pre-seed the active chat runtime schema. The complete comparison and
-release-note review are in https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-14.md.
-
-Inspection used the public GHCR manifest and image layer because Podman is not
-installed in this environment. The image database was not executed here. On a
-Podman host, verify the live result after starting the Kiro CLI runtime with:
-
-  podman run --rm ghcr.io/kirodotdev/kirocrew:0.12.2 python3 -c \
-    "import sqlite3; c=sqlite3.connect('/home/kirocrew/.local/share/kiro-cli/data.sqlite3'); \
-     print(c.execute('SELECT COUNT(*), MAX(version) FROM migrations').fetchone())"
-
-If the image migration sequence changes, update this schema and the focused
-test before advancing the base-image pin.
+If a later image changes the initialized migration sequence or schema, update
+this seed and its focused test before advancing the base-image pin.
 """
 from __future__ import annotations
 
