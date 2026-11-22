@@ -315,6 +315,137 @@ class TestCaptainDoStop(unittest.TestCase):
         self.assertIn("error", result)
 
 
+class TestCaptainStopSerializesCheckin(unittest.TestCase):
+    """Stop and scheduled check-ins share the per-crew transition lock."""
+
+    def setUp(self):
+        self.crew_id = "stop-race-crew"
+        self.crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
+        self.podman = FakePodmanClient()
+
+    def test_stop_waits_for_inflight_checkin_without_cancelling_accepted_work(self):
+        import copy
+        import threading
+        from concurrent.futures import Future
+        from transport import captain_engine
+
+        schedule = _captain_schedule(self.crew_id, enabled=True)
+        schedule["current_task_id"] = None
+        crew = dict(self.crew_dict, schedules=[schedule])
+        persisted = {"crews": {self.crew_id: crew}}
+        persisted_lock = threading.Lock()
+        dispatch_started = threading.Event()
+        release_dispatch = threading.Event()
+        stop_lock_attempted = threading.Event()
+        checkin_result = Future()
+        stop_result = Future()
+        actual_lock = captain_engine._captain_order_lock(self.crew_id)
+        stop_thread = None
+
+        def load_registry():
+            with persisted_lock:
+                return copy.deepcopy(persisted)
+
+        def save_registry(reg):
+            with persisted_lock:
+                persisted.clear()
+                persisted.update(copy.deepcopy(reg))
+
+        def dispatch(*_args, **_kwargs):
+            dispatch_started.set()
+            if not release_dispatch.wait(timeout=5):
+                raise AssertionError("test did not release the in-flight dispatch")
+            return "accepted-raven-task"
+
+        class ObservedOrderLock:
+            def __enter__(self):
+                if threading.current_thread() is stop_thread:
+                    stop_lock_attempted.set()
+                actual_lock.acquire()
+
+            def __exit__(self, *_args):
+                actual_lock.release()
+
+        lifecycle = MagicMock()
+        lifecycle._require_crew.return_value = crew
+        lifecycle._to_crew.return_value = self.crew_obj
+
+        def run_checkin():
+            try:
+                checkin_result.set_result(captain_engine._steer_captain_checkin(crew, self.crew_id))
+            except BaseException as exc:
+                checkin_result.set_exception(exc)
+
+        def run_stop():
+            try:
+                stop_result.set_result(captain_engine._captain_do_stop(self.crew_id))
+            except BaseException as exc:
+                stop_result.set_exception(exc)
+
+        with (
+            patch.object(_reg_mod, "_load_registry", side_effect=load_registry),
+            patch.object(_reg_mod, "_save_registry", side_effect=save_registry),
+            patch.object(captain_engine, "_dispatch_captain_checkin", side_effect=dispatch),
+            patch.object(captain_engine, "_captain_order_lock", return_value=ObservedOrderLock()),
+            patch.object(captain_engine, "_lc", return_value=lifecycle),
+            patch.object(captain_engine, "_get_podman", return_value=self.podman),
+            patch.object(captain_engine, "_captain_standing_view", return_value={"action": "stop"}),
+        ):
+            checkin_thread = threading.Thread(target=run_checkin, daemon=True)
+            checkin_thread.start()
+            self.assertTrue(dispatch_started.wait(timeout=2))
+
+            stop_thread = threading.Thread(target=run_stop, daemon=True)
+            stop_thread.start()
+            try:
+                self.assertTrue(stop_lock_attempted.wait(timeout=2))
+                self.assertFalse(stop_result.done(), "stop returned before the in-flight check-in completed")
+            finally:
+                release_dispatch.set()
+
+            self.assertEqual(checkin_result.result(timeout=3), "accepted-raven-task")
+            self.assertEqual(stop_result.result(timeout=3)["status"], "stopped")
+            lifecycle._crew_api_with_recovery.assert_not_called()
+
+        with persisted_lock:
+            stopped = persisted["crews"][self.crew_id]["schedules"][0]
+        self.assertFalse(stopped["enabled"])
+        self.assertEqual(stopped["current_task_id"], "accepted-raven-task")
+
+    def test_checkin_after_stop_returns_does_not_dispatch(self):
+        import copy
+        from transport import captain_engine
+
+        schedule = _captain_schedule(self.crew_id, enabled=True)
+        crew = dict(self.crew_dict, schedules=[schedule])
+        persisted = {"crews": {self.crew_id: crew}}
+        lifecycle = MagicMock()
+        lifecycle._require_crew.return_value = crew
+        lifecycle._to_crew.return_value = self.crew_obj
+
+        def load_registry():
+            return copy.deepcopy(persisted)
+
+        def save_registry(reg):
+            persisted.clear()
+            persisted.update(copy.deepcopy(reg))
+
+        with (
+            patch.object(_reg_mod, "_load_registry", side_effect=load_registry),
+            patch.object(_reg_mod, "_save_registry", side_effect=save_registry),
+            patch.object(captain_engine, "_lc", return_value=lifecycle),
+            patch.object(captain_engine, "_get_podman", return_value=self.podman),
+            patch.object(captain_engine, "_captain_standing_view", return_value={"action": "stop"}),
+            patch.object(captain_engine, "_dispatch_captain_checkin") as dispatch,
+        ):
+            result = captain_engine._captain_do_stop(self.crew_id)
+            self.assertEqual(result["status"], "stopped")
+            self.assertFalse(persisted["crews"][self.crew_id]["schedules"][0]["enabled"])
+            self.assertIsNone(captain_engine._steer_captain_checkin(crew, self.crew_id))
+            dispatch.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # TRN-284: New tests for _dispatch_captain_checkin and _captain_do_order
 # ---------------------------------------------------------------------------
@@ -733,6 +864,115 @@ class TestCaptainDoOrderCronFirstFire(unittest.TestCase):
         self.assertIsNotNone(next_fire_at)
         self.assertAlmostEqual(next_fire_at, ref_ts + 3600, delta=5,
             msg=f"next_fire_at={next_fire_at} expected ~{ref_ts + 3600} (now+3600)")
+
+
+class TestCaptainDoOrderPersistenceFailures(unittest.TestCase):
+    """Order success requires a durable schedule and a delivered instruction."""
+
+    def setUp(self):
+        self.crew_id = "order-persistence-crew"
+        self.crew_dict = _fake_crew_dict(self.crew_id, running=True)
+        self.crew_obj = _fake_crew_obj(self.crew_id, running=True)
+        self.podman = FakePodmanClient()
+
+    def _run_order(self, *, fail_saves=(), mailbox_error=None):
+        import copy
+        from transport import captain_engine
+
+        persisted = {"crews": {self.crew_id: dict(self.crew_dict)}}
+        save_calls = []
+        events = []
+
+        def load_registry():
+            return copy.deepcopy(persisted)
+
+        def save_registry(reg):
+            save_calls.append(copy.deepcopy(reg))
+            schedules = reg.get("crews", {}).get(self.crew_id, {}).get("schedules", [])
+            events.append(f"save:{schedules[0].get('enabled')}" if schedules else "save:none")
+            if len(save_calls) in fail_saves:
+                raise OSError(f"injected registry failure {len(save_calls)}")
+            persisted.clear()
+            persisted.update(copy.deepcopy(reg))
+
+        def append_mail(*_args, **_kwargs):
+            events.append("mail")
+            if mailbox_error is not None:
+                raise mailbox_error
+
+        lifecycle = MagicMock()
+        lifecycle._require_crew.return_value = self.crew_dict
+        lifecycle._ensure_crew_running.return_value = self.crew_dict
+        lifecycle._to_crew.return_value = self.crew_obj
+        append_mock = MagicMock(side_effect=append_mail)
+
+        with (
+            patch.object(_reg_mod, "_load_registry", side_effect=load_registry),
+            patch.object(_reg_mod, "_save_registry", side_effect=save_registry),
+            patch.object(captain_engine, "_lc", return_value=lifecycle),
+            patch.object(captain_engine, "_get_podman", return_value=self.podman),
+            patch.object(captain_engine, "_append_captain_mail", append_mock),
+            patch.object(captain_engine, "_delete_sentinel_file"),
+        ):
+            registry._reg = copy.deepcopy(persisted)
+            result = captain_engine._captain_do_order(
+                crew_id=self.crew_id,
+                message="test order",
+                template=None,
+                change_name=None,
+                cron=None,
+                interval=300,
+                timezone="UTC",
+                fire_immediately=False,
+                model=None,
+            )
+
+        return result, persisted, append_mock, events, save_calls
+
+    def test_initial_schedule_persistence_failure_does_not_append_mail(self):
+        result, persisted, append_mail, _events, _saves = self._run_order(fail_saves={2})
+
+        self.assertIn("error", result)
+        self.assertNotEqual(result.get("status"), "ordered")
+        append_mail.assert_not_called()
+        self.assertNotIn("schedules", persisted["crews"][self.crew_id])
+
+    def test_mailbox_failure_leaves_schedule_disabled(self):
+        result, persisted, append_mail, _events, _saves = self._run_order(
+            mailbox_error=OSError("mailbox unavailable")
+        )
+
+        self.assertIn("error", result)
+        self.assertNotEqual(result.get("status"), "ordered")
+        append_mail.assert_called_once()
+        saved = persisted["crews"][self.crew_id]["schedules"][0]
+        self.assertFalse(saved["enabled"])
+
+    def test_activation_failure_compensates_to_disabled_schedule(self):
+        result, persisted, append_mail, _events, saves = self._run_order(fail_saves={3})
+
+        self.assertIn("error", result)
+        self.assertNotEqual(result.get("status"), "ordered")
+        append_mail.assert_called_once()
+        self.assertEqual(len(saves), 4, "disabled compensation should be persisted")
+        self.assertFalse(persisted["crews"][self.crew_id]["schedules"][0]["enabled"])
+
+    def test_compensation_failure_reports_error_and_keeps_provisional_state_disabled(self):
+        result, persisted, append_mail, _events, _saves = self._run_order(fail_saves={3, 4})
+
+        self.assertIn("error", result)
+        self.assertIn("disabled compensation", result["error"])
+        self.assertNotEqual(result.get("status"), "ordered")
+        append_mail.assert_called_once()
+        self.assertFalse(persisted["crews"][self.crew_id]["schedules"][0]["enabled"])
+
+    def test_success_delivers_mail_between_disabled_and_enabled_persistence(self):
+        result, persisted, append_mail, events, _saves = self._run_order()
+
+        self.assertEqual(result.get("status"), "ordered")
+        append_mail.assert_called_once()
+        self.assertEqual(events, ["save:none", "save:False", "mail", "save:True"])
+        self.assertTrue(persisted["crews"][self.crew_id]["schedules"][0]["enabled"])
 
 
 # ── M-4 _steer_captain_checkin httpx status-code classification ───────────────

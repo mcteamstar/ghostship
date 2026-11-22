@@ -621,7 +621,7 @@ def _captain_do_order(
             "next_fire_at": next_fire,
             "agent": "raven",
             "message": _CAPTAIN_CHECKIN_TASK,
-            "enabled": True,
+            "enabled": False,
             "model": effective_model,
             "current_task_id": existing_entry.get("current_task_id") if existing_entry else None,
         }
@@ -632,7 +632,39 @@ def _captain_do_order(
             with registry:
                 registry.upsert_schedule(crew_id, schedule_entry)
         except Exception as exc:
-            logger.warning("Could not persist captain schedule entry: %s", exc)
+            logger.warning("Could not persist inactive captain schedule entry: %s", exc)
+            return {"error": f"Could not persist Captain schedule: {exc}"}
+
+        # Append only after the inactive schedule candidate is durable.
+        try:
+            podman = _get_podman()
+            _append_captain_mail(podman, _lc()._to_crew(crew_id, crew).container, order_message, crew_id=crew_id)
+        except Exception as exc:
+            return {"error": f"Could not write Captain order: {exc}"}
+
+        # Activate only after the instruction is durable. If activation fails,
+        # compensate to a disabled entry so no schedule runs without a valid order.
+        schedule_entry["enabled"] = True
+        try:
+            with registry:
+                registry.upsert_schedule(crew_id, schedule_entry)
+        except Exception as exc:
+            schedule_entry["enabled"] = False
+            try:
+                with registry:
+                    registry.upsert_schedule(crew_id, schedule_entry)
+            except Exception as compensation_exc:
+                logger.error(
+                    "Captain order activation failed for crew %s (%s), and disabled-state compensation failed (%s)",
+                    crew_id, exc, compensation_exc,
+                )
+                return {
+                    "error": (
+                        f"Could not activate Captain schedule: {exc}; "
+                        f"could not persist disabled compensation: {compensation_exc}"
+                    )
+                }
+            return {"error": f"Could not activate Captain schedule: {exc}"}
 
         # Clear any stale sentinel file so the new order runs fresh (TRN-243).
         # Best-effort — a failure here does not block the order.
@@ -640,14 +672,6 @@ def _captain_do_order(
             _delete_sentinel_file(_get_podman(), _lc()._to_crew(crew_id, crew).container)
         except Exception as _sentinel_exc:
             logger.warning("Captain order: could not clear sentinel for crew %s: %s", crew_id, _sentinel_exc)
-
-        # Only append an order after the schedule entry exists.  A
-        # failed provisioning call must not leave mail that no Raven can read.
-        try:
-            podman = _get_podman()
-            _append_captain_mail(podman, _lc()._to_crew(crew_id, crew).container, order_message, crew_id=crew_id)
-        except Exception as exc:
-            return {"error": f"Could not write Captain order: {exc}"}
 
         result: dict[str, Any] = {
             "crew_id": crew_id,
@@ -834,52 +858,53 @@ def _captain_do_stop(crew_id: str) -> dict:
     c_stop = _lc()._to_crew(crew_id, crew)
     podman = _get_podman()
 
-    # Read captain entry from registry — no need to wake the crew
-    with registry:
-        schedules = registry.get_schedules(crew_id)
-    captain_entry = next(
-        (s for s in schedules if s.get("type") == "captain"),
-        None,
-    )
-
-    if captain_entry is None:
-        return {
-            "crew_id": crew_id,
-            "action": "stop",
-            "status": "dormant",
-            "mode": "standing-orders",
-            "job_id": None,
-            "enabled": False,
-            "mailbox": "captain@localhost",
-        }
-
-    # Mark disabled in registry — this is the only action needed.
-    # The _captain_monitor will skip disabled entries on its next tick.
-    try:
+    # Serialize with check-in and order transitions. A check-in that already
+    # owns this lock may finish its accepted Raven work before stop proceeds.
+    with _captain_order_lock(crew_id):
+        # Read captain entry from registry — no need to wake the crew.
         with registry:
-            matched = False
-            for sched in registry.get_schedules(crew_id):
-                if sched.get("type") == "captain":
-                    sched["enabled"] = False
-                    matched = True
-                    break
-            if not matched:
-                logger.warning(
-                    "captain stop: no captain registry entry found for crew %s",
-                    crew_id,
-                )
-    except Exception as exc:
-        logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
+            schedules = registry.get_schedules(crew_id)
+        captain_entry = next(
+            (s for s in schedules if s.get("type") == "captain"),
+            None,
+        )
 
-    stopped_entry = dict(captain_entry)
-    stopped_entry["enabled"] = False
+        if captain_entry is None:
+            return {
+                "crew_id": crew_id,
+                "action": "stop",
+                "status": "dormant",
+                "mode": "standing-orders",
+                "job_id": None,
+                "enabled": False,
+                "mailbox": "captain@localhost",
+            }
 
-    result = _captain_standing_view(
-        crew_id,
-        "stop",
-        stopped_entry,
-        podman,
-        c_stop.container,
-    )
-    result["status"] = "stopped"
-    return result
+        # The registry context saves on exit; returning an error on failure
+        # prevents stop from claiming success while the schedule may still run.
+        try:
+            with registry:
+                matched = False
+                for sched in registry.get_schedules(crew_id):
+                    if sched.get("type") == "captain":
+                        sched["enabled"] = False
+                        stopped_entry = dict(sched)
+                        matched = True
+                        break
+                if not matched:
+                    return {"error": "Captain schedule disappeared before stop"}
+        except Exception as exc:
+            logger.warning("captain stop: could not update registry for crew %s: %s", crew_id, exc)
+            return {"error": f"Could not disable Captain schedule: {exc}"}
+
+        # Keep the transition lock through the response view so no concurrent
+        # order can re-enable the schedule before stop returns.
+        result = _captain_standing_view(
+            crew_id,
+            "stop",
+            stopped_entry,
+            podman,
+            c_stop.container,
+        )
+        result["status"] = "stopped"
+        return result
