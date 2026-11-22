@@ -222,6 +222,29 @@ By default, install SHALL provision a Ghostship-only Podman machine on macOS or 
 - **WHEN** GA_DEDICATED_MACHINE is not false
 - **THEN** image pulls, every podman build, network and secret creation, Transport startup, and failure-path logs all target the same resolved dedicated-instance connection and none falls back to the default Podman socket
 
+### Requirement: Podman provisioning uses resolved installation configuration
+Before provisioning or selecting the dedicated Podman instance, installation SHALL resolve and use the effective YAML values for dedicated-machine selection, machine name, and resource limits.
+
+#### Scenario: Repository YAML controls first-time machine provisioning
+- **WHEN** the repository YAML configures a dedicated machine name and resource limits that differ from defaults
+- **THEN** first-time provisioning uses those configured values before the transport starts
+
+#### Scenario: Explicit config controls Podman provisioning
+- **WHEN** install is invoked with `--config` and that file sets dedicated-machine values
+- **THEN** Podman provisioning uses those values and ignores repository and XDG config layers for those settings
+
+#### Scenario: XDG config controls Podman provisioning
+- **WHEN** repository YAML does not set a dedicated-machine value and the XDG override does
+- **THEN** Podman provisioning uses the XDG value
+
+#### Scenario: Ambient machine variables do not override YAML
+- **WHEN** machine-related shell variables differ from the resolved YAML values
+- **THEN** provisioning uses the resolved YAML values
+
+#### Scenario: Provisioned paths match the selected machine
+- **WHEN** installation resolves a dedicated-machine name from YAML
+- **THEN** the selected Podman service, socket, data directory, and generated Compose configuration refer to that same machine
+
 ### Requirement: Dedicated machine uninstall
 
 `uninstall.sh` SHALL remove the dedicated machine unless config opts out; `--keep-machine` preserves it while removing Ghostship containers and volumes. It SHALL accept `--config` and resolve the machine name like install, without environment fallback. On Linux remove only its `containers/` directory; data cleanup separately honors `--purge-auth`.
