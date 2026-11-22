@@ -324,31 +324,32 @@ def main() -> None:
     if _OS == "Linux":
         _write_containers_conf(ga_machine_name)
 
-    # PODMAN_SOCK and DATA_DIR are set by the shim for non-client-only installs.
-    # If not set (e.g. called directly without the shim), run setup here.
-    podman_sock = os.environ.get("PODMAN_SOCK", "")
-    data_dir = os.environ.get("DATA_DIR", "")
-    if not podman_sock or not data_dir:
-        podman_config = _podman_setup.PodmanConfig(
-            machine_name=ga_machine_name,
-            dedicated=ga_dedicated_machine,
-            machine_cpus=int(_g("GA_MACHINE_CPUS", "8")),
-            machine_memory=int(_g("GA_MACHINE_MEMORY", "8192")),
-            machine_disk=int(_g("GA_MACHINE_DISK", "100")),
-            xdg_runtime_dir=os.environ.get("XDG_RUNTIME_DIR", ""),
+    # These paths are derived after YAML resolution so provisioning and Compose
+    # use the same selected machine. They are internal outputs, not overrides.
+    os.environ.pop("PODMAN_SOCK", None)
+    os.environ.pop("DATA_DIR", None)
+    podman_config = _podman_setup.PodmanConfig(
+        machine_name=ga_machine_name,
+        dedicated=ga_dedicated_machine,
+        machine_cpus=int(_g("GA_MACHINE_CPUS", "8")),
+        machine_memory=int(_g("GA_MACHINE_MEMORY", "8192")),
+        machine_disk=int(_g("GA_MACHINE_DISK", "100")),
+        xdg_runtime_dir=os.environ.get("XDG_RUNTIME_DIR", ""),
+    )
+    if _OS == "Darwin":
+        podman_sock = _podman_setup.setup_podman_macos(podman_config)
+        data_dir = str(
+            Path.home() / "Library" / "Application Support" / ga_machine_name / "data"
         )
-        if _OS == "Darwin":
-            podman_sock = _podman_setup.setup_podman_macos(podman_config)
-        else:
-            podman_sock = _podman_setup.setup_podman_linux(podman_config)
-        if _OS == "Darwin":
-            data_dir = str(Path.home() / "Library" / "Application Support" / ga_machine_name / "data")
-        else:
-            xdg_data = os.environ.get("XDG_DATA_HOME", "") or str(Path.home() / ".local" / "share")
-            data_dir = str(Path(xdg_data) / ga_machine_name / "data")
-        Path(data_dir).mkdir(parents=True, exist_ok=True)
-        os.environ["PODMAN_SOCK"] = podman_sock
-        os.environ["DATA_DIR"] = data_dir
+    else:
+        podman_sock = _podman_setup.setup_podman_linux(podman_config)
+        xdg_data = os.environ.get("XDG_DATA_HOME", "") or str(
+            Path.home() / ".local" / "share"
+        )
+        data_dir = str(Path(xdg_data) / ga_machine_name / "data")
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    os.environ["PODMAN_SOCK"] = podman_sock
+    os.environ["DATA_DIR"] = data_dir
 
     # ── API key resolution ────────────────────────────────────────────────────
     resolved = _resolve_api_key(
