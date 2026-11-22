@@ -26,7 +26,7 @@ These variables are written into the transport container's environment by `insta
 | `GA_API_KEY` | _(unset)_ | API key delivered via Podman secret (`--secret ga-api-key`), from `network.api_key` or `install.sh --api-key <key>`. Resolution order: `--api-key` > `network.api_key` > the key saved by an earlier `--api-key` (`--api-key ""` clears the saved key). `network.api_key` has three states: a string enables auth; unset is fine on a loopback `HOST`, but on any other `HOST` the install warns and aborts and the transport refuses to start; `false` is the explicit opt-out that allows unauthenticated non-loopback access (for deployments behind their own auth layer — Tailscale, VPN, reverse proxy) with a warning. **Never log, print, or embed this value.** See [auth.md](auth.md). |
 | `KIRO_IDENTITY_PROVIDER` | unset (Builder ID fallback) | kiro-cli identity provider URL for crew logins. See [auth.md](auth.md). |
 | `KIRO_REGION` | unset | AWS region for the identity provider. |
-| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. On Linux, checked against `MemAvailable` from `/proc/meminfo`; if unavailable or malformed, the start fails closed. On non-Linux hosts, uses Podman info (`memAvailable`, falling back to `memFree`). Polled every 5 s for up to 60 s. Set to `0` to disable. |
+| `GA_MIN_FREE_MEM_GB` | `2.0` | Minimum available memory (GB) before starting a crew container. On Linux, checked against `MemAvailable` from `/proc/meminfo`; if unavailable or malformed, the start fails closed. On non-Linux hosts, uses Podman info (`memAvailable`, falling back to `memFree`). The gate takes one reading and rejects a start immediately when available memory is below the threshold; it does not wait or poll. Set to `0` to disable. |
 | `GA_START_MEM_ESTIMATE_GB` | `1.0` | Memory (GB) assumed for each crew start still in flight. Subtracted from the live reading when admitting another start, so concurrent wakes cannot pass the `GA_MIN_FREE_MEM_GB` gate on the same free memory. Raise it for heavy crew comps. |
 | `GA_DEDICATED_MACHINE` | `true` | Provisions a dedicated Podman machine (macOS) or systemd socket-activated instance (Linux) for Ghost Academy. Set to `false` to use the default socket. |
 | `GA_MACHINE_CPUS` | `8` | vCPUs for the dedicated Podman machine VM (macOS only; a cap, not a reservation). Ignored on Linux. |
@@ -501,28 +501,21 @@ Every crew launched by the transport receives fixed headless-optimised values wr
 
 ### Knowledge auto-ingest
 
-ghostship does **not** enable knowledge auto-ingest for any crew. As of KiroCrew
-0.9.0 (PR #2448) knowledge auto-ingest — the artifact watcher, the agent
-"auto-add documents" path, and folder ingestion — is **opt-in** rather than
-default-on: a fresh install ingests nothing and spends nothing on extraction
-until an operator switches it on.
+Ghostship does not write `knowledge.*` settings into crew configuration. The
+historical KiroCrew 0.9.0 check (PR #2448) found that its artifact watcher,
+"auto-add documents" path, and folder ingestion were opt-in. That check used
+`ghcr.io/kirodotdev/kirocrew:0.9.0` (`kiro_crew` 0.9.0), not the current pinned
+base image, so it does not establish the defaults in KiroCrew 0.13.1.
 
-The disabled posture is **not pinned** in `config.local.json`; it relies on the
-verified upstream default. Verification against the pinned base image's gateway
-(`ghcr.io/kirodotdev/kirocrew:0.9.0`, `kiro_crew` 0.9.0) showed the
-`knowledge` config section has **no single `auto_ingest` boolean** to pin — the
-ingest toggles are separate fields (`knowledge.auto_ingest_artifacts`,
-`knowledge.auto_add_documents`), each already defaulting to `false`. Pinning a
-`knowledge.auto_ingest` key would be an inert dead key, so none is written (see
-`openspec` change `trn-223-kc090-knowledge-autoingest-optin`, decision D1 =
-Option B).
+The 0.9.0 check also found no single `knowledge.auto_ingest` boolean; the
+separate `knowledge.auto_ingest_artifacts` and `knowledge.auto_add_documents`
+fields defaulted to `false`. Pinning `knowledge.auto_ingest` would therefore
+have been an inert setting at that time (see archived OpenSpec change
+`trn-223-kc090-knowledge-autoingest-optin`, decision D1 = Option B).
 
-**Open item:** because the posture is the upstream default rather than an
-explicit pin, a future KiroCrew release that flips any ingest toggle's default to
-`true` would enable it inside crew containers with no ghostship guard. The
-regression tripwire for this lives in
-`tests/unit/test_trn223_knowledge_autoingest.py`, which asserts the upstream
-toggles still default to `false` and fails CI loudly if that changes.
+**Open item:** re-check these field names and defaults against the current
+pinned image before relying on the historical disabled-default behavior. No
+current-image regression test is present.
 
 An operator who *wants* knowledge built from the mounted worktree must opt in
 explicitly by setting the relevant `knowledge.*` toggle in the crew's config.

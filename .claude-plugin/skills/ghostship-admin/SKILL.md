@@ -135,12 +135,12 @@ Builds the crew images and starts the `ga-transport` container, bound to
 `localhost:64057` — MCP, the REST API, and file transfer all share that one
 port.
 
-For a repeatable setup, copy the example config first:
+For a repeatable setup, copy the YAML example first:
 
 ```bash
-cp config/ghostship.conf.example config/ghostship.conf
-# edit config/ghostship.conf, then:
-./install.sh --config config/ghostship.conf
+cp config/ghostship.yaml.example config/ghostship.yaml
+# edit config/ghostship.yaml, then:
+./install.sh --config config/ghostship.yaml
 ```
 
 ## Step 3: Log in — backend credentials (do this before your first `launch`)
@@ -170,7 +170,7 @@ ghostship auth logout kiro
 
 The method menu lets you choose between API key paste, Builder ID device
 code, or IAM Identity Center. If `KIRO_IDENTITY_PROVIDER` and `KIRO_REGION`
-are set in `ghostship.conf`, the identity-center method pre-fills those
+are set under `backends.kiro.identity_center` in `config/ghostship.yaml`, the identity-center method pre-fills those
 values — just hit Enter to accept.
 
 Credentials are stored by the transport at `DATA_DIR/credentials/` (0600
@@ -274,14 +274,13 @@ Safe to run any time; it's a no-op if things are already running.
 
 ```bash
 ghostship start                            # auto-discovers config
-ghostship start --config ~/ghostship.conf  # explicit config
+ghostship start --config ~/ghostship.yaml  # explicit config
 ghostship start --machine-name my-academy  # override machine name
 ```
 
-Config is discovered in order: `<ghostship-dir>/ghostship.conf`, then
-`~/ghostship.conf`, then `~/.config/ghostship/ghostship.conf`. If none is
-found it prompts interactively; if several are found it lists them and
-asks.
+`ghostship start` resolves the repository and platform-specific YAML config
+locations described in `docs/configuration.md`. Use `--config` when you want
+to select a specific YAML file.
 
 On Linux, `install.sh` enables linger (`loginctl enable-linger`) so a
 headless/SSH-only host's Podman service and transport container survive

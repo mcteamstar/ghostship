@@ -10,7 +10,7 @@ Defines standing order discovery, rendering and shared template policies.
 The system SHALL maintain a small, fixed registry of named standing-order templates. When `captain(crew_id, action="order", template=<name>, ...)` is called, the system SHALL resolve `<name>` to that template's text, substituting `change_name` where the template requires it, and SHALL treat the resolved text exactly as a hand-written `message` for every purpose downstream (mailbox write, check-in job creation/reuse). An unknown template name SHALL be rejected before any mail is written.
 
 #### Scenario: Ordering with the built-in SDD template
-- **WHEN** `captain(crew_id, action="order", template="sdd", change_name=<name>, every_secs=<n>)` is called
+- **WHEN** `captain(crew_id, action="order", template="sdd", change_name=<name>, interval=<n>)` is called
 - **THEN** the system resolves the `"sdd"` template, names `<name>` in it, writes the result to `captain@localhost`, and ensures a recurring check-in exists exactly as it would for an equivalent hand-written `message`
 
 #### Scenario: Unknown template name

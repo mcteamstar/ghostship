@@ -185,9 +185,8 @@ dispatch(task, agent="ghost", crew_id, model=...) → { task_id, ... }
 
 The optional `model` pins the model for this one task. It is a create-time
 setting only: `steer` and `continue` cannot change an existing session's model.
-It outranks both the crew's per-agent model and `KC_MODEL_OVERRIDE` for this
-call, so `KC_MODEL_OVERRIDE` is not an absolute ceiling when a caller supplies
-`model=`.
+It takes precedence over the backend override, per-agent model, and configured
+defaults for this task only.
 
 **Slot and member routing:** Ghostship persona agents (ghost, spectre, banshee,
 wraith, reaper, raven) are enrolled as named crew members at launch. When
@@ -276,10 +275,8 @@ schedule(action="list" | "cancel", ...)
 
 Pass `model=` when creating a cron, interval, or one-shot delay job to pin
 that job's model. The override is create-time-only — it has no effect through
-`steer`/`continue` and cannot alter an existing job. It outranks the crew's
-per-agent model and `KC_MODEL_OVERRIDE`; operators using `KC_MODEL_OVERRIDE` as
-an absolute model ceiling should treat any caller with dispatch access as able
-to override it per call.
+`steer`/`continue` and cannot alter an existing job. It takes precedence over
+the backend override, per-agent model, and configured defaults for that job.
 
 Both `dispatch` and `schedule` default to `ghost`; pass `agent=` explicitly
 for anything else. `interval` jobs fire immediately on creation by default;
@@ -304,9 +301,8 @@ captain(crew_id, action="stop")     # pauses the job without deleting it
 For `captain(action="order")`, `model=` pins only a newly created Captain
 check-in job; it is ignored when resuming an existing paused job. This is also
 create-time-only and cannot change a model through `steer`/`continue`. The
-per-call value outranks the crew's per-agent model and `KC_MODEL_OVERRIDE`, so
-`KC_MODEL_OVERRIDE` is not an absolute ceiling for callers allowed to create a
-Captain job.
+job model takes precedence over backend overrides, per-agent models, and
+configured defaults for that check-in.
 
 Use `interval=300` (5 min) for SDD work — comfortably inside the idle-stop
 window. A scheduled check-in existing does **not** by itself keep a crew

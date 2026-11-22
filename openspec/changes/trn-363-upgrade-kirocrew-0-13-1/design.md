@@ -41,7 +41,7 @@ Review the release diff for behavior that intersects with Ghostship, including q
 
 ### Validate with disposable crews and preserve existing volumes
 
-Build using the verified digest and exercise a fresh crew through authentication, dispatch, pickup, stop/wake, and a subsequent task. Validate the release on Corsair and Carrier using disposable crew data where applicable. Do not nuke or recreate existing crews. Record that existing containers retain their original image until their normal lifecycle replaces them.
+Build using the verified digest and exercise a fresh crew through authentication, dispatch, pickup, stop/wake, and a subsequent task on each target installation. Use disposable crew data where applicable. Do not nuke or recreate existing crews. Record that existing containers retain their original image until their normal lifecycle replaces them.
 
 **Alternative considered:** recreate the fleet to force immediate adoption. This would be destructive to persistent crew state and is unnecessary for a base-image default change.
 
@@ -62,7 +62,7 @@ If validation fails, restore the prior 0.13.0 digest and its matching seed state
 1. Verify the stable 0.13.1 image index, supported architecture manifests, bundled Kiro CLI, migration rows, database schema, and release diff; settle the credential trust-boundary review.
 2. Update the admission pin and shipped default together. Refresh `seed_kiro_db.py` and its focused tests only as indicated by the actual schema comparison.
 3. Update `dependencies.yaml`, runtime documentation, the changelog, and this capability's main spec upon assimilation with verified versions and evidence. Do not add standalone dependency-review documents.
-4. Build and validate the image on Corsair and Carrier using fresh/disposable crews. Check login/authentication, a task dispatch and pickup, and stop/wake followed by another task.
+4. Build and validate the image on the target installations using fresh/disposable crews. Check login/authentication, a task dispatch and pickup, and stop/wake followed by another task.
 5. Record outcomes against TRN-363. Leave existing crew containers and home volumes intact.
 
 If any release gate fails, restore the prior image digest and matching seed, rebuild, and verify authentication on disposable data. No automatic fleet recreation or deployment is part of this plan.

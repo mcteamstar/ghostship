@@ -7,11 +7,11 @@ Let agents dispatched into the same crew hand off work and reply to each other a
 ## Requirements
 
 ### Requirement: Raven self-coordination dispatch-intent mail convention
-Before spawn, Raven SHALL send a self-addressed marker to `raven@localhost` with subject `dispatching <persona> intent-<uuid>`, and prefix the brief `SDD dispatch <change> <persona> <intent_id>`. On success, it SHALL confirm the gateway task ID and link the token. Check-ins SHALL scan markers: pending blocks one check and is stale only with no matching task or active worker; confirmed is stale when done or absent. An after-write election SHALL allow only the oldest pending marker per persona.
+Before spawn, Raven SHALL send a self-addressed marker to `raven@localhost` with subject `dispatching <persona> intent-<uuid>`, and prefix the brief `SDD dispatch <intent_id> <change> <persona>`. On success, it SHALL confirm the gateway task ID and link the token. Check-ins SHALL scan markers: pending blocks one check and is stale only with no matching task or active worker; confirmed is stale when done or absent. An after-write election SHALL allow only the oldest pending marker per persona.
 
 #### Scenario: Raven writes a tokenized intent before spawning Ghost
 - **WHEN** Raven decides to dispatch Ghost for implementation and confirms all three layered signals are clear
-- **THEN** Raven generates `intent-abc123`, prefixes the task description with `SDD dispatch <change> ghost intent-abc123`, writes `dispatching ghost intent-abc123` to `raven@localhost`, and only then calls `/api/spawn`
+- **THEN** Raven generates `intent-abc123`, prefixes the task description with `SDD dispatch intent-abc123 <change> ghost`, writes `dispatching ghost intent-abc123` to `raven@localhost`, and only then calls `/api/spawn`
 
 #### Scenario: Raven records the gateway-assigned task ID
 - **WHEN** the spawn call returns task ID `abc123`

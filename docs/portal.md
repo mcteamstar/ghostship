@@ -53,7 +53,7 @@ Browser → host:64058
         → transport injects mc_token_5476 cookie → gs-{crew_id}:5476
 ```
 
-Key properties: Portal owns all port bindings. Caddy only talks to `ga-transport:64057` — it has no network path to crew containers. The transport injects and re-mints the crew session cookie. TLS on every port. WebSocket connections are proxied. SPA navigation works.
+Key properties: Portal owns all port bindings. Caddy only talks to `ga-transport:64057` — it has no network path to crew containers. The transport injects and re-mints the crew session cookie. TLS behavior follows `GA_PORTAL_TLS_MODE` (`off` by default). WebSocket connections are proxied. SPA navigation works.
 
 ### Managing dashboard allocation after launch
 
@@ -102,7 +102,7 @@ KiroCrew's own CSRF check only accepts the crew gateway's loopback origin. The t
 
 `POST`/`DELETE /crews/{crew_id}/dashboard` are operator endpoints and refuse any request carrying an `Origin` header (a browser), so a web page cannot allocate or release dashboards cross-site.
 
-When `GA_API_KEY` is set, `/mcp*` and `/files/*` require `Authorization: Bearer <key>`. Caddy rejects invalid tokens before they reach the transport.
+When `GA_API_KEY` is set, `/mcp*` requires `Authorization: Bearer <key>`. Valid presigned `/files/*` URLs authenticate with their HMAC signature and expiry instead, so they do not require the API key. Unsigned file requests use the bearer-protected route. Caddy rejects invalid bearer tokens before they reach the transport.
 
 ### Auth upgrade paths
 
@@ -116,7 +116,7 @@ The UI port range must be open from your browser:
 sudo ufw allow 64058:64121/tcp
 ```
 
-`install.sh` adds this rule automatically.
+The installer does not modify the host firewall. Add this rule manually when remote browsers need access to the dashboard port range; loopback-only installs do not need an inbound rule.
 
 ## Configuration
 

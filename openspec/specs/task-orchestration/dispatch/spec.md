@@ -115,7 +115,7 @@ The system SHALL accept `agent` values only from the six Ghost Academy personas 
 
 ### Requirement: Dispatch tool supports per-task model override
 
-`dispatch` SHALL accept an optional `model` string and forward it for that task. Before contacting the crew API, it SHALL reject non-strings and values outside gateway model-name bounds. When omitted, it SHALL omit `model` and preserve precedence: `KC_MODEL_OVERRIDE`, agent model, `KC_MODEL_DEFAULT`, then gateway default.
+`dispatch` SHALL accept an optional `model` string and forward it for that task. Before contacting the crew API, it SHALL reject non-strings and values outside gateway model-name bounds. When omitted, it SHALL omit `model` and preserve configured precedence: backend override, per-agent model, backend default, global `KC_MODEL_DEFAULT`, then the gateway default.
 
 #### Scenario: Dispatch with a model override
 - **WHEN** `dispatch(task="...", agent="ghost", crew_id="my-crew", model="claude-opus-5")` is called
@@ -129,9 +129,9 @@ The system SHALL accept `agent` values only from the six Ghost Academy personas 
 - **WHEN** `dispatch` is called with a `model` value that is not a string, or exceeds the crew gateway's model-name length/format bounds
 - **THEN** the system returns a validation error and does not contact the crew API
 
-#### Scenario: A per-dispatch model outranks KC_MODEL_OVERRIDE
-- **WHEN** `dispatch` is called with a `model` parameter AND the crew's `KC_MODEL_OVERRIDE` env var is set to a different value
-- **THEN** the per-call `model` value is what gets forwarded to `/api/spawn` and served for that task — `KC_MODEL_OVERRIDE` is not an absolute ceiling once a caller supplies an explicit per-dispatch `model` (an accepted trade-off, not a defect; see design.md)
+#### Scenario: A per-dispatch model outranks configured model settings
+- **WHEN** `dispatch` is called with a `model` parameter and any backend or agent model setting has a different value
+- **THEN** the per-call `model` value is forwarded to `/api/spawn` and used for that task only
 
 ### Requirement: Dispatch accepts one task or a bounded batch
 

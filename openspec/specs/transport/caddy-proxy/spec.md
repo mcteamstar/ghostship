@@ -55,8 +55,8 @@ Manages a Caddy reverse-proxy container as a mandatory transport layer: generate
 - **THEN** the `ga-radar` route proxies `/`, `/api/crews*`, `/crews/*/api/*`
   directly to `ga-transport:64057` without a `forward_auth` handler
 
-### Requirement: MCP and file routes enforce the Bearer token at the edge
-When `GA_API_KEY` is set, the main-server `/mcp*` and `/files/*` routes SHALL require an `Authorization: Bearer <GA_API_KEY>` header. A request without the correct token SHALL be rejected by Caddy with 401 and `WWW-Authenticate: Bearer`, and SHALL NOT reach the transport process. The transport's own `BearerAuthMiddleware` SHALL remain active for defence in depth.
+### Requirement: MCP routes enforce Bearer auth and file routes enforce signed capabilities
+When `GA_API_KEY` is set, the main-server `/mcp*` routes SHALL require an `Authorization: Bearer <GA_API_KEY>` header. Caddy SHALL reject missing or incorrect bearer credentials with 401 and `WWW-Authenticate: Bearer` before the request reaches the transport. A valid presigned `/files/*` URL SHALL be authenticated by its HMAC signature and expiry and SHALL NOT require the API key; unsigned file requests SHALL use the bearer-protected route. The transport's bearer and HMAC checks SHALL remain active for defence in depth.
 
 #### Scenario: MCP request with correct token is proxied
 - **WHEN** a request to `/mcp` carries `Authorization: Bearer <GA_API_KEY>` and Caddy is enabled
@@ -66,6 +66,18 @@ When `GA_API_KEY` is set, the main-server `/mcp*` and `/files/*` routes SHALL re
 - **WHEN** a request to `/mcp` carries no or an incorrect Bearer token and `GA_API_KEY` is set
 - **THEN** Caddy returns 401 with `WWW-Authenticate: Bearer`
 - **THEN** the request does not reach the transport process
+
+#### Scenario: Valid presigned file URL does not require the API key
+- **WHEN** a request to `/files/*` carries a valid `sig` and `expires` query and `GA_API_KEY` is set
+- **THEN** Caddy proxies the request without requiring a bearer header and the transport validates the HMAC capability
+
+#### Scenario: Unsigned file request uses bearer protection
+- **WHEN** a request to `/files/*` has no `sig` query and `GA_API_KEY` is set
+- **THEN** Caddy requires the bearer token before proxying the request
+
+#### Scenario: Invalid signed file URL is rejected by transport
+- **WHEN** a request to `/files/*` carries an invalid or expired signature
+- **THEN** the transport rejects the request with 403 even if the API key is unset
 
 ### Requirement: Per-crew dashboard server registration
 After a successful launch with `dashboard=True`, transport SHALL register a Caddy server on the allocated port, identified as `crew-{crew_id}`, with `forward_auth` and a proxy to `ga-transport:64057` rewriting to `/crews/{crew_id}/ui/{path}`. Dashboard registration is unconditional when the portal is healthy.

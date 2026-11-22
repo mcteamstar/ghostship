@@ -22,7 +22,7 @@
 
 ## 5. Validate release behavior
 
-- [ ] 5.1 Install the candidate build on Corsair and Carrier through their normal deployment paths, then run fresh/disposable-crew checks for authentication, dispatch, pickup, stop/wake, and a follow-up task; record results and any unavailable backend coverage on TRN-363.
+- [ ] 5.1 Install the candidate build through the normal deployment paths, then run fresh/disposable-crew checks for authentication, dispatch, pickup, stop/wake, and a follow-up task; record results and any unavailable backend coverage on TRN-363.
 - [ ] 5.2 Confirm existing crew containers and home volumes were left intact, and verify rollback restores the 0.13.0 image and its matching seed without opening candidate-migrated data in the old image.
 
 ## Workflow follow-up

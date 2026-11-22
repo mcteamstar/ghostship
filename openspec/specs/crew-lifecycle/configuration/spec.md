@@ -89,15 +89,15 @@ Any call site in the codebase that passes `dangerously_skip_permissions=True` SH
 - **THEN** the comment explains the purpose of the bypass and the security implication of enabling it
 
 ### Requirement: Configurable model default patch
-`_patch_crew_config` SHALL set `agent.default_model` from non-empty `KC_MODEL_DEFAULT` (otherwise omit it) and set `agent` from `GA_CREW_AGENT` (default `kiro`). Document the default. Effective model precedence is `KC_MODEL_OVERRIDE`, per-agent model, `KC_MODEL_DEFAULT`, then KiroCrew's built-in default.
+`_patch_crew_config` SHALL set `agent.model` from the selected backend's default model, falling back to `KC_MODEL_DEFAULT` and then KiroCrew's built-in default, and set `agent` from `GA_CREW_AGENT` (default `kiro`). A per-backend override SHALL patch every agent for that backend and take precedence over per-agent model pins. A dispatch-time model SHALL take precedence for that task only. Document these settings and their precedence.
 
 #### Scenario: KC_MODEL_DEFAULT set
 - **WHEN** the transport is started with `KC_MODEL_DEFAULT=anthropic/claude-sonnet-4`
-- **THEN** every new crew's `config.local.json` contains `default_model: "anthropic/claude-sonnet-4"` inside the `agent` block
+- **THEN** every new crew's `config.local.json` contains `agent.model: "anthropic/claude-sonnet-4"`
 
 #### Scenario: KC_MODEL_DEFAULT unset
 - **WHEN** the transport is started without `KC_MODEL_DEFAULT`
-- **THEN** `_patch_crew_config` does NOT write a `default_model` field into `config.local.json`, leaving KiroCrew's built-in default unchanged
+- **THEN** `_patch_crew_config` writes `agent.model: "auto"`, leaving final model selection to KiroCrew and its backend
 
 #### Scenario: agent field required in config
 - **WHEN** `_patch_crew_config` writes `config.local.json`
@@ -109,13 +109,13 @@ Any call site in the codebase that passes `dangerously_skip_permissions=True` SH
 - **WHEN** `GA_CREW_AGENT` is not set
 - **THEN** `_patch_crew_config` writes `"agent": "kiro"` into the config block
 
-#### Scenario: KC_MODEL_DEFAULT does not affect per-agent pins
-- **WHEN** `KC_MODEL_DEFAULT` is set and an agent JSON contains a non-empty `"model"` field (and `KC_MODEL_OVERRIDE` is unset)
-- **THEN** that agent continues to use its own pinned model; `KC_MODEL_DEFAULT` only applies to agents whose effective model would otherwise fall through to the KiroCrew built-in
+#### Scenario: Model defaults do not affect per-agent pins
+- **WHEN** `KC_MODEL_DEFAULT` or a backend model default is set and an agent JSON contains a non-empty `"model"` field, with no backend override
+- **THEN** that agent continues to use its own pinned model; defaults apply only when no per-agent model is configured
 
-#### Scenario: KC_MODEL_OVERRIDE beats KC_MODEL_DEFAULT
-- **WHEN** both `KC_MODEL_OVERRIDE` and `KC_MODEL_DEFAULT` are set
-- **THEN** `_patch_models` writes `KC_MODEL_OVERRIDE` into every agent JSON's `"model"` field, making `KC_MODEL_DEFAULT` irrelevant in practice (the per-agent field is now set, so the default is never reached)
+#### Scenario: Backend override beats per-agent model
+- **WHEN** `backends.codex.model.override` is set and an agent JSON contains a different `"model"` value
+- **THEN** `_patch_models` writes the Codex override into every agent JSON's `"model"` field for Codex crews
 
 ### Requirement: Crew config patches sandbox=off for Podman rootless compatibility
 

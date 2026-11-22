@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Auto-provisions TLS certificates via Caddy for every environment — local/private (internal CA), Tailscale (`.ts.net` trusted certs), public internet (ACME), and plain HTTP (off) — driven by a single mode variable.
+Auto-provisions TLS certificates via Caddy for local/private (internal CA), Tailscale (`.ts.net` trusted certs), public internet (ACME), and plain HTTP (off). The default mode is plain HTTP.
 
 ## Requirements
 
 ### Requirement: Four-value TLS mode selection
-`install.sh` SHALL read `GA_PORTAL_TLS_MODE` (values: `internal`, `tailscale`, `acme`, `off`; default: `internal`) and bake the appropriate TLS configuration into `initial-config.json`. TLS SHALL apply to every listener Caddy owns — the main port and every per-crew dashboard port. The transport SHALL NOT restart to activate or change TLS; TLS is owned entirely by Caddy.
+`install.sh` SHALL read `GA_PORTAL_TLS_MODE` (values: `internal`, `tailscale`, `acme`, `off`; default: `off`) and bake the appropriate TLS configuration into `initial-config.json`. TLS SHALL apply to every listener Caddy owns — the main port and every per-crew dashboard port. The transport SHALL NOT restart to activate or change TLS; TLS is owned entirely by Caddy.
 
-#### Scenario: Internal CA mode (default)
+#### Scenario: Internal CA mode
 - **WHEN** `GA_PORTAL_TLS_MODE=internal`
 - **THEN** Caddy issues self-signed certificates from its built-in local CA for all listeners
 - **THEN** certificates are valid on localhost, private IPs, Tailscale addresses, and any hostname

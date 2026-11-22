@@ -8,7 +8,7 @@ Defines host and crew capacity checks and admission limits.
 
 ### Requirement: Pre-launch memory gate
 
-Before waking a stopped crew, transport SHALL require headroom from Linux `MemAvailable` or Podman info elsewhere. It polls every five seconds until `GA_MIN_FREE_MEM_GB` (2.0 default) is met or `GA_MEMORY_WAIT_SECS` (60 default) expires; timeout or unknown memory fails closed with crew, available, and required values. Patch `spawn_min_memory_gb` from `GA_SPAWN_MIN_MEMORY_GB` (1.5 default).
+Before waking a stopped crew, transport SHALL take one available-memory reading from Linux `MemAvailable` or Podman info elsewhere. If the reading is below `GA_MIN_FREE_MEM_GB` (2.0 default), or memory cannot be determined, the start SHALL fail closed with crew, available, and required values; the transport SHALL NOT poll or wait for memory to change. Patch `spawn_min_memory_gb` from `GA_SPAWN_MIN_MEMORY_GB` (1.5 default).
 
 #### Scenario: Linux admission uses MemAvailable
 - **WHEN** a stopped crew container is being restarted on Linux and `/proc/meminfo` reports `MemAvailable` above `GA_MIN_FREE_MEM_GB`
@@ -18,13 +18,13 @@ Before waking a stopped crew, transport SHALL require headroom from Linux `MemAv
 - **WHEN** a stopped crew container is being restarted AND available memory exceeds `GA_MIN_FREE_MEM_GB`
 - **THEN** the container starts immediately with no delay
 
-#### Scenario: Memory becomes available within timeout
-- **WHEN** a stopped crew container is being restarted AND available memory is below `GA_MIN_FREE_MEM_GB` AND memory becomes available within `GA_MEMORY_WAIT_SECS`
-- **THEN** the container starts after the wait, with no error
+#### Scenario: Below-threshold memory is rejected immediately
+- **WHEN** a stopped crew container is being restarted AND the available-memory reading is below `GA_MIN_FREE_MEM_GB`
+- **THEN** the system returns an insufficient-memory error without polling or waiting
 
-#### Scenario: Memory does not free within timeout
-- **WHEN** a stopped crew container is being restarted AND available memory remains below `GA_MIN_FREE_MEM_GB` for the full `GA_MEMORY_WAIT_SECS` duration
-- **THEN** the system returns an error: `"Insufficient available memory to start crew <id>: <N>GB available, <T>GB required. Retry in a moment."`
+#### Scenario: Unknown memory is rejected immediately
+- **WHEN** the available-memory reading cannot be determined
+- **THEN** the system returns a clear error without starting the crew
 
 #### Scenario: Linux available memory cannot be determined
 - **WHEN** the transport cannot read or parse `MemAvailable` from `/proc/meminfo`

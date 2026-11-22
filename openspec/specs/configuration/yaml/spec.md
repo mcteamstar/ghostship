@@ -127,6 +127,10 @@ The XDG override config file SHALL be resolved from
 - **WHEN** `XDG_CONFIG_HOME` is not set on Linux
 - **THEN** the XDG override is read from `~/.config/ghost-academy/ghostship.yaml`
 
+#### Scenario: macOS application support config
+- **WHEN** install runs on macOS without an explicit `--config` path
+- **THEN** the user config is resolved from `~/Library/Application Support/ghost-academy/ghostship.yaml`
+
 ### Requirement: ghostship.yaml.example documents all configurable fields
 `config/ghostship.yaml.example` SHALL be committed to the repo and contain every
 configurable field with its default value shown as live YAML (not commented out).

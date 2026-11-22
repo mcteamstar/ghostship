@@ -9,7 +9,7 @@ check-in cycles overlap.
 
 ### Requirement: Layered 3-signal pre-dispatch check
 
-Before an SDD dispatch, the agent SHALL check mailbox intents, the `task` description's `SDD dispatch <change> <persona>` prefix (without requiring the truncated intent ID), then the `agent` field as tertiary confirmation; it MUST dispatch only when all signals are clear.
+Before an SDD dispatch, the agent SHALL check mailbox intents, the `task` description's `SDD dispatch <intent_id> <change> <persona>` prefix, then the `agent` field as tertiary confirmation. If the task description is truncated after the intent token, the mailbox body SHALL be used to resolve its change/persona key; it MUST dispatch only when all signals are clear.
 
 #### Scenario: All signals clear
 - **WHEN** the mailbox has no non-stale intent, `spawn list` has no matching
@@ -24,7 +24,7 @@ Before an SDD dispatch, the agent SHALL check mailbox intents, the `task` descri
 
 #### Scenario: Task-description marker blocks re-dispatch
 - **WHEN** `kirocrew spawn list` shows an in-flight task whose description begins
-  with `SDD dispatch <change> <persona>` for the same change and persona
+  with `SDD dispatch <intent_id> <change> <persona>` for the same change and persona
 - **THEN** the dispatching agent holds and does not dispatch
 
 #### Scenario: Agent field alone does not authorize a dispatch
@@ -43,7 +43,7 @@ If `raven@localhost` is unavailable or unreadable, the agent SHALL hold and MUST
   unreadable mailbox is treated the same as a blocking signal, not as a clear one
 ### Requirement: Intent marker precedes spawn
 
-After all signals clear, the agent SHALL generate `intent-<uuid>`, prefix the worker task with `SDD dispatch <change> <persona> <intent_id>`, and mail `dispatching <persona> <intent_id>` from `raven+<raven_task_id>@localhost` before `/api/spawn`; it MUST NOT invent the gateway ID.
+After all signals clear, the agent SHALL generate `intent-<uuid>`, prefix the worker task with `SDD dispatch <intent_id> <change> <persona>`, and mail `dispatching <persona> <intent_id>` from `raven+<raven_task_id>@localhost` before `/api/spawn`; it MUST NOT invent the gateway ID.
 
 #### Scenario: Pending marker precedes spawn
 - **WHEN** the agent decides to dispatch a persona

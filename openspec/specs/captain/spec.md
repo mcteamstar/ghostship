@@ -16,7 +16,7 @@ The system SHALL represent a crew's Captain only as one recurring Raven check-in
 
 ### Requirement: Captain exposes an explicit action contract
 
-The MCP tool SHALL accept `captain(crew_id, action, message=None, template=None, change_name=None, cron=None, every_secs=None)`, with actions `order`, `stop`, or `status`. `order` SHALL require exactly one of `message` or `template`; `change_name` only substitutes a template value.
+The MCP tool SHALL accept `captain(crew_id, action, message=None, template=None, change_name=None, cron=None, interval=None)`, with actions `order`, `stop`, or `status`. `order` SHALL require exactly one of `message` or `template`; `change_name` only substitutes a template value.
 
 #### Scenario: Ordering with both or neither message and template
 - **WHEN** `captain(crew_id, action="order", ...)` is called with both `message` and `template` set, or with neither set
@@ -34,19 +34,19 @@ The system SHALL make `captain(crew_id, action="status")` report unread-message 
 For `action="order"`, the transport SHALL write a formatted message to the crew's `captain@localhost` mailbox from outside the crew; the mailbox SHALL be the sole record of standing orders.
 
 #### Scenario: First standing order for a crew
-- **WHEN** `captain(crew_id, action="order", message=<text>, every_secs=<n>)` (or `cron=<expr>`) is called for a crew with no existing check-in job
+- **WHEN** `captain(crew_id, action="order", message=<text>, interval=<n>)` (or `cron=<expr>`) is called for a crew with no existing check-in job
 - **THEN** the system writes `<text>` as mail to `captain@localhost` inside the crew, creates a recurring job dispatching `raven` on the given schedule, and returns the new job's identifier
 
 #### Scenario: Updated standing order for a crew already checking in
 - **WHEN** `captain(crew_id, action="order", message=<text>)` is called for a crew with an existing, enabled check-in job
-- **THEN** the system writes `<text>` as a new mail message to `captain@localhost`, leaves the existing job's schedule and identifier unchanged, and does not require `every_secs`/`cron` to be repeated
+- **THEN** the system writes `<text>` as a new mail message to `captain@localhost`, leaves the existing job's schedule and identifier unchanged, and does not require `interval`/`cron` to be repeated
 
 ### Requirement: Ordering ensures a recurring Raven check-in
 
 An order SHALL ensure a Raven check-in job exists, creating it only when absent and preserving an existing schedule.
 
 #### Scenario: A schedule is required only when no check-in job exists yet
-- **WHEN** `captain(crew_id, action="order", message=<text>)` is called for a crew with no existing check-in job, and neither `every_secs` nor `cron` is given
+- **WHEN** `captain(crew_id, action="order", message=<text>)` is called for a crew with no existing check-in job, and neither `interval` nor `cron` is given
 - **THEN** the system returns an error and writes no mail, since a brand-new check-in loop has nothing to schedule against
 
 ### Requirement: Raven evaluates orders on each check-in
@@ -83,7 +83,7 @@ Before dispatch, Raven SHALL check pending and confirmed mailbox intents, matchi
 
 #### Scenario: Raven records an intent before spawning when the gateway ID is not yet known
 - **WHEN** Raven determines a persona dispatch is needed and all three layers report clear
-- **THEN** Raven generates a unique local `intent_id`, prefixes the worker task description with `SDD dispatch <change> <persona> <intent_id>`, writes `dispatching <persona> <intent_id>` to `raven@localhost` BEFORE calling `/api/spawn`, and does not invent the gateway's future task ID
+- **THEN** Raven generates a unique local `intent_id`, prefixes the worker task description with `SDD dispatch <intent_id> <change> <persona>`, writes `dispatching <persona> <intent_id>` to `raven@localhost` BEFORE calling `/api/spawn`, and does not invent the gateway's future task ID
 
 #### Scenario: Raven confirms the server-assigned ID after spawning
 - **WHEN** the authenticated `/api/spawn` call succeeds and returns `spawn_task_id`

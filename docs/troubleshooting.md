@@ -62,7 +62,7 @@ no-op and has no security impact.
 The trade-off is intentional:
 
 - The container is **rootless** — it cannot escalate to host root.
-- It binds only to **localhost** — no network-accessible attack surface.
+- The transport listens on `0.0.0.0` inside its container but publishes no host port. Containers on its network can reach it; the shared transport secret protects that internal route.
 - It mounts a limited set of paths (data dir, agents, skills, socket).
 
 For this deployment model, the practical risk of running without MAC-layer
@@ -146,7 +146,7 @@ image.
 If `launch` times out waiting for the gateway:
 
 ```
-Timed out waiting for crew gateway (30s)
+Timed out waiting for crew gateway (60s)
 ```
 
 1. Check that the container actually started on Ghostship's instance:
@@ -187,9 +187,9 @@ podman-gs restart gs-<crew_id>
 ## Memory Pressure (OOM)
 
 The transport has a pre-launch memory gate controlled by `GA_MIN_FREE_MEM_GB`
-(default `2.0`). Before starting a crew container, the transport checks
-available host memory and waits up to 60 seconds for sufficient headroom
-(this wait duration is hardcoded and is not configurable via environment variable).
+(default `2.0`). Before starting a crew container, it takes one available-memory
+reading. If the reading is below the threshold, launch is rejected immediately;
+the gate does not poll or wait for memory to become available.
 
 ### Symptoms
 
@@ -351,14 +351,6 @@ podman-gs images
 ## Known workarounds
 
 These are deliberate hacks for upstream limitations, marked `# WORKAROUND:` in the source.
-
-### spawn_min_memory_gb not read from config files (KiroCrew)
-
-**Symptom:** Agent spawns are refused with "only N GB available (need 4 GB)" even after setting `spawn_min_memory_gb: 0` in config.
-
-**Root cause:** KiroCrew's config loader does not read `spawn_min_memory_gb` from config files — the field always uses its dataclass default of `4.0`. Other threshold fields are read correctly.
-
-**Workaround:** After every container restart, `_patch_crew_config` re-writes `spawn_min_memory_gb=0` into `config.json` and restarts the gateway. This adds one extra stop/start cycle to every auto-restart.
 
 ### Direct SQLite writes into kiro-cli's internal database
 

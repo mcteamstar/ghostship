@@ -10,7 +10,7 @@ KiroCrew 0.13.1 is now the current stable release, while Ghostship pins 0.13.0. 
 - Verify the bundled Kiro CLI and compare the release's SQLite schema and migrations with Ghostship's seeded database; update the seed only if required.
 - Review upstream changes that intersect Ghostship's enabled workflows, especially restart/cancel message handoff and the change to local sign-in token delivery.
 - Update dependency inventory, runtime documentation, changelog, and the crew-image specification with verified release details.
-- Validate fresh crew creation, persistence, authentication, dispatch, pickup, and wake behavior on Corsair and Carrier; leave existing crews intact and record rollback guidance.
+- Validate fresh crew creation, persistence, authentication, dispatch, pickup, and wake behavior on the installed candidate; leave existing crews intact and record rollback guidance.
 
 ## Capabilities
 
