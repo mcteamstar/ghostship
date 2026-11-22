@@ -246,6 +246,10 @@ installs where you want full control.
 CLI flags (`--port`, `--public-url`, `--identity-provider`, …) take precedence
 over **all** config-file layers.
 
+Podman is provisioned only after this configuration has been resolved. Its
+machine selection and resources (`machine.dedicated`, `machine.name`, and
+`machine.resources.*`) use the same precedence described above.
+
 > **⚠️ No ambient-environment-variable tier.** Exporting a shell variable has
 > no effect on `install.sh` — the built-in default applies when no config file
 > or flag provides a value. Use a config file instead.
@@ -254,6 +258,14 @@ over **all** config-file layers.
 
 The optional per-user override file lets you keep machine-specific or personal
 settings out of the repo config:
+
+On Linux, `XDG_CONFIG_HOME` selects the location of this YAML file, while
+`XDG_DATA_HOME` selects Ghostship's host data directory and `XDG_RUNTIME_DIR`
+selects the runtime directory used for the Podman socket. These variables select
+paths; they do not themselves set the machine name, dedicated-machine choice,
+or resource limits. Values in the XDG YAML file still override repository YAML
+according to the resolution order above. macOS uses the paths shown in the table
+and the Podman machine's guest socket.
 
 | OS | Path |
 |:---|:-----|

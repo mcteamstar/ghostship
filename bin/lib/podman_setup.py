@@ -104,9 +104,8 @@ def _setup_linux_dedicated(
 
     Path(unit_dir).mkdir(parents=True, exist_ok=True)
 
-    # Podman reads CONTAINERS_CONF as soon as the service starts. The install
-    # shim provisions the socket before install_main.py runs, so this file must
-    # exist here rather than being created later by install_main.
+    # Podman reads CONTAINERS_CONF as soon as the service starts, so ensure the
+    # file exists before starting the dedicated service.
     conf_path = Path(ga_containers_conf)
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     if not conf_path.exists():

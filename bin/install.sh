@@ -41,44 +41,6 @@ if ! command -v podman-compose >/dev/null 2>&1; then
   exit 1
 fi
 
-# ── Podman provisioning (machine/instance) ───────────────────────────────────
-# Skip when --client-only is passed — no local Podman needed for MCP client setup.
-_SKIP_PODMAN=""
-for _arg in "$@"; do
-  [[ "$_arg" == "--client-only" ]] && _SKIP_PODMAN=1 && break
-done
-
-if [[ -z "$_SKIP_PODMAN" ]]; then
-  GA_MACHINE_NAME="${GA_MACHINE_NAME:-ghost-academy}"
-  GA_DEDICATED_MACHINE="${GA_DEDICATED_MACHINE:-true}"
-
-  PODMAN_SOCK="$(
-    GA_MACHINE_NAME="${GA_MACHINE_NAME}" \
-    GA_DEDICATED_MACHINE="${GA_DEDICATED_MACHINE}" \
-    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
-    PODMAN_SOCK="${PODMAN_SOCK:-}" \
-    python3 "${GHOSTSHIP_DIR}/bin/lib/podman_setup.py" --print-socket
-  )" || { echo "✗ Failed to resolve Podman socket path" >&2; exit 1; }
-
-  GA_MACHINE_NAME="${GA_MACHINE_NAME}" \
-  GA_DEDICATED_MACHINE="${GA_DEDICATED_MACHINE}" \
-  GA_MACHINE_CPUS="${GA_MACHINE_CPUS:-8}" \
-  GA_MACHINE_MEMORY="${GA_MACHINE_MEMORY:-8192}" \
-  GA_MACHINE_DISK="${GA_MACHINE_DISK:-100}" \
-  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
-  PODMAN_SOCK="${PODMAN_SOCK}" \
-  python3 "${GHOSTSHIP_DIR}/bin/lib/podman_setup.py" \
-    || { echo "✗ Podman provisioning failed" >&2; exit 1; }
-
-  if [[ "$OS" == "Darwin" ]]; then
-    DATA_DIR="$HOME/Library/Application Support/${GA_MACHINE_NAME}/data"
-  else
-    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${GA_MACHINE_NAME}/data"
-  fi
-  mkdir -p "$DATA_DIR"
-  export PODMAN_SOCK DATA_DIR
-fi
-
 # ── Exec into Python entry point ─────────────────────────────────────────────
 export GHOSTSHIP_DIR OS
 exec python3 "${GHOSTSHIP_DIR}/bin/lib/install_main.py" "$@"
