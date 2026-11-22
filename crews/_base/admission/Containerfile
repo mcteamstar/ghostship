@@ -13,8 +13,8 @@
 # This is a build dependency, not a launchable composition — it is NOT
 # listed in crews/registry.json.
 #
-# Pinned base image — driven by KC_BASE_IMAGE build-arg from install.sh,
-# which reads it from ghostship.conf (KC_BASE_IMAGE env var).
+# Pinned base image — driven by the KC_BASE_IMAGE build arg from install.sh,
+# which reads machine.images.kc_base_image from ghostship.yaml when configured.
 # Default here matches the config default so plain `podman build` still works.
 #
 # TRN-219: bumped 0.8.0 → 0.9.0-insider.4 for the KiroCrew 0.9.0 upgrade.

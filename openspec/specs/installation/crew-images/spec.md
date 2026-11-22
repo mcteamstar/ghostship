@@ -9,7 +9,7 @@ Defines crew image construction, versioning and installation.
 ### Requirement: Base-image pin tracks the target KiroCrew gateway version
 
 The admission build and shipped configuration SHALL default to the verified
-KiroCrew `0.13.0` multi-architecture digest. Before release, maintainers SHALL
+KiroCrew `0.13.1` multi-architecture digest. Before release, maintainers SHALL
 inspect the stable image, verify its bundled Kiro CLI and seed schema, and smoke
 test fresh crews. The `KC_BASE_IMAGE` comment SHALL record the gateway version,
 CLI version, digest, and verification date.
@@ -46,8 +46,8 @@ CLI version, digest, and verification date.
 
 #### Scenario: release uses the verified stable pin
 
-- **WHEN** a Ghostship release targeting KiroCrew 0.13.0 is prepared
-- **THEN** the `KC_BASE_IMAGE` default names the verified stable `0.13.0` index
+- **WHEN** a Ghostship release targeting KiroCrew 0.13.1 is prepared
+- **THEN** the `KC_BASE_IMAGE` default names the verified stable `0.13.1` index
   digest
 - **AND** image inspection, seed verification and fresh-crew smoke checks have
   passed against that image.
@@ -189,15 +189,3 @@ The crew image SHALL fetch shared agent assets at a configurable ref that MAY be
 #### Scenario: Inventory classifies the ref
 - **WHEN** the dependency check runs
 - **THEN** it reports whether the shared agent assets ref is a commit or a branch or tag ref, without failing on a branch default
-
-### Requirement: Base image version
-
-The transport SHALL use `ghcr.io/kirodotdev/kirocrew:0.6.0` as the default value of `KC_BASE_IMAGE` (both the `Config` dataclass field and the `from_env()` fallback). The version string SHALL appear in exactly two places in `transport/config.py` and nowhere else as a hardcoded literal.
-
-#### Scenario: Default base image is 0.6.0
-- **WHEN** `Config.from_env()` is called without `KC_BASE_IMAGE` set
-- **THEN** `cfg.kc_base_image` is `"ghcr.io/kirodotdev/kirocrew:0.6.0"`
-
-#### Scenario: KC_BASE_IMAGE override is respected
-- **WHEN** `KC_BASE_IMAGE=ghcr.io/myorg/custom:latest` is set
-- **THEN** `cfg.kc_base_image` is `"ghcr.io/myorg/custom:latest"`

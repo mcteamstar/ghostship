@@ -119,7 +119,7 @@ echo "  - podman itself, podman-restart.service, podman.socket"
 if [[ -z "$_HAS_DEDICATED_MACHINE" ]]; then
   echo "  - the podman machine VM (macOS)"
 fi
-echo "  - the ghcr.io/kirodotdev/kirocrew:0.6.0 base image"
+echo "  - the KiroCrew base image used by this installation"
 echo ""
 
 if [[ -z "$YES" ]]; then

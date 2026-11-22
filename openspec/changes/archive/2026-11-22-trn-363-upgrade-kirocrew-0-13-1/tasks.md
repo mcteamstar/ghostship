@@ -22,8 +22,8 @@
 
 ## 5. Validate release behavior
 
-- [ ] 5.1 Install the candidate build through the normal deployment paths, then run fresh/disposable-crew checks for authentication, dispatch, pickup, stop/wake, and a follow-up task; record results and any unavailable backend coverage on TRN-363.
-- [ ] 5.2 Confirm existing crew containers and home volumes were left intact, and verify rollback restores the 0.13.0 image and its matching seed without opening candidate-migrated data in the old image.
+- [x] 5.1 Install the candidate build through the normal deployment path, then run fresh/disposable-crew checks for authentication, dispatch, pickup, stop/wake, and a follow-up task; record results and any unavailable backend coverage on TRN-363. The installed transport reports 0.13.1 and rebuilt from index digest `sha256:080c81417fd67d03ca28fdd983cb309efbcea8ee618adaeeb75a2ed96bcf58d1`. `scripts/run.sh --e2e` passed 35 tests with 4 expected skips in 927.12s: the interactive Kiro device-auth cycle was opt-in and not run, the keyed dashboard probe correctly returned 401, and two tests requiring a directly mounted Podman socket were skipped. The authenticated API checks, fresh-crew launch/dispatch/pickup, and signed-file transfer without an API bearer all passed. A separate disposable-crew Codex check passed first dispatch/pickup, stop, wake, and a follow-up dispatch/pickup. The test crew was removed afterward.
+- [x] 5.2 Confirm existing crew containers and home volumes were left intact, and verify rollback restores the 0.13.0 image and its matching seed without opening candidate-migrated data in the old image. Existing crew records and their original image-version labels remained present after deployment; only the disposable E2E/smoke crews were created and removed. The previous release commit contains the 0.13.0 image digest and corresponding seed annotation; the 0.13.1 image has the same Kiro CLI version and schema, so reverting the pin/seed pair requires no data migration. No live rollback was performed; no candidate test volume remains to be opened by an older image.
 
 ## Workflow follow-up
 
