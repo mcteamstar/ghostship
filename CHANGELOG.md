@@ -7,7 +7,8 @@
   (Kiro CLI 2.27.1). The release includes queued-message handoff after
   cancellation/restart, dashboard reconnect fixes, and shell-safety false
   positive fixes. Image and database schema checks pass on amd64 and arm64;
-  live runtime checks remain pending.
+  live E2E and crew stop/wake checks passed. The opt-in Kiro device-auth test
+  was not repeated.
 - Ghostship does not provision KiroCrew apps. Operators installing apps should
   treat them as trusted code because app backends can mint a local owner token.
 - Pace Captain dispatches to avoid overwhelming crew resources.
