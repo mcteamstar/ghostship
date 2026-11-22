@@ -193,12 +193,9 @@ class TestSupplyEvac(unittest.TestCase):
         upload_url = supply.get("delivery_url")
         self.assertIsNotNone(upload_url, f"No delivery_url in supply response: {supply}")
 
-        # Upload payload — include bearer token if API key is configured,
-        # since Caddy enforces auth on /files/* in keyed deployments.
-        file_headers = {}
-        if GHOSTSHIP_API_KEY:
-            file_headers["Authorization"] = f"Bearer {GHOSTSHIP_API_KEY}"
-        up = httpx.post(upload_url, content=self.TEST_PAYLOAD, timeout=30.0, headers=file_headers)
+        # Presigned URLs carry their own HMAC capability and must work without
+        # the MCP API bearer token, even when the transport is key-protected.
+        up = httpx.post(upload_url, content=self.TEST_PAYLOAD, timeout=30.0)
         self.assertIn(up.status_code, (200, 201), f"Upload failed: {up.status_code} {up.text}")
 
         # Get presigned download URL
@@ -206,8 +203,8 @@ class TestSupplyEvac(unittest.TestCase):
         download_url = evac.get("url")
         self.assertIsNotNone(download_url, f"No url in evac response: {evac}")
 
-        # Download and verify — include bearer token if API key is configured.
-        down = httpx.get(download_url, timeout=30.0, headers=file_headers)
+        # The signed download URL must also work without the API bearer token.
+        down = httpx.get(download_url, timeout=30.0)
         self.assertEqual(down.status_code, 200)
         self.assertEqual(down.content, self.TEST_PAYLOAD)
 
