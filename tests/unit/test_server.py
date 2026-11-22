@@ -175,6 +175,48 @@ class TestLoadTransportSecret(unittest.TestCase):
         self.assertIn("pass-through mode", "\n".join(captured.output))
         self.assertIn("192.168.1.10", "\n".join(captured.output))
 
+    def test_enabled_guard_refuses_wildcard_bind_without_secret(self):
+        server = self._server_module()
+
+        with self._patch_startup_config(
+            server, required=True, bind="0.0.0.0"
+        ), patch.object(
+            server, "Path", return_value=_MissingSecretFile()
+        ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+            with self.assertRaises(SystemExit) as exc_info:
+                server._load_transport_secret()
+
+        self.assertEqual(exc_info.exception.code, 1)
+        self.assertIn("GA_TRANSPORT_SECRET is not set", "\n".join(captured.output))
+        self.assertIn("0.0.0.0", "\n".join(captured.output))
+
+    def test_disabled_guard_warns_and_continues_for_wildcard_bind(self):
+        server = self._server_module()
+
+        with self._patch_startup_config(
+            server, required=False, bind="0.0.0.0"
+        ), patch.object(
+            server, "Path", return_value=_MissingSecretFile()
+        ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+            secret = server._load_transport_secret()
+
+        self.assertEqual(secret, "")
+        self.assertIn("pass-through mode", "\n".join(captured.output))
+        self.assertIn("0.0.0.0", "\n".join(captured.output))
+
+    def test_present_secret_allows_wildcard_bind_with_guard_enabled(self):
+        server = self._server_module()
+
+        with self._patch_startup_config(
+            server, required=True, bind="0.0.0.0"
+        ), patch.object(
+            server, "Path", return_value=_PresentSecretFile()
+        ), patch.object(server._security, "register_secret") as register:
+            secret = server._load_transport_secret()
+
+        self.assertEqual(secret, "transport-secret")
+        register.assert_called_once_with("transport-secret")
+
     def test_present_secret_allows_specific_external_bind(self):
         server = self._server_module()
 
@@ -190,10 +232,10 @@ class TestLoadTransportSecret(unittest.TestCase):
                 self.assertEqual(secret, "transport-secret")
                 register.assert_called_once_with("transport-secret")
 
-    def test_loopback_and_wildcard_binds_do_not_trigger_guard(self):
+    def test_loopback_binds_do_not_trigger_guard(self):
         server = self._server_module()
 
-        for bind in ("127.0.0.1", "0.0.0.0"):
+        for bind in ("127.0.0.1", "localhost", "::1"):
             for required in (True, False):
                 with self.subTest(bind=bind, required=required):
                     with self._patch_startup_config(

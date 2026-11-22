@@ -179,12 +179,12 @@ except ModuleNotFoundError:
     )
 
 try:
-    from config import Config, api_key_exposure, inert_backend_settings, _parse_trusted_proxy_cidr, is_loopback as _is_loopback, _is_wildcard as _is_wildcard_bind  # container: both files flat in /app
+    from config import Config, api_key_exposure, inert_backend_settings, _parse_trusted_proxy_cidr, is_loopback as _is_loopback  # container: both files flat in /app
 except ImportError:
     # Local dev: transport/ is a package dir, and a bare `import config` can
     # resolve to the repo-root config/ namespace package (which has no Config),
     # raising ImportError rather than ModuleNotFoundError — fall back either way.
-    from transport.config import Config, api_key_exposure, inert_backend_settings, _parse_trusted_proxy_cidr, is_loopback as _is_loopback, _is_wildcard as _is_wildcard_bind
+    from transport.config import Config, api_key_exposure, inert_backend_settings, _parse_trusted_proxy_cidr, is_loopback as _is_loopback
 
 try:
     from registry import (  # container: flat /app/
@@ -588,7 +588,7 @@ def _load_transport_secret() -> str:
 
     # Check whether the bind address is non-loopback (I-6).
     bind = cfg.ga_transport_bind
-    if not _is_loopback(bind) and not _is_wildcard_bind(bind):
+    if not _is_loopback(bind):
         if cfg.ga_require_secret_on_external_bind:
             _logger.critical(
                 "GA_TRANSPORT_SECRET is not set and transport is bound to %s "
