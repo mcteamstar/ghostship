@@ -178,44 +178,50 @@ class TestLoadTransportSecret(unittest.TestCase):
     def test_enabled_guard_refuses_wildcard_bind_without_secret(self):
         server = self._server_module()
 
-        with self._patch_startup_config(
-            server, required=True, bind="0.0.0.0"
-        ), patch.object(
-            server, "Path", return_value=_MissingSecretFile()
-        ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
-            with self.assertRaises(SystemExit) as exc_info:
-                server._load_transport_secret()
+        for bind in ("0.0.0.0", "::"):
+            with self.subTest(bind=bind):
+                with self._patch_startup_config(
+                    server, required=True, bind=bind
+                ), patch.object(
+                    server, "Path", return_value=_MissingSecretFile()
+                ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+                    with self.assertRaises(SystemExit) as exc_info:
+                        server._load_transport_secret()
 
-        self.assertEqual(exc_info.exception.code, 1)
-        self.assertIn("GA_TRANSPORT_SECRET is not set", "\n".join(captured.output))
-        self.assertIn("0.0.0.0", "\n".join(captured.output))
+                self.assertEqual(exc_info.exception.code, 1)
+                self.assertIn("GA_TRANSPORT_SECRET is not set", "\n".join(captured.output))
+                self.assertIn(bind, "\n".join(captured.output))
 
     def test_disabled_guard_warns_and_continues_for_wildcard_bind(self):
         server = self._server_module()
 
-        with self._patch_startup_config(
-            server, required=False, bind="0.0.0.0"
-        ), patch.object(
-            server, "Path", return_value=_MissingSecretFile()
-        ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
-            secret = server._load_transport_secret()
+        for bind in ("0.0.0.0", "::"):
+            with self.subTest(bind=bind):
+                with self._patch_startup_config(
+                    server, required=False, bind=bind
+                ), patch.object(
+                    server, "Path", return_value=_MissingSecretFile()
+                ), self.assertLogs(server.__name__, level="CRITICAL") as captured:
+                    secret = server._load_transport_secret()
 
-        self.assertEqual(secret, "")
-        self.assertIn("pass-through mode", "\n".join(captured.output))
-        self.assertIn("0.0.0.0", "\n".join(captured.output))
+                self.assertEqual(secret, "")
+                self.assertIn("pass-through mode", "\n".join(captured.output))
+                self.assertIn(bind, "\n".join(captured.output))
 
     def test_present_secret_allows_wildcard_bind_with_guard_enabled(self):
         server = self._server_module()
 
-        with self._patch_startup_config(
-            server, required=True, bind="0.0.0.0"
-        ), patch.object(
-            server, "Path", return_value=_PresentSecretFile()
-        ), patch.object(server._security, "register_secret") as register:
-            secret = server._load_transport_secret()
+        for bind in ("0.0.0.0", "::"):
+            with self.subTest(bind=bind):
+                with self._patch_startup_config(
+                    server, required=True, bind=bind
+                ), patch.object(
+                    server, "Path", return_value=_PresentSecretFile()
+                ), patch.object(server._security, "register_secret") as register:
+                    secret = server._load_transport_secret()
 
-        self.assertEqual(secret, "transport-secret")
-        register.assert_called_once_with("transport-secret")
+                self.assertEqual(secret, "transport-secret")
+                register.assert_called_once_with("transport-secret")
 
     def test_present_secret_allows_specific_external_bind(self):
         server = self._server_module()
