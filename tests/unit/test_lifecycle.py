@@ -611,6 +611,29 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
             self.assertIsInstance(exc, RuntimeError)
             self.assertIn("start failed", str(exc))
 
+    def test_waiter_uses_150_second_timeout(self):
+        from transport.launcher import _StartupCycle
+
+        wait_timeouts = []
+
+        class _ObservedEvent(threading.Event):
+            def wait(self, timeout=None):
+                wait_timeouts.append(timeout)
+                return super().wait(timeout)
+
+        event = _ObservedEvent()
+        event.set()
+        cycle = _StartupCycle(1, event, (True, None))
+        self.crews[CREW_ID]["status"] = "running"
+        with self.launcher._startup_events_lock:
+            self.launcher._startup_cycles[CREW_ID] = cycle
+            self.launcher._startup_generation[CREW_ID] = 1
+
+        result = self.launcher.ensure_running(dict(self.crews[CREW_ID]), CREW_ID)
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(wait_timeouts, [150])
+
     def _assert_early_failure_releases_waiter(self, expected_error, install_failure):
         failure_entered = threading.Event()
         release_failure = threading.Event()
@@ -763,44 +786,97 @@ class TestEnsureRunningConcurrency(_EnsureRunningBase):
         self.assertTrue(self.podman.container_is_running(CONTAINER))
         self.assertEqual(self.crews[CREW_ID]["status"], "running")
 
-    def test_generation_change_raises_in_waiter(self):
-        # Simulate a waiter that wakes to find a newer restart cycle running:
-        # the generation counter advanced past the one the waiter captured.
-        errors: list = []
+    def test_waiters_keep_outcomes_from_the_generation_they_joined(self):
+        from transport.launcher import _StartupCycle
 
-        # Elect a leader-in-progress state by hand so the next caller is a
-        # waiter: register an already-set event and a stale outcome, then bump
-        # the generation after the waiter captures the old one.
-        import transport.launcher as launcher_module
+        for earlier_success in (True, False):
+            with self.subTest(earlier_success=earlier_success):
+                self.launcher._startup_cycles.clear()
+                self.launcher._startup_generation.clear()
+                old_waiter_entered = threading.Event()
+                old_wait_signaled = threading.Event()
+                release_old_read = threading.Event()
+                new_waiter_entered = threading.Event()
+                event_type = threading.Event
 
-        waiter_entered = threading.Event()
-        tracked_event = _tracked_startup_event_type(waiter_entered, timeout=5)
-        ev = tracked_event()
-        self.launcher._startup_events[CREW_ID] = ev
-        self.launcher._startup_generation[CREW_ID] = 1
-        self.launcher._crew_restart_outcomes[CREW_ID] = (True, None)
+                class _OldEvent(event_type):
+                    def wait(self, timeout=None):
+                        old_waiter_entered.set()
+                        signaled = super().wait(timeout=5)
+                        if signaled:
+                            old_wait_signaled.set()
+                            if not release_old_read.wait(timeout=5):
+                                raise RuntimeError("test did not release the old waiter")
+                        return signaled
 
-        def _waiter():
-            try:
-                crew = dict(self.crews[CREW_ID])
-                self.launcher.ensure_running(crew, CREW_ID)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(exc)
+                class _NewEvent(event_type):
+                    def wait(self, timeout=None):
+                        new_waiter_entered.set()
+                        return super().wait(timeout=5)
 
-        t = threading.Thread(target=_waiter, name="waiter")
-        with patch.object(launcher_module, "threading", SimpleNamespace(Event=tracked_event)):
-            t.start()
-            self.assertTrue(waiter_entered.wait(timeout=5), "waiter did not enter event.wait()")
-            # Represent a third caller starting a new cycle while this waiter
-            # is parked on the prior event.
-            self.launcher._startup_generation[CREW_ID] = 2
-            ev.set()
-            t.join(timeout=5)
-        self.assertFalse(t.is_alive(), "waiter did not finish within timeout")
+                old_cycle = _StartupCycle(1, _OldEvent())
+                results, errors = {}, {}
+                with self.launcher._startup_events_lock:
+                    self.launcher._startup_cycles[CREW_ID] = old_cycle
+                    self.launcher._startup_generation[CREW_ID] = 1
 
-        self.assertEqual(len(errors), 1, f"expected one error, got {errors}")
-        self.assertIsInstance(errors[0], RuntimeError)
-        self.assertIn("gen", str(errors[0]).lower())
+                def _waiter(name):
+                    try:
+                        results[name] = self.launcher.ensure_running(
+                            dict(self.crews[CREW_ID]), CREW_ID,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        errors[name] = exc
+
+                old_thread = threading.Thread(target=_waiter, args=("old",), name="old-waiter")
+                old_thread.start()
+                self.assertTrue(
+                    old_waiter_entered.wait(timeout=5),
+                    "old waiter did not enter event.wait()",
+                )
+                old_error = RuntimeError("generation 1 failed")
+                with self.launcher._startup_events_lock:
+                    old_cycle.outcome = (earlier_success, None if earlier_success else old_error)
+                old_cycle.event.set()
+                self.assertTrue(
+                    old_wait_signaled.wait(timeout=5),
+                    "old waiter did not pause after its event was signaled",
+                )
+
+                later_success = not earlier_success
+                later_error = RuntimeError("generation 2 failed")
+                new_cycle = _StartupCycle(2, _NewEvent())
+                with self.launcher._startup_events_lock:
+                    self.launcher._startup_cycles[CREW_ID] = new_cycle
+                    self.launcher._startup_generation[CREW_ID] = 2
+                    self.crews[CREW_ID]["status"] = "running"
+
+                new_thread = threading.Thread(target=_waiter, args=("new",), name="new-waiter")
+                new_thread.start()
+                self.assertTrue(
+                    new_waiter_entered.wait(timeout=5),
+                    "new waiter did not join generation 2",
+                )
+                with self.launcher._startup_events_lock:
+                    new_cycle.outcome = (later_success, None if later_success else later_error)
+                new_cycle.event.set()
+                new_thread.join(timeout=5)
+                self.assertFalse(new_thread.is_alive(), "new waiter did not finish")
+
+                release_old_read.set()
+                old_thread.join(timeout=5)
+                self.assertFalse(old_thread.is_alive(), "old waiter did not finish")
+
+                if earlier_success:
+                    self.assertIsInstance(results.get("old"), dict)
+                    self.assertIs(errors.get("new"), later_error)
+                else:
+                    self.assertIs(errors.get("old"), old_error)
+                    self.assertIsInstance(results.get("new"), dict)
+
+                with self.launcher._startup_events_lock:
+                    self.launcher._startup_cycles.clear()
+                    self.launcher._startup_generation.clear()
 
     def test_waiter_sees_nuked_crew_after_waking(self):
         # Spec scenario: waiter wakes after a successful leader restart but the
@@ -1849,9 +1925,8 @@ class TestReconcileRegistry(unittest.TestCase):
         self.podman = FakePodmanClient()
         self.podman._req = MagicMock(return_value=[])
         with self.launcher._startup_events_lock:
-            self.launcher._startup_events.clear()
+            self.launcher._startup_cycles.clear()
             self.launcher._startup_generation.clear()
-            self.launcher._crew_restart_outcomes.clear()
 
     def _seed(self, crews):
         from transport.registry import registry

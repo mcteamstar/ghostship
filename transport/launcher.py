@@ -30,9 +30,19 @@ import io
 import threading
 import time
 import tarfile
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _StartupCycle:
+    """One crew restart cycle, retained by callers that joined it."""
+
+    generation: int
+    event: threading.Event
+    outcome: tuple[bool, Exception | None] | None = None
 
 
 def _oauth_archive(credential: dict) -> bytes:
@@ -131,9 +141,8 @@ class CrewLauncher:
     Instance attributes mirror the lifecycle.py module-level globals that will
     migrate here across tasks 6.2-6.4:
 
-    ``_startup_events``         — per-crew threading.Event (serialises restarts)
-    ``_startup_events_lock``    — guards _startup_events + _crew_restart_outcomes
-    ``_crew_restart_outcomes``  — per-crew (success, exc) recorded by the leader
+    ``_startup_cycles``         — active restart cycle per crew
+    ``_startup_events_lock``    — guards startup cycles and generation counters
     ``_startup_generation``     — restart cycle generation counter per crew
     ``_recovery_locks``         — per-crew non-reentrant recovery lock
     ``_recovery_locks_lock``    — guards _recovery_locks
@@ -152,9 +161,8 @@ class CrewLauncher:
         self._cfg = cfg
 
         # ── Per-crew startup serialisation ────────────────────────────────────
-        self._startup_events: dict[str, threading.Event] = {}
+        self._startup_cycles: dict[str, _StartupCycle] = {}
         self._startup_events_lock = threading.Lock()
-        self._crew_restart_outcomes: dict[str, tuple[bool, Exception | None]] = {}
         self._startup_generation: dict[str, int] = {}
 
         # ── Per-crew recovery lock ─────────────────────────────────────────────
@@ -185,7 +193,8 @@ class CrewLauncher:
 
     def get_startup_event(self, crew_id: str) -> threading.Event | None:
         """Return the in-progress startup Event for *crew_id*, or None."""
-        return self._startup_events.get(crew_id)
+        cycle = self._startup_cycles.get(crew_id)
+        return cycle.event if cycle is not None else None
 
     # ── Active-limit and memory-gate helpers ─────────────────────────────────
 
@@ -212,7 +221,7 @@ class CrewLauncher:
             return
 
         with self._startup_events_lock:
-            startup_in_progress = set(self._startup_events)
+            startup_in_progress = set(self._startup_cycles)
             with registry:
                 crew_snapshot = [
                     (cid, entry.get("container"), entry.get("status"))
@@ -254,7 +263,7 @@ class CrewLauncher:
                         entry = registry._reg["crews"].get(cid)
                         if (
                             cid not in startup_in_progress
-                            and cid not in self._startup_events
+                            and cid not in self._startup_cycles
                             and self._startup_generation.get(cid, 0)
                             == generation_snapshot.get(cid, 0)
                             and entry is not None
@@ -477,43 +486,29 @@ class CrewLauncher:
         # lock, then probe the container — if it is alive with a live gateway,
         # de-register and return early; otherwise proceed with the restart work.
         with self._startup_events_lock:
-            if crew_id in self._startup_events:
-                event = self._startup_events[crew_id]
+            cycle = self._startup_cycles.get(crew_id)
+            if cycle is not None:
                 is_leader = False
-                # Capture generation before releasing lock
-                _waiter_gen = self._startup_generation.get(crew_id, 0)
             else:
-                event = threading.Event()
-                self._startup_events[crew_id] = event
+                generation = self._startup_generation.get(crew_id, 0) + 1
+                self._startup_generation[crew_id] = generation
+                cycle = _StartupCycle(generation, threading.Event())
+                self._startup_cycles[crew_id] = cycle
                 is_leader = True
-                # Drop any outcome left by a PRIOR leader for this crew.
-                self._crew_restart_outcomes.pop(crew_id, None)
-                # Increment generation for this new restart cycle
-                self._startup_generation[crew_id] = (
-                    self._startup_generation.get(crew_id, 0) + 1
-                )
-                _waiter_gen = self._startup_generation[crew_id]
 
         if not is_leader:
             # Another caller is already restarting — wait for it then return
             # the refreshed crew dict
             logger.info("Crew %s restart already in progress — waiting", crew_id)
-            event.wait(timeout=150)
+            cycle.event.wait(timeout=150)
             # Read the outcome the leader recorded before firing the Event.
             with self._startup_events_lock:
-                outcome = self._crew_restart_outcomes.get(crew_id)
-                _current_gen = self._startup_generation.get(crew_id, 0)
-            if _current_gen != _waiter_gen:
-                raise RuntimeError(
-                    f"Crew {crew_id} restart (concurrent) failed -- restart "
-                    f"cycle changed during wait (waited on gen {_waiter_gen}, "
-                    f"current gen {_current_gen}); a new restart cycle started "
-                    f"before outcome was read"
-                )
+                outcome = cycle.outcome
             if outcome is None:
                 raise RuntimeError(
                     f"Crew {crew_id} restart (concurrent) failed -- leader did "
-                    f"not record an outcome within the wait window"
+                    f"not record an outcome for generation {cycle.generation} "
+                    f"within the wait window"
                 )
             success, exc = outcome
             if not success:
@@ -770,10 +765,11 @@ class CrewLauncher:
                     _outcome = (False, cleanup_error)
                 try:
                     with self._startup_events_lock:
-                        self._crew_restart_outcomes[crew_id] = _outcome
-                        self._startup_events.pop(crew_id, None)
+                        cycle.outcome = _outcome
+                        if self._startup_cycles.get(crew_id) is cycle:
+                            self._startup_cycles.pop(crew_id, None)
                 finally:
-                    event.set()
+                    cycle.event.set()
                 if cleanup_error is not None:
                     raise cleanup_error
             finally:

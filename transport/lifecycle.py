@@ -1215,7 +1215,7 @@ def _reconcile_registry() -> None:
     # increments its generation before it can start the container, so stale
     # Podman observations cannot overwrite that newer lifecycle state.
     with _launcher._startup_events_lock:
-        startup_in_progress = set(_launcher._startup_events)
+        startup_in_progress = set(_launcher._startup_cycles)
         with registry:
             snapshot = dict(registry._reg["crews"])
             snapshot_created_at: dict[str, str | None] = {
@@ -1272,7 +1272,7 @@ def _reconcile_registry() -> None:
 
                 def _snapshot_is_current(cid: str, live_entry: dict) -> bool:
                     return (
-                        cid not in _launcher._startup_events
+                        cid not in _launcher._startup_cycles
                         and _launcher._startup_generation.get(cid, 0)
                         == snapshot_generation.get(cid, 0)
                         and live_entry.get("container") == snapshot_containers.get(cid)

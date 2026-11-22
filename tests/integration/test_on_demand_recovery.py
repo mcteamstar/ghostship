@@ -116,9 +116,8 @@ class TestOnDemandRecoveryRestartExercise(unittest.TestCase):
         }
 
         with self.launcher._startup_events_lock:
-            self.launcher._startup_events.clear()
+            self.launcher._startup_cycles.clear()
             self.launcher._startup_generation.clear()
-            self.launcher._crew_restart_outcomes.clear()
         with self.launcher._capacity_lock:
             self.launcher._start_reservations.clear()
 
