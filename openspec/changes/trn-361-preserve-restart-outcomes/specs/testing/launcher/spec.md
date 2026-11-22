@@ -7,7 +7,9 @@ When multiple callers call `ensure_running` concurrently for the same crew, exac
 
 #### Scenario: Concurrent callers get a single restart
 - **WHEN** two threads call `ensure_running` concurrently for the same stopped crew
-- **THEN** `container_start` is called exactly once and both callers receive a crew dict with `status == "running"`
+- **THEN** one caller performs the restart cycle and the other waits for it
+- **AND** `_patch_crew_config` is called once, even though the cycle may start the container more than once to reload the patched config
+- **AND** both callers receive a crew dict and the registry status is `"running"`
 
 #### Scenario: Leader exception propagates to waiters
 - **WHEN** the leader thread's restart fails (e.g. `container_start` raises)
