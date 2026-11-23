@@ -11,6 +11,9 @@ import httpx2 as httpx
 GHOSTSHIP_E2E_URL = os.environ.get("GHOSTSHIP_E2E_URL", "http://localhost:64057").rstrip("/")
 GHOSTSHIP_API_KEY = os.environ.get("GHOSTSHIP_API_KEY", "")
 GHOSTSHIP_E2E_KIRO_AUTH = os.environ.get("GHOSTSHIP_E2E_KIRO_AUTH", "") not in ("", "0", "false")
+# Optional agent backend ("kiro", "claude", "codex") for every crew the suite
+# launches. Unset means the transport default (backends.default).
+GHOSTSHIP_E2E_BACKEND = os.environ.get("GHOSTSHIP_E2E_BACKEND", "").strip() or None
 
 # Podman socket used by the transport — needed for tests that must stop a
 # container directly (no transport MCP tool exposes a stop-without-nuke path).
@@ -69,6 +72,9 @@ def mcp_call(tool: str, *, api_key: str = GHOSTSHIP_API_KEY, **kwargs) -> dict:
     response. This helper peels off the SSE envelope and returns the parsed
     result dict, or ``{"error": <text>}`` when ``isError: true``.
     """
+    if tool == "launch" and GHOSTSHIP_E2E_BACKEND and "backend" not in kwargs:
+        kwargs["backend"] = GHOSTSHIP_E2E_BACKEND
+
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
