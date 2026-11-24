@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.13.2
+
+- Add per-dispatch model overrides for crew agents.
+- Keep Captain task polling in the foreground until dispatched work completes.
+- Open device-auth links in the default browser when Enter is pressed, while
+  preserving terminal input during auth polling.
+- Let E2E runs select the crew backend explicitly.
+
 ## v0.13.1
 
 - Upgrade the crew base to KiroCrew 0.13.1 at multi-arch index digest
