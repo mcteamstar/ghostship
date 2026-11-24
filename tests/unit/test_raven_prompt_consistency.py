@@ -13,7 +13,10 @@ def _raven_prompt() -> str:
 
 
 def test_raven_persona_embeds_captain_gateway_orientation_verbatim():
-    assert captain._RAVEN_GATEWAY_ORIENTATION in _raven_prompt()
+    orientation = captain._RAVEN_GATEWAY_ORIENTATION
+    assert orientation in _raven_prompt()
+    assert "explicitly requested model" in orientation
+    assert "--model <id>" in orientation
 
 
 def test_raven_is_never_told_to_avoid_its_own_task_list_helper():

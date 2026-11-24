@@ -27,10 +27,10 @@ owned by the transport; no `kirocrew cron` command is needed.
 
 ## Dispatch a named persona
 
-Put the task text on standard input. The helper prints the gateway's JSON reply; for dispatch, use its `id` field as the task ID for the confirmation marker.
+Put the task text on standard input. To request a specific model, pass `--model <id>` after the persona name; omit it to use the crew's normal model selection. The helper prints the gateway's JSON reply; for dispatch, use its `id` field as the task ID for the confirmation marker.
 
 ```bash
-~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn ghost <<'EOF'
+~/.agents/skills/ghostship-spawn/scripts/ghostship-spawn ghost --model claude-opus-5 <<'EOF'
 SDD dispatch intent-... change-name ghost — implement the remaining tasks.
 EOF
 ```
