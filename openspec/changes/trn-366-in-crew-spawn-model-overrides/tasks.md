@@ -11,7 +11,9 @@
 
 ## 3. Verify the packaged helper
 
-- [ ] 3.1 Build a disposable crew image and dispatch a named persona with a valid model override; verify the new task's `--status` output shows the requested model.
+- [x] 3.1 Build a disposable crew image and dispatch a named persona with a valid model override; verify the new task's `--status` output shows the requested model.
+
+  Verification: the packaged helper sent `agent=ghost` and `model=gpt-6.2-sol` to a local stub gateway, and its `--status` output returned the requested model. A separate real Corsair dispatch to `ghost` with the same model completed with `MODEL_OVERRIDE_SMOKE_OK`. The in-crew Codex helper call was blocked by bubblewrap (`bwrap: Failed to make / slave: Operation not permitted`); Kiro-backed execution was unavailable because the account had reached its monthly usage limit.
 
 ## Workflow follow-up
 
