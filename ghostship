@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import select
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -754,13 +756,58 @@ def _http_json(url: str, method: str, body=None, api_key=None):
     return json.loads(raw)
 
 
+def _open_login_url(login_url: str) -> None:
+    """Try to open a login URL without interrupting the authentication flow."""
+    try:
+        opened = webbrowser.open(login_url)
+    except Exception as exc:
+        reason = str(exc).strip()
+    else:
+        if opened:
+            return
+        reason = ""
+    detail = f": {reason}" if reason else ""
+    print(
+        f"error: could not open login URL in the default browser{detail}. "
+        "Use the URL printed above to continue.",
+        file=sys.stderr,
+    )
+
+
+def _wait_for_device_code_input(login_url: str) -> None:
+    """Watch terminal input for blank lines during one device-code poll interval."""
+    deadline = time.monotonic() + _AUTH_POLL_INTERVAL
+    pending = b""
+    fd = sys.stdin.fileno()
+    while True:
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            return
+        readable, _, _ = select.select([fd], [], [], timeout)
+        if not readable:
+            return
+        data = os.read(fd, 4096)
+        if not data:
+            return
+        pending += data
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            if not line:
+                _open_login_url(login_url)
+
+
 def _poll_flow(base_url: str, backend: str, api_key: str | None,
-               login_url: str, code: str) -> int:
+               login_url: str, code: str, *, open_on_enter: bool = False) -> int:
     """Poll GET /login/{backend} until the flow completes. Return 0 on success."""
     elapsed = 0
     poll_url = f"{base_url}/login/{backend}"
     while elapsed < _AUTH_TIMEOUT:
-        time.sleep(_AUTH_POLL_INTERVAL)
+        if open_on_enter and login_url and sys.stdin.isatty():
+            _wait_for_device_code_input(login_url)
+        else:
+            time.sleep(_AUTH_POLL_INTERVAL)
         elapsed += _AUTH_POLL_INTERVAL
         print(".", end="", flush=True)
         try:
@@ -1070,9 +1117,14 @@ def auth_login(args: list) -> int:
             print(f"  URL:  {login_url}")
         if user_code:
             print(f"  Code: {user_code}")
+        if login_url and sys.stdin.isatty():
+            print("Press Enter to open the URL in your default browser.")
         print("Waiting for you to complete authentication", end="", flush=True)
 
-    return _poll_flow(base_url, backend, api_key, login_url, user_code)
+    return _poll_flow(
+        base_url, backend, api_key, login_url, user_code,
+        open_on_enter=method != "oauth",
+    )
 
 
 def auth_logout(args: list) -> int:
