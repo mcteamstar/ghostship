@@ -774,21 +774,20 @@ def _open_login_url(login_url: str) -> None:
     )
 
 
-def _wait_for_device_code_input(login_url: str) -> None:
+def _wait_for_device_code_input(login_url: str, pending: bytes) -> bytes:
     """Watch terminal input for blank lines during one device-code poll interval."""
     deadline = time.monotonic() + _AUTH_POLL_INTERVAL
-    pending = b""
     fd = sys.stdin.fileno()
     while True:
         timeout = deadline - time.monotonic()
         if timeout <= 0:
-            return
+            return pending
         readable, _, _ = select.select([fd], [], [], timeout)
         if not readable:
-            return
+            return pending
         data = os.read(fd, 4096)
         if not data:
-            return
+            return pending
         pending += data
         while b"\n" in pending:
             line, pending = pending.split(b"\n", 1)
@@ -802,10 +801,11 @@ def _poll_flow(base_url: str, backend: str, api_key: str | None,
                login_url: str, code: str, *, open_on_enter: bool = False) -> int:
     """Poll GET /login/{backend} until the flow completes. Return 0 on success."""
     elapsed = 0
+    pending_input = b""
     poll_url = f"{base_url}/login/{backend}"
     while elapsed < _AUTH_TIMEOUT:
         if open_on_enter and login_url and sys.stdin.isatty():
-            _wait_for_device_code_input(login_url)
+            pending_input = _wait_for_device_code_input(login_url, pending_input)
         else:
             time.sleep(_AUTH_POLL_INTERVAL)
         elapsed += _AUTH_POLL_INTERVAL

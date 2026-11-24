@@ -509,6 +509,43 @@ class TestDeviceCodeEnter(unittest.TestCase):
         self.assertIn("Press Enter to open", out_buf.getvalue())
         self.assertIn("Authenticated successfully.", out_buf.getvalue())
 
+    def test_nonempty_input_split_across_poll_intervals_does_not_open_browser(self):
+        login_url = "https://login.example/device"
+        get_count = 0
+
+        def http_json(url, method, body=None, api_key=None):
+            nonlocal get_count
+            if method == "POST":
+                return {"login_url": login_url, "user_code": "ABCD"}
+            get_count += 1
+            if get_count == 1:
+                return {"configured": False}
+            if get_count == 2:
+                return {"status": "pending"}
+            return {"status": "complete"}
+
+        stdin = self._TerminalInput("")
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        with patch.object(gs, "_discover_transport",
+                          return_value=("http://localhost:64057", None)), \
+             patch.object(gs, "_http_json", side_effect=http_json), \
+             patch("sys.stdin", stdin), \
+             patch("sys.stdout", out_buf), \
+             patch("sys.stderr", err_buf), \
+             patch.object(gs.select, "select", side_effect=[
+                 ([17], [], []), ([], [], []), ([17], [], []), ([], [], []),
+             ]), \
+             patch.object(gs.os, "read", side_effect=[b"typed text", b"\n"]), \
+             patch.object(gs.time, "monotonic", return_value=0), \
+             patch.object(gs.webbrowser, "open") as browser_open:
+            result = gs.auth_login(["codex", "--method", "chatgpt"])
+
+        self.assertEqual(result, 0, err_buf.getvalue())
+        self.assertEqual(get_count, 3)
+        browser_open.assert_not_called()
+        self.assertIn("Authenticated successfully.", out_buf.getvalue())
+
 
 class TestDeviceCodeFallback(unittest.TestCase):
     """Browser failures stay non-fatal; non-TTY and OAuth flows stay unchanged."""
