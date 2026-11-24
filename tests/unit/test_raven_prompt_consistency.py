@@ -19,6 +19,12 @@ def test_raven_persona_embeds_captain_gateway_orientation_verbatim():
     assert "--model <id>" in orientation
 
 
+def test_raven_waits_for_dispatched_tasks_in_the_foreground():
+    prompt = _raven_prompt()
+    assert f"{_HELPER} --status <task_id>` in the foreground" in prompt
+    assert "Never start a background poll or monitor" in prompt
+
+
 def test_raven_is_never_told_to_avoid_its_own_task_list_helper():
     prompt = _raven_prompt()
     for sentence in prompt.split(". "):
