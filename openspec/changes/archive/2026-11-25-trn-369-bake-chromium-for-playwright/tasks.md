@@ -16,7 +16,7 @@
 
 - [x] 3.1 If the fresh-crew smoke check finds no compatible browser or cannot access it, add the matching Chromium revision and required libraries to the spec-ops image at a stable path outside `/home/kirocrew`; configure the runtime path and pin the MCP version only if needed for compatibility. If the existing image already passes, record this task as not needed. The image now installs Debian Chromium at `/usr/bin/chromium`; the catalogue points Playwright MCP to it with downloads disabled.
 - [x] 3.2 Add a fresh-image integration smoke check for the configured Playwright launch as `kirocrew`, with browser downloads unavailable and normal container restrictions; wire it into `.github/workflows/test.yml` and verify it passes. Passed against the built ARM64 image with `no-new-privileges`, `SYS_ADMIN` and `NET_RAW` dropped, and an empty browser cache.
-- [ ] 3.3 Build and run the smoke check on each supported crew image architecture; verify browser launch does not require a first-use browser download. ARM64 image and smoke test pass locally. The x86_64 image builds under Apple Silicon emulation, but Debian Chromium exits because that emulator does not expose SSE3; the configured GitHub Podman integration job will exercise x86_64 on a native runner after this change is pushed for CI.
+- [x] 3.3 Build and run the smoke check on each supported crew image architecture; verify browser launch does not require a first-use browser download. The ARM64 smoke check passed locally. The native x86_64 Carrier crew returned title `TRN-369-x86-smoke` and heading `x86-page-ok` with the browser cache empty and Chromium supplied by the image.
 
 ## 4. Document the composition and image behavior
 
