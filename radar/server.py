@@ -181,9 +181,30 @@ async def api_crew_mail_subjects(request: Request) -> Response:
     )
 
 
+# Radar's ES modules import each other by plain path with no version in the URL.
+# Without an explicit policy, browsers cache them heuristically and can pair a new
+# module with a stale one after an upgrade, which breaks the page on a missing
+# export. "no-cache" makes the browser revalidate each load; the ETag keeps an
+# unchanged file to a 304.
+_REVALIDATE = "no-cache"
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """StaticFiles that tells browsers to revalidate every response."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = _REVALIDATE
+        return response
+
+
 async def index(request: Request) -> FileResponse:
     """GET / — serve the Radar SPA root (index.html)."""
-    return FileResponse(str(_STATIC_DIR / "index.html"), media_type="text/html")
+    return FileResponse(
+        str(_STATIC_DIR / "index.html"),
+        media_type="text/html",
+        headers={"Cache-Control": _REVALIDATE},
+    )
 
 
 # ── Application ─────────────────────────────────────────────────────────────────
@@ -195,6 +216,6 @@ app = Starlette(
         Route("/api/crews/{crew_id}/agents", api_crew_agents),
         Route("/api/crews/{crew_id}/mail-subjects", api_crew_mail_subjects),
         Route("/", index),
-        Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
+        Mount("/static", _RevalidatingStaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],
 )

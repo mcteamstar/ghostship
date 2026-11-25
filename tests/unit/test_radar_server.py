@@ -247,6 +247,23 @@ class TestRadarStaticFiles(unittest.TestCase):
         self.assertIn("javascript", ct)
         self.assertGreater(len(body), 100)
 
+    def test_static_modules_must_be_revalidated(self):
+        """ES modules import each other by unversioned path; a heuristically cached
+        stale module paired with a new one breaks the page after an upgrade."""
+        server = _import_radar_server()
+        for path in ("/static/main.js", "/static/state.js", "/static/render.js", "/static/style.css"):
+            scope = _make_scope("GET", path)
+            messages, _body = _run(_call(server.app, scope))
+            self.assertEqual(_status_of(messages), 200, path)
+            self.assertEqual(_headers_of(messages).get("cache-control"), "no-cache", path)
+
+    def test_index_must_be_revalidated(self):
+        server = _import_radar_server()
+        scope = _make_scope("GET", "/")
+        messages, _body = _run(_call(server.app, scope))
+        self.assertEqual(_status_of(messages), 200)
+        self.assertEqual(_headers_of(messages).get("cache-control"), "no-cache")
+
     def test_app_js_returns_404(self):
         """app.js was deleted in TRN-303 — must not be served."""
         server = _import_radar_server()

@@ -1,7 +1,7 @@
 /* Radar SPA — DOM builders. */
 
 import { fmtDate, fmtUptime, statusBadge, esc, parseInterval } from "./format.js";
-import { openDetails } from "./state.js";
+import { openDetails, detailCache, cacheDetail, clearDetailCache } from "./state.js";
 import * as state from "./state.js";
 
 const bodyEl = document.getElementById("fleet-body");
@@ -67,7 +67,7 @@ export function buildRow(crew) {
     "</tr>" +
     "<tr class=\"" + detailClass + "\" id=\"detail-" + esc(crew.crew_id) + "\">" +
     "<td colspan=\"7\"><div class=\"detail-inner\">" +
-    (isOpen ? renderDetail(crew) : "") +
+    (isOpen ? renderOpenDetail(crew) : "") +
     "</div></td></tr>"
   );
 }
@@ -137,6 +137,7 @@ export function renderTable(data, filter) {
       const dataRow  = tr;
       if (detailTr.classList.contains("hidden")) {
         openDetails.add(crewId);
+        clearDetailCache(crewId);
         detailTr.classList.remove("hidden");
         dataRow.classList.add("open");
         history.replaceState(null, "", "#crew=" + crewId);
@@ -153,6 +154,7 @@ export function renderTable(data, filter) {
         if (crew) loadMailSubjects(crewId, inner);
       } else {
         openDetails.delete(crewId);
+        clearDetailCache(crewId);
         detailTr.classList.add("hidden");
         dataRow.classList.remove("open");
         history.replaceState(null, "", location.pathname);
@@ -178,13 +180,30 @@ export function renderTable(data, filter) {
 
 /* ── detail panels ───────────────────────────────────────────── */
 
-export function renderDetail(crew) {
+export function renderOpenDetail(crew) {
+  /* Draws an open row on a poll re-render: fleet data plus the sections
+     already fetched when the row was expanded. Never fetches. */
+  const cached = (crew && detailCache.get(crew.crew_id)) || {};
+  return renderDetail(crew, cached.agents) + (cached.crons || "") + (cached.mail || "");
+}
+
+function redrawOpenDetail(crewId) {
+  /* A fetch that resolves after a poll re-render holds a detached container;
+     redraw the live row from cache instead. */
+  if (!openDetails.has(crewId) || !state.lastData) return;
+  const crew = (state.lastData.crews || []).find(function (c) { return c.crew_id === crewId; });
+  const detailTr = document.getElementById("detail-" + crewId);
+  const inner = detailTr && detailTr.querySelector ? detailTr.querySelector(".detail-inner") : null;
+  if (crew && inner) inner.innerHTML = renderOpenDetail(crew);
+}
+
+export function renderDetail(crew, agentsHtml) {
   if (!crew) return "<em>No data.</em>";
   const agents = Array.isArray(crew.agents) ? crew.agents : [];
   const imageHtml = crew.crew_image_version
     ? "<div class=\"detail-image-version\">Image: <span class=\"mono\">" + esc(crew.crew_image_version) + "</span></div>"
     : "";
-  let html = imageHtml + renderAgents(agents);
+  let html = imageHtml + (agentsHtml || renderAgents(agents));
 
   /* Captain state inline */
   const cap = crew.captain;
@@ -251,6 +270,8 @@ export function loadCrons(crewId, container) {
           "<td>" + esc(j.schedule || j.cron_expr || "—") + "</td></tr>";
       });
       html += "</table>";
+      cacheDetail(crewId, "crons", html);
+      if (container.isConnected === false) { redrawOpenDetail(crewId); return; }
       container.innerHTML += html;
     });
 }
@@ -267,6 +288,8 @@ export function loadAgents(crewId, container) {
     .then(function (data) {
       if (!data || !Array.isArray(data.agents) || data.agents.length === 0) return;
       const html = renderAgents(data.agents);
+      cacheDetail(crewId, "agents", html);
+      if (container.isConnected === false) { redrawOpenDetail(crewId); return; }
       /* Remove the "No active tasks." placeholder set by the initial renderDetail call. */
       container.querySelectorAll("em").forEach(function (em) {
         if (em.textContent === "No active tasks.") em.remove();
@@ -319,6 +342,8 @@ export function loadMailSubjects(crewId, container) {
     .then(function (data) {
       const valid = data && data.mailboxes && typeof data.mailboxes === "object";
       const html = valid ? renderMailSubjects(data.mailboxes) : renderMailSubjectsUnavailable();
+      cacheDetail(crewId, "mail", html);
+      if (container.isConnected === false) { redrawOpenDetail(crewId); return; }
       container.insertAdjacentHTML("beforeend", html);
     });
 }

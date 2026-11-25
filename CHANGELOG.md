@@ -9,6 +9,11 @@
 - Let E2E runs select the crew backend explicitly.
 - Wire Playwright into spec-ops crews, include Chromium in the image, and
   expose its MCP server through the crew composition.
+- Show crew mailbox subjects in Radar's expanded crew detail, for running and
+  stopped crews, without exposing message bodies or changing any mailbox.
+- Keep Radar's on-expand sections (tasks, scheduled jobs, mailbox subjects)
+  visible across fleet refreshes, and make browsers revalidate Radar's static
+  files so an upgrade cannot mix old and new modules.
 
 ## v0.13.1
 

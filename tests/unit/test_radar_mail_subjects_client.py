@@ -31,6 +31,8 @@ globalThis.document = {
   querySelectorAll: () => [],
 };
 const mod = await import(url);
+const state = await import(new URL("./state.js", url).href);
+if (process.env.OPEN === "1") state.openDetails.add("alpha");
 
 const calls = [];
 globalThis.fetch = (target, opts) => {
@@ -65,20 +67,29 @@ const container = {
 };
 
 await mod.loadMailSubjects("alpha", container);
-console.log(JSON.stringify({ calls, html: container.html }));
+// What a poll re-render draws for the open row, without fetching again.
+const callsBeforeRedraw = calls.length;
+const redraw = mod.renderOpenDetail({ crew_id: "alpha", status: "stopped" });
+console.log(JSON.stringify({
+  calls, html: container.html, redraw, redrawFetched: calls.length !== callsBeforeRedraw,
+}));
 """
 
 
-def _run_scenario(tmp_path: Path, scenario: str) -> dict:
+def _run_scenario(tmp_path: Path, scenario: str, *, open_row: bool = False) -> dict:
     driver = tmp_path / "driver.mjs"
     driver.write_text(_DRIVER, encoding="utf-8")
+    # Resolve node from the caller's PATH (fnm, nvm, Homebrew) but run it with a
+    # minimal environment.
+    node = shutil.which("node")
     env = {
         "PATH": "/usr/bin:/bin:/usr/local/bin",
         "RENDER_JS_URL": _RENDER_JS.as_uri(),
         "SCENARIO": scenario,
+        "OPEN": "1" if open_row else "0",
     }
     proc = subprocess.run(
-        ["node", str(driver)],
+        [node, str(driver)],
         env=env,
         capture_output=True,
         text=True,
@@ -132,6 +143,28 @@ class TestMailSubjectsRendering:
         html = _run_scenario(tmp_path, "missing_mailboxes")["html"]
         assert "Mailbox subjects unavailable." in html
         assert "No messages." not in html
+
+
+@needs_node
+class TestOpenRowSurvivesPollRerender:
+    """A poll re-render redraws the fetched subjects for an open row without refetching."""
+
+    def test_open_row_redraw_keeps_subjects(self, tmp_path):
+        result = _run_scenario(tmp_path, "subjects", open_row=True)
+        assert "Mailbox subjects" in result["redraw"]
+        assert "<li>plain</li>" in result["redraw"]
+        assert "&lt;img src=x onerror=alert(1)&gt; hi" in result["redraw"]
+        assert "<img" not in result["redraw"]
+        assert result["redrawFetched"] is False
+
+    def test_open_row_redraw_keeps_unavailable_state(self, tmp_path):
+        result = _run_scenario(tmp_path, "http_503", open_row=True)
+        assert "Mailbox subjects unavailable." in result["redraw"]
+        assert "No messages." not in result["redraw"]
+
+    def test_closed_row_is_not_cached(self, tmp_path):
+        result = _run_scenario(tmp_path, "subjects", open_row=False)
+        assert "Mailbox subjects" not in result["redraw"]
 
 
 class TestMailboxReadsStayOffFleetPolling:
