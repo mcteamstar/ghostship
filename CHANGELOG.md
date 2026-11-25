@@ -7,6 +7,8 @@
 - Open device-auth links in the default browser when Enter is pressed, while
   preserving terminal input during auth polling.
 - Let E2E runs select the crew backend explicitly.
+- Wire Playwright into spec-ops crews, include Chromium in the image, and
+  expose its MCP server through the crew composition.
 
 ## v0.13.1
 
