@@ -22,7 +22,11 @@ The transport SHALL expose `POST /crews/{crew_id}/auth/refresh` for bearer-authe
 - **THEN** the transport returns HTTP 404 without changing any crew or credential state
 
 ### Requirement: Refresh reports a safe outcome for crew state and credential method
-The refresh operation SHALL report whether a crew was updated, will receive its flow credential on wake, already has its static credential, or requires recreation because its static credential or method changed. It SHALL NOT start, stop, or recreate a crew.
+The refresh operation SHALL report whether a crew was updated, will receive its flow credential on wake, already has its static credential, or requires recreation because its static credential or method changed. It SHALL NOT start, stop, or recreate a crew. Every outcome in this requirement SHALL be returned with HTTP 200 and the outcome in a `status` field.
+
+#### Scenario: Outcomes use a single success status code
+- **WHEN** either refresh endpoint returns `refreshed`, `pending_on_wake`, `current`, `recreate_required`, `credential_missing`, or `refresh_failed`
+- **THEN** the HTTP status is 200 and the outcome is in the response's `status` field
 
 #### Scenario: Stopped flow-auth crew
 - **WHEN** an operator refreshes a stopped crew with a stored flow credential
@@ -62,3 +66,7 @@ The operator endpoint SHALL require bearer authentication when API-key auth is e
 #### Scenario: Refresh result contains no secret
 - **WHEN** either endpoint returns any refresh outcome
 - **THEN** the response and logs contain no credential value or transport token
+
+#### Scenario: Static comparison failure does not leak values
+- **WHEN** comparing a stored static credential with the container configuration raises an error
+- **THEN** the transport returns `status: refresh_failed` and neither the log record, its traceback, nor the response contains the credential value

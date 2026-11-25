@@ -2,7 +2,7 @@
 
 ## 1. Transport mailbox-subject endpoint
 
-- [ ] 1.1 Implement a strict subject-only reader for all eight crew mailboxes, supporting Maildir and legacy mbox files for running and stopped crews; distinguish unreadable sources from empty mailboxes. Verify coverage for both formats, running/stopped crews, empty/unavailable mailboxes, and read-only behavior, with output containing subject strings only.
+- [ ] 1.1 Implement a strict subject-only reader for all eight crew mailboxes, supporting Maildir and legacy mbox files for running and stopped crews. Treat a missing mailbox path (including Podman's archive path-not-found response for an unprovisioned `admiral`) as empty; fail the whole request on any other read error. Confirm a stopped crew's container exists before archive reads, treat a missing container as unavailable, and make `container_archive_get` raise a typed not-found error for HTTP 404. Order subjects newest first by Maildir filename timestamp (reverse file order for mbox), cap each mailbox at 50 subjects, and truncate subjects to 200 characters. Verify coverage for both formats, running/stopped crews, a stopped crew with no `admiral` mailbox, a registered crew whose container was removed, empty/unavailable mailboxes, ordering, caps, and read-only behavior, with output containing subject strings only.
 - [ ] 1.2 Expose `GET /internal/crews/{crew_id}/mail-subjects` through the TransportSecretMiddleware path handling and OpenAPI registry. Verify missing/invalid tokens return no mailbox data, unknown crews return 404, and successful responses contain only mailbox names and subject lists.
 
 ## 2. Radar proxy and operator view

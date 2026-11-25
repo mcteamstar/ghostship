@@ -14,6 +14,14 @@ Radar SHALL provide an operator action for each crew and a browser-facing `POST 
 - **WHEN** Radar cannot reach the transport while proxying a refresh request
 - **THEN** Radar returns HTTP 502 with a safe transport-unavailable message and displays that refresh did not complete
 
+#### Scenario: Cross-origin or missing Origin is rejected
+- **WHEN** `POST /api/crews/{crew_id}/auth/refresh` reaches Radar without an `Origin` header, or with an `Origin` that does not match the request host
+- **THEN** Radar returns HTTP 403 and does not call the transport
+
+#### Scenario: Portal session expires before refresh
+- **WHEN** the operator selects the refresh action after the portal session has expired and Caddy responds with a redirect to `/dashboard/login`
+- **THEN** Radar's UI tells the operator to sign in again and does not display a refresh outcome
+
 ### Requirement: Portal session gates the Radar auth refresh action
 Caddy SHALL route `POST /api/crews/{crew_id}/auth/refresh` through the existing Radar session gate. When API-key auth is configured, the browser action SHALL require a valid `gs_session` cookie.
 

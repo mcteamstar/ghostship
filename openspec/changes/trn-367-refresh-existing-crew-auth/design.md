@@ -22,17 +22,23 @@ See proposal.md for motivation. Login-flow completion already injects refreshed 
 
 Implement one transport operation and expose it through `POST /crews/{crew_id}/auth/refresh` for bearer-authenticated operator clients and `POST /internal/crews/{crew_id}/auth/refresh` for trusted portside callers. The public route uses the existing operator API auth and rejects browser `Origin` requests. The internal route uses `X-Transport-Token`, as Radar's other transport calls do. Both resolve auth from the crew's recorded backend/profile and return the same result shape. This keeps the Portal service from needing the operator bearer secret and prevents browser input from selecting or carrying credentials.
 
+Every defined outcome (`refreshed`, `pending_on_wake`, `current`, `recreate_required`, `credential_missing`, `refresh_failed`) returns HTTP 200 with the outcome in `status`; the operation ran and reported a result, and an operator client branches on `status`. Transport returns HTTP 404 only for an unknown crew. Authentication failures keep the existing 401/403 behaviour, and Radar returns 502 when it cannot reach Transport.
+
 ### Apply current flow credentials only to the selected running crew
 
 Resolve the stored credential at request time and dispatch through the existing backend-specific injectors. Serialize the refresh with credential replacement/logout and recheck the selected profile before injection, so a concurrent credential change cannot restore stale auth. On success, clear Kiro's cached sign-in status when applicable. Injection failure is reported for that crew and does not stop or restart it. A stopped flow-auth crew returns `pending_on_wake`; the existing launcher will inject the current profile credential when it wakes.
 
 ### Detect static-credential mismatch without changing the container
 
-For static methods, compare the stored method/value against the container's launch-time environment without returning or logging either value. Return `current` for a match and `recreate_required` for a mismatch. Do not attempt an in-place update or start/stop the crew. The response points to the existing workspace-preserving `evac`/recreate workflow documented in `docs/auth.md`.
+For static methods, compare the stored method/value against the container's launch-time environment without returning or logging either value. Compare values with `hmac.compare_digest`, and keep inspect output and credential values out of log messages, exception text, and `exc_info` tracebacks raised from the comparison path. Return `current` for a match and `recreate_required` for a mismatch. Do not attempt an in-place update or start/stop the crew. The response points to the existing workspace-preserving `evac`/recreate workflow documented in `docs/auth.md`.
 
 ### Make Radar a session-gated operator client
 
 Add a per-crew action to the Radar detail panel. Radar exposes `POST /api/crews/{crew_id}/auth/refresh` and proxies it to the internal transport route with the mounted transport secret. Caddy's `/api/crews*` route already forwards to Radar after `forward_auth`; preserve that gate for the mutating request. Radar displays each safe transport outcome and does not hold or forward backend credential data. Direct automation uses the bearer-protected transport route.
+
+The session gate alone does not protect a state-changing request. `/dashboard/auth` validates only the `gs_session` cookie and ignores the method, and `gs_session` is `SameSite=Lax`, which stops cross-site POSTs but not same-site ones. This is Radar's first mutating route, so Radar SHALL reject `POST /api/crews/{crew_id}/auth/refresh` unless the request carries an `Origin` header matching the request's own host. Browsers always send `Origin` on a `fetch` POST, so the SPA needs no extra token. This mirrors the CSRF check the dashboard already applies to logout, without depending on the `gs_csrf` cookie's scope. The check also applies in the Tailscale install, where Radar's route has no session gate.
+
+When a portal session has expired, Caddy answers with a `302` to `/dashboard/login`, and `fetch` follows it as a GET for the login page's HTML. The SPA must call the refresh endpoint with `redirect: "manual"` (or detect a redirected or non-JSON response) and show a "session expired, sign in again" message instead of a refresh outcome.
 
 ### Keep lifetime guidance explicitly approximate
 
@@ -43,6 +49,9 @@ Update `docs/auth.md` with the ticket's observed estimates (about 10 days for Co
 - **Credential changes while refresh is in flight** → Serialize with existing credential transactions and verify the current stored profile before injection.
 - **Operator mistakes an API response for a successful static rotation** → Return a distinct `recreate_required` result with the established workspace-preserving recovery guidance; never silently claim the running container was updated.
 - **Portal action is called without a browser session** → Keep it under Caddy's existing session gate; require `X-Transport-Token` on Radar-to-transport calls.
+- **Same-site request forgery against the Radar action** → Require a same-origin `Origin` header on the Radar POST.
+- **Tailscale install has no portal session gate** → The action is reachable by anyone on the tailnet who can reach Radar; document this, and rely on the `Origin` check against cross-origin pages.
+- **Expired session looks like a successful response** → Handle Caddy's login redirect explicitly in the SPA.
 - **Provider session lifetime changes** → Label documented values as estimates and avoid presenting them as policy guarantees.
 
 ## Migration Plan
