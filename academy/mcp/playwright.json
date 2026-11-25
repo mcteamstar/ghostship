@@ -1,5 +1,15 @@
 {
   "type": "stdio",
   "command": "npx",
-  "args": ["@playwright/mcp@latest"]
+  "args": [
+    "--yes",
+    "@playwright/mcp@latest",
+    "--executable-path",
+    "/usr/bin/chromium",
+    "--headless",
+    "--no-sandbox"
+  ],
+  "env": {
+    "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"
+  }
 }

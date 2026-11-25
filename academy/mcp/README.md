@@ -47,9 +47,25 @@ field are required.
 {
   "type": "stdio",
   "command": "npx",
-  "args": ["@playwright/mcp@latest"]
+  "args": [
+    "--yes",
+    "@playwright/mcp@latest",
+    "--executable-path",
+    "/usr/bin/chromium",
+    "--headless",
+    "--no-sandbox"
+  ],
+  "env": {
+    "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"
+  }
 }
 ```
+
+The `spec-ops` image installs Debian Chromium at `/usr/bin/chromium`; this
+image-owned path remains visible when the crew home is mounted as a volume.
+`--no-sandbox` disables Chromium's nested browser sandbox, which cannot start
+inside the existing crew/Codex sandbox; the outer crew container restrictions
+remain in place.
 
 ## `${VAR}` substitution
 
@@ -88,20 +104,22 @@ Add the server name to the `mcpServers` array in
 }
 ```
 
-At crew setup time, `_copy_agents()` resolves each name against this catalogue,
-substitutes `${VAR}` references, and writes `~/.kiro/mcp.json` inside the crew
-container. Agents reference servers via `@<name>` in their `tools` list.
+At crew setup time, Academy resolves each name against this catalogue,
+substitutes `${VAR}` references, and stages the entries in
+`.agents/mcp/servers.json`. `.agents/setup` wires them into the selected
+harness's native configuration. Academy also copies each selected server into
+the `mcpServers` map of personas whose `tools` list references `@<name>` (or
+grants all tools with `"*"`). This puts MCP servers in ACP session arrays,
+including Codex sessions. A persona's own same-named entry takes precedence.
 
 ## Empty catalogue
 
-An empty catalogue (no JSON files) is valid. No `mcp.json` is written into
-crew containers, and agents have access only to their built-in tools and any
-`mcpServers` declared in their own agent JSON.
+An empty catalogue (no JSON files) is valid. No `.agents/mcp/servers.json` is
+staged, and agents receive no composition-level MCP entries.
 
 ## Per-agent mcpServers
 
 Individual agent JSON files in `academy/agents/` may also declare a
 `mcpServers` map for servers specific to that agent regardless of the
-comp. An agent may set `includeMcpJson: false` to opt out of the
-comp-level `mcp.json` entirely. See `docs/configuration.md` for
-the full two-layer resolution model.
+comp. Academy preserves those entries and gives them precedence over a
+same-named comp entry. See `docs/configuration.md` for the full setup flow.

@@ -425,9 +425,26 @@ Each JSON object conforms to the kiro-cli `mcpServers` entry format: at minimum 
 {
   "type": "stdio",
   "command": "npx",
-  "args": ["@playwright/mcp@latest"]
+  "args": [
+    "--yes",
+    "@playwright/mcp@latest",
+    "--executable-path",
+    "/usr/bin/chromium",
+    "--headless",
+    "--no-sandbox"
+  ],
+  "env": {
+    "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"
+  }
 }
 ```
+
+The `spec-ops` image installs Debian Chromium at `/usr/bin/chromium`. The
+Playwright MCP uses that image-owned executable, so the mounted crew home cannot
+hide it and Playwright does not download a browser on first use. `--no-sandbox`
+disables Chromium's nested browser sandbox, which cannot start inside the
+existing crew/Codex sandbox; the outer crew container restrictions remain in
+place.
 
 **HTTP server:**
 
@@ -465,17 +482,18 @@ A comp's `crews/<name>/manifest.json` gains an optional `mcpServers` array of ca
 }
 ```
 
-At crew setup, `_copy_agents()` resolves each name against `/mcp/<name>.json`, substitutes `${VAR}` references, and writes the resolved configs into `~/.kiro/mcp.json` inside the crew container. Agents reference servers via `@<name>` in their `tools` list.
+At crew setup, Academy resolves each name against `/mcp/<name>.json`, substitutes `${VAR}` references, and stages the entries in `.agents/mcp/servers.json`. `.agents/setup` wires that catalogue into the selected harness's native configuration. Academy also copies a selected server into each persona's `mcpServers` map only when that persona's `tools` list references `@<name>` (or grants all tools with `"*"`). This per-persona entry lets KiroCrew include the server in ACP session MCP arrays, including Codex sessions.
 
 Behaviour:
 
-- **No `mcpServers` key (or empty array)** → no `mcp.json` written.
+- **No `mcpServers` key (or empty array)** → no `.agents/mcp/servers.json` is staged and no composition entries are added to personas.
 - **Name with no matching catalogue file** → warning logged, entry skipped; remaining servers still written, crew setup continues.
 - **Entry with a `headers` field** → `poolable: false` added automatically (auth-bearing HTTP servers must not be pooled).
+- **Persona already defines the same server** → its own entry takes precedence over the composition entry.
 
 ### Secret substitution (`${VAR}`)
 
-Any `${VAR}` reference in a catalogue entry's string values is substituted from the **transport container's environment** when `_copy_agents()` writes the crew's `mcp.json`. This keeps secrets out of committed files.
+Any `${VAR}` reference in a catalogue entry's string values is substituted from the **transport container's environment** when Academy stages the server entry. This keeps secrets out of committed files.
 
 - **Variable set**: value is substituted.
 - **Variable unset**: a warning is logged, the literal `${VAR}` string is written, and crew setup continues (the server will auth-fail at call time).
@@ -484,7 +502,9 @@ Pass secrets into the transport environment via the same `install.sh` configurat
 
 ### Per-agent servers
 
-Individual agent JSON files in `academy/agents/` may declare their own `mcpServers` map for servers specific to that agent. kiro-cli resolves agent-level entries before the comp-level `mcp.json`, so a name declared in both is served from the agent's entry. An agent may set `includeMcpJson: false` to opt out of the comp-level `mcp.json` entirely.
+Individual agent JSON files in `academy/agents/` may declare their own `mcpServers` map for servers specific to that agent. Academy preserves these entries, and they take precedence over a same-named comp catalogue entry. Kiro CLI also resolves agent-level entries before its shared MCP settings.
+
+For Playwright, update the catalogue command and `crews/spec-ops/Containerfile` together if the executable path changes. `tests/integration/test_playwright_mcp.py` starts the configured MCP, opens a local data page, and verifies the page snapshot with browser downloads disabled. The Podman integration job runs this check against the built crew image under its normal user and container restrictions. Rebuild the local image and refresh Academy with `./install.sh` after changing the image or catalogue.
 
 ## Fixed headless overrides
 

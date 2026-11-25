@@ -129,6 +129,12 @@ jobs:
             --build-arg MID_IMAGE=localhost/spec-ops-mid:latest \
             crews/_base/graduation
 
+          podman --connection ghost-academy run --rm -i \
+            --security-opt no-new-privileges \
+            --cap-drop SYS_ADMIN --cap-drop NET_RAW \
+            --entrypoint python3 localhost/spec-ops:latest - \
+            < tests/integration/test_playwright_mcp.py
+
           python3 tests/integration/test_model_defaults.py \
             --connection ghost-academy --image localhost/spec-ops:latest
 

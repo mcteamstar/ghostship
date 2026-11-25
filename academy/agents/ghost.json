@@ -10,7 +10,8 @@
     "code",
     "shell",
     "web_search",
-    "web_fetch"
+    "web_fetch",
+    "@playwright"
   ],
   "allowedTools": [
     "read",
@@ -20,7 +21,8 @@
     "code",
     "shell",
     "web_search",
-    "web_fetch"
+    "web_fetch",
+    "@playwright"
   ],
   "toolsSettings": {
     "shell": {
