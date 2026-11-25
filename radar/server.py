@@ -158,7 +158,7 @@ async def api_crew_mail_subjects(request: Request) -> Response:
     except httpx.RequestError as exc:
         logger.error("Transport unreachable for crew mail subjects %s: %s", crew_id, exc)
         return JSONResponse(
-            {"error": "transport unreachable", "detail": str(exc)},
+            {"error": "transport unreachable"},
             status_code=502,
         )
 

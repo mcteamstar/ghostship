@@ -152,18 +152,35 @@ def _read_archive_mailbox(podman: Any, container: str, name: str) -> list[str]:
         raise MailSubjectsUnavailable(f"mailbox '{name}' unreadable: {exc}") from exc
 
 
-def _is_maildir_member(member_name: str) -> bool:
-    parts = posixpath.normpath(member_name).split("/")
-    return any(part in ("new", "cur") for part in parts)
+def _mailbox_parts(member_name: str) -> list[str]:
+    return posixpath.normpath(member_name).split("/")
+
+
+def _is_maildir_layout_member(member_name: str) -> bool:
+    """True for a member (file or directory) under ``<mailbox>/{new,cur,tmp}``."""
+    parts = _mailbox_parts(member_name)
+    return len(parts) >= 2 and parts[1] in ("new", "cur", "tmp")
+
+
+def _is_maildir_message(member_name: str) -> bool:
+    """True for a delivered message: ``<mailbox>/{new,cur}/<file>`` exactly.
+
+    Matches the running-crew script, which reads only the top-level ``new`` and
+    ``cur`` directories. ``tmp`` files (in-flight or stale deliveries) and
+    Maildir++ subfolders are not delivered mail and are ignored.
+    """
+    parts = _mailbox_parts(member_name)
+    return len(parts) == 3 and parts[1] in ("new", "cur")
 
 
 def subjects_from_archive(tar_bytes: bytes) -> list[str]:
     """Return subjects, newest first, from a tar of one mailbox.
 
-    Maildir archives carry ``new/`` and ``cur/`` members, read in filename
-    timestamp order. A legacy mbox archive is a single regular file, read in
-    reverse file order. An archive with no regular files is an empty mailbox.
-    Raises MailSubjectsUnavailable for any other layout or a corrupt archive.
+    Maildir archives carry ``new/``, ``cur/`` or ``tmp/`` members; delivered
+    messages are read in filename timestamp order. A legacy mbox archive is a
+    single regular file, read in reverse file order. An archive with no regular
+    files is an empty mailbox. Raises MailSubjectsUnavailable for any other
+    layout or a corrupt archive.
     """
     try:
         tf = tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:*")
@@ -172,14 +189,15 @@ def subjects_from_archive(tar_bytes: bytes) -> list[str]:
 
     with tf:
         try:
-            regular = [m for m in tf.getmembers() if m.isreg()]
+            members = tf.getmembers()
         except (tarfile.TarError, OSError) as exc:
             raise MailSubjectsUnavailable("archive members are unreadable") from exc
 
-        maildir = [m for m in regular if _is_maildir_member(m.name)]
-        if maildir:
-            return _maildir_subjects(tf, maildir)
+        if any(_is_maildir_layout_member(m.name) for m in members):
+            messages = [m for m in members if m.isreg() and _is_maildir_message(m.name)]
+            return _maildir_subjects(tf, messages)
 
+        regular = [m for m in members if m.isreg()]
         if not regular:
             return []
         if len(regular) > 1:

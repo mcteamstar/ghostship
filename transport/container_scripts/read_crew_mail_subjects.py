@@ -50,7 +50,10 @@ def _maildir_sort_key(filename: str) -> tuple[int, str]:
     return (int(prefix) if prefix.isdigit() else 0, filename)
 
 
-def _maildir_subjects(path: str) -> list[str]:
+_MAILDIR_SCAN_ATTEMPTS = 3
+
+
+def _maildir_subjects_once(path: str) -> list[str]:
     files: list[tuple[tuple[int, str], str]] = []
     for subdir in ("new", "cur"):
         directory = os.path.join(path, subdir)
@@ -70,6 +73,22 @@ def _maildir_subjects(path: str) -> list[str]:
         if subject:
             subjects.append(subject)
     return subjects
+
+
+def _maildir_subjects(path: str) -> list[str]:
+    """Read a Maildir, rescanning when a message is renamed mid-scan.
+
+    A mail client moving a message from ``new/`` to ``cur/`` between the
+    listing and the open is routine, not a read failure. Rescan a few times;
+    a file that is still missing after that is reported as an error.
+    """
+    for attempt in range(_MAILDIR_SCAN_ATTEMPTS):
+        try:
+            return _maildir_subjects_once(path)
+        except FileNotFoundError:
+            if attempt == _MAILDIR_SCAN_ATTEMPTS - 1:
+                raise
+    return []  # unreachable
 
 
 def _mbox_subjects(path: str) -> list[str]:

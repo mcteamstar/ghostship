@@ -185,6 +185,54 @@ class TestArchiveMaildir(unittest.TestCase):
 
 # ── archive reader: legacy mbox ───────────────────────────────────────────────
 
+class TestArchiveMaildirLayoutEdges(unittest.TestCase):
+    """Archive reads must agree with the running-crew script on what counts as mail."""
+
+    @staticmethod
+    def _tar(entries: list[tuple[str, bytes | None]]) -> bytes:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            for name, data in entries:
+                info = tarfile.TarInfo(name)
+                if data is None:
+                    info.type = tarfile.DIRTYPE
+                    tf.addfile(info)
+                else:
+                    info.size = len(data)
+                    tf.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
+    def test_maildir_with_only_stale_tmp_files_is_empty(self):
+        data = self._tar([
+            ("ghost", None), ("ghost/new", None), ("ghost/cur", None), ("ghost/tmp", None),
+            ("ghost/tmp/1.1.a.h", _msg("half delivered")),
+        ])
+        self.assertEqual(ms.subjects_from_archive(data), [])
+
+    def test_maildir_with_several_tmp_files_is_not_an_unexpected_layout(self):
+        data = self._tar([
+            ("ghost", None), ("ghost/new", None), ("ghost/cur", None), ("ghost/tmp", None),
+            ("ghost/tmp/1.1.a.h", _msg("a")), ("ghost/tmp/2.1.b.h", _msg("b")),
+        ])
+        self.assertEqual(ms.subjects_from_archive(data), [])
+
+    def test_tmp_files_are_ignored_beside_delivered_mail(self):
+        data = self._tar([
+            ("ghost", None), ("ghost/new", None), ("ghost/tmp", None),
+            ("ghost/new/5.1.a.h", _msg("delivered")),
+            ("ghost/tmp/9.1.b.h", _msg("in flight")),
+        ])
+        self.assertEqual(ms.subjects_from_archive(data), ["delivered"])
+
+    def test_maildir_subfolders_are_not_read(self):
+        data = self._tar([
+            ("ghost", None), ("ghost/new", None), ("ghost/.Sent", None), ("ghost/.Sent/new", None),
+            ("ghost/new/1.1.a.h", _msg("inbox")),
+            ("ghost/.Sent/new/9.1.b.h", _msg("sent folder")),
+        ])
+        self.assertEqual(ms.subjects_from_archive(data), ["inbox"])
+
+
 class TestArchiveMbox(unittest.TestCase):
 
     def test_reverse_file_order_for_mbox(self):
@@ -386,6 +434,32 @@ class TestContainerScript(unittest.TestCase):
         # A directory named like a message makes open() fail, which must not
         # be silently skipped: the caller would report a false, partial result.
         (self.root / "ghost" / "new" / "2.1.bad").mkdir()
+        with self.assertRaises(OSError):
+            self.script.read_subjects(["ghost"], root=str(self.root))
+
+    def test_message_renamed_mid_scan_is_retried(self):
+        self._maildir("ghost", {"new/1700000001.1.a.h": _msg("moved")})
+        real_once = self.script._maildir_subjects_once
+        calls = {"n": 0}
+
+        def flaky(path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise FileNotFoundError("renamed from new/ to cur/")
+            return real_once(path)
+
+        self.script._maildir_subjects_once = flaky
+        result = self.script.read_subjects(["ghost"], root=str(self.root))
+        self.assertEqual(result["ghost"], ["moved"])
+        self.assertEqual(calls["n"], 2)
+
+    def test_persistently_missing_file_still_raises(self):
+        self._maildir("ghost", {"new/1.1.a.h": _msg("ok")})
+
+        def always_missing(path):
+            raise FileNotFoundError("gone")
+
+        self.script._maildir_subjects_once = always_missing
         with self.assertRaises(OSError):
             self.script.read_subjects(["ghost"], root=str(self.root))
 

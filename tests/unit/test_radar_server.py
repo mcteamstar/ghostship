@@ -367,7 +367,7 @@ class TestRadarApiCrewMailSubjects(unittest.TestCase):
     def test_transport_unreachable_becomes_502(self):
         messages, body, _seen = self._call("beta", request_error=True)
         self.assertEqual(_status_of(messages), 502)
-        self.assertEqual(json.loads(body)["error"], "transport unreachable")
+        self.assertEqual(json.loads(body), {"error": "transport unreachable"})
 
 
 if __name__ == "__main__":
