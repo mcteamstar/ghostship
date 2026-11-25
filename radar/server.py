@@ -140,6 +140,47 @@ async def api_crew_agents(request: Request) -> Response:
     )
 
 
+async def api_crew_mail_subjects(request: Request) -> Response:
+    """GET /api/crews/{crew_id}/mail-subjects — proxy to transport mailbox subjects (TRN-370).
+
+    Forwards the X-Transport-Token header to transport's
+    ``GET /internal/crews/{crew_id}/mail-subjects`` endpoint.  Subject strings
+    only are returned.  Any transport failure, including an unreadable mailbox
+    source (transport 503), becomes a 502 so the browser shows the crew's
+    mailboxes as unavailable rather than empty.
+    """
+    crew_id = request.path_params.get("crew_id", "")
+    url = f"{TRANSPORT_URL}/internal/crews/{crew_id}/mail-subjects"
+    headers = {"X-Transport-Token": _TRANSPORT_SECRET}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        logger.error("Transport unreachable for crew mail subjects %s: %s", crew_id, exc)
+        return JSONResponse(
+            {"error": "transport unreachable", "detail": str(exc)},
+            status_code=502,
+        )
+
+    if resp.status_code != 200:
+        logger.error(
+            "Transport returned %d for %s: %s",
+            resp.status_code,
+            url,
+            resp.text[:200],
+        )
+        return JSONResponse(
+            {"error": "transport error", "status_code": resp.status_code},
+            status_code=502,
+        )
+
+    return Response(
+        content=resp.content,
+        status_code=200,
+        media_type="application/json",
+    )
+
+
 async def index(request: Request) -> FileResponse:
     """GET / — serve the Radar SPA root (index.html)."""
     return FileResponse(str(_STATIC_DIR / "index.html"), media_type="text/html")
@@ -152,6 +193,7 @@ app = Starlette(
         Route("/health", health),
         Route("/api/crews", api_crews),
         Route("/api/crews/{crew_id}/agents", api_crew_agents),
+        Route("/api/crews/{crew_id}/mail-subjects", api_crew_mail_subjects),
         Route("/", index),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

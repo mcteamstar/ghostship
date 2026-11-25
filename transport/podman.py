@@ -55,6 +55,15 @@ class WorkerImageMissing(RuntimeError):
     """Raised when the worker image (localhost/gs-worker:latest) is not present."""
 
 
+class ArchivePathNotFound(RuntimeError):
+    """Raised when the Podman archive API returns HTTP 404 for a path.
+
+    The API returns 404 both for a missing path inside a container and for a
+    missing container, so callers must confirm the container exists before
+    treating this as an absent path.
+    """
+
+
 class WorkerCommandError(RuntimeError):
     """Raised when a worker command exits non-zero.
 
@@ -530,6 +539,10 @@ class PodmanClient(ContainerRuntime):
         finally:
             detail = raw.decode("utf-8", errors="replace").strip()
         suffix = f": {detail}" if detail else ""
+        if response.status_code == 404:
+            raise ArchivePathNotFound(
+                f"Podman archive GET failed with HTTP 404{suffix}"
+            )
         raise RuntimeError(
             f"Podman archive GET failed with HTTP {response.status_code}{suffix}"
         )

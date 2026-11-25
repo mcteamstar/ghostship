@@ -1691,6 +1691,53 @@ async def _handle_internal_crew_agents_get(request: Request) -> Response:
     return JSONResponse({"agents": agents})
 
 
+async def _handle_internal_crew_mail_subjects_get(request: Request) -> Response:
+    """GET /internal/crews/{crew_id}/mail-subjects — mailbox subjects for Radar (TRN-370).
+
+    Portside-internal; requires ``X-Transport-Token`` (enforced by
+    ``TransportSecretMiddleware``).  Returns subject strings only, grouped by
+    the eight crew mailboxes; message bodies and metadata are never included.
+
+    - 404 if ``crew_id`` is not in the registry.
+    - 503 if any mailbox source cannot be read completely.
+    - 200 ``{"mailboxes": {name: [subject, ...]}}`` otherwise.
+    """
+    parts = request.url.path.lstrip("/").split("/")
+    # parts: ["internal", "crews", "<crew_id>", "mail-subjects"]
+    if len(parts) < 4 or not parts[2]:
+        return JSONResponse({"error": "invalid path"}, status_code=400)
+    crew_id = parts[2]
+
+    try:
+        info = _get_crew(crew_id)
+    except KeyError:
+        return JSONResponse({"error": f"crew '{crew_id}' not found"}, status_code=404)
+    except Exception as exc:
+        logger.error("_handle_internal_crew_mail_subjects_get: registry error: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    try:
+        try:
+            from podman import _get_podman  # container: flat /app/
+            from mail_subjects import read_crew_mail_subjects  # container: flat /app/
+        except ModuleNotFoundError:
+            from transport.podman import _get_podman  # local dev
+            from transport.mail_subjects import read_crew_mail_subjects  # local dev
+        mailboxes = read_crew_mail_subjects(
+            _get_podman(),
+            info.get("container", ""),
+            running=info.get("status", "unknown") == "running",
+        )
+    except Exception as exc:
+        logger.warning(
+            "_handle_internal_crew_mail_subjects_get: mailbox source unavailable for %s: %s",
+            crew_id, exc,
+        )
+        return JSONResponse({"error": "mail subjects unavailable"}, status_code=503)
+
+    return JSONResponse({"mailboxes": mailboxes})
+
+
 # ── OpenAPI schema ──────────────────────────────────────────────────
 # Generated once at startup (after all routes are defined) and cached here.
 # task 2.2: handler that returns the cached schema.
@@ -1919,6 +1966,8 @@ if __name__ == "__main__":
         ("GET",  "/internal/crews"): _handle_internal_crews_get,
         # Per-crew on-demand agents endpoint (TRN-304) — transport-secret-only.
         ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
+        # Per-crew mailbox subjects for Radar (TRN-370) — transport-secret-only.
+        ("GET",  "/internal/crews/*/mail-subjects"): _handle_internal_crew_mail_subjects_get,
     }
     _openapi_schema = _openapi.generate_schema(
         routes=_openapi_schema_routes,
@@ -1975,6 +2024,8 @@ if __name__ == "__main__":
             ("GET",  "/internal/crews"): _handle_internal_crews_get,
             # Per-crew on-demand agents endpoint (TRN-304) — transport-secret-only.
             ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
+            # Per-crew mailbox subjects for Radar (TRN-370) — transport-secret-only.
+            ("GET",  "/internal/crews/*/mail-subjects"): _handle_internal_crew_mail_subjects_get,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all

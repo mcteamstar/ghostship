@@ -311,5 +311,64 @@ class TestRadarApiCrewAgents(unittest.TestCase):
         self.assertIn("error", data)
 
 
+class TestRadarApiCrewMailSubjects(unittest.TestCase):
+    """GET /api/crews/{crew_id}/mail-subjects — proxy to transport (TRN-370)."""
+
+    def _call(self, crew_id, *, status=200, content=b"{}", request_error=False):
+        server = _import_radar_server()
+        seen: dict = {}
+        client_library = server.httpx
+
+        def handle(request):
+            seen["url"] = str(request.url)
+            seen["token"] = request.headers.get("x-transport-token")
+            if request_error:
+                raise client_library.ConnectError("connection refused", request=request)
+            return client_library.Response(status, content=content, request=request)
+
+        transport = client_library.MockTransport(handle)
+        real_async_client = client_library.AsyncClient
+
+        def async_client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real_async_client(*args, **kwargs)
+
+        scope = _make_scope("GET", f"/api/crews/{crew_id}/mail-subjects")
+        scope["path_params"] = {"crew_id": crew_id}
+        messages, send = _collect_send()
+
+        async def _invoke():
+            from starlette.requests import Request
+            req = Request(scope, _receive)
+            resp = await server.api_crew_mail_subjects(req)
+            await resp(scope, _receive, send)
+
+        with patch.object(server, "_TRANSPORT_SECRET", "test-transport-secret"), \
+             patch.object(server.httpx, "AsyncClient", side_effect=async_client):
+            _run(_invoke())
+        return messages, _body_of(messages), seen
+
+    def test_forwards_transport_token_to_internal_route(self):
+        messages, _body, seen = self._call("alpha", content=b'{"mailboxes": {}}')
+        self.assertTrue(seen["url"].endswith("/internal/crews/alpha/mail-subjects"))
+        self.assertEqual(seen["token"], "test-transport-secret")
+
+    def test_passes_subject_only_payload_through(self):
+        payload = {"mailboxes": {"ghost": ["hello"], "admiral": []}}
+        messages, body, _seen = self._call("alpha", content=json.dumps(payload).encode())
+        self.assertEqual(_status_of(messages), 200)
+        self.assertEqual(json.loads(body), payload)
+
+    def test_transport_mailbox_unavailable_becomes_502(self):
+        messages, body, _seen = self._call("alpha", status=503, content=b'{"error": "x"}')
+        self.assertEqual(_status_of(messages), 502)
+        self.assertEqual(json.loads(body)["error"], "transport error")
+
+    def test_transport_unreachable_becomes_502(self):
+        messages, body, _seen = self._call("beta", request_error=True)
+        self.assertEqual(_status_of(messages), 502)
+        self.assertEqual(json.loads(body)["error"], "transport unreachable")
+
+
 if __name__ == "__main__":
     unittest.main()

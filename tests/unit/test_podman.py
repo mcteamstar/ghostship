@@ -246,6 +246,41 @@ class TestContainerArchive(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             pc.container_archive_get("gs-test", "/missing")
 
+    def test_archive_get_404_raises_typed_not_found(self):
+        """archive_get: HTTP 404 raises ArchivePathNotFound, which is still a RuntimeError."""
+        try:
+            from podman import ArchivePathNotFound
+        except ModuleNotFoundError:
+            from transport.podman import ArchivePathNotFound
+        pc = self._make_client()
+        err_resp = _response(404, b"no such file")
+        err_resp.read = MagicMock(return_value=b"no such file")
+
+        pc._c.build_request = MagicMock(return_value=MagicMock())
+        pc._c.send = MagicMock(return_value=err_resp)
+
+        with self.assertRaises(ArchivePathNotFound) as ctx:
+            pc.container_archive_get("gs-test", "/var/mail/admiral")
+        self.assertIsInstance(ctx.exception, RuntimeError)
+        self.assertIn("404", str(ctx.exception))
+
+    def test_archive_get_500_is_not_typed_not_found(self):
+        """archive_get: non-404 failures stay generic, so they are never read as an absent path."""
+        try:
+            from podman import ArchivePathNotFound
+        except ModuleNotFoundError:
+            from transport.podman import ArchivePathNotFound
+        pc = self._make_client()
+        err_resp = _response(500, b"boom")
+        err_resp.read = MagicMock(return_value=b"boom")
+
+        pc._c.build_request = MagicMock(return_value=MagicMock())
+        pc._c.send = MagicMock(return_value=err_resp)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            pc.container_archive_get("gs-test", "/var/mail/ghost")
+        self.assertNotIsInstance(ctx.exception, ArchivePathNotFound)
+
 
 class TestWorkerRun(unittest.TestCase):
     def test_writable_bundle_worker_has_capped_tmpfs_and_no_network(self):

@@ -280,3 +280,40 @@ class TestJSONSerialisation:
         doc = _doc(tls_mode="acme", acme_domain="example.com", ga_api_key="key")
         # Must not raise
         json.dumps(doc, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Radar mailbox-subject route (TRN-370)
+# ---------------------------------------------------------------------------
+
+class TestRadarMailSubjectsRoute:
+    """GET /api/crews/{id}/mail-subjects is reachable only through the Radar route."""
+
+    MAIL_PATH = "/api/crews/alpha/mail-subjects"
+
+    def test_gated_route_matches_mail_subjects_path(self) -> None:
+        import fnmatch
+        doc = _doc(ga_api_key="secret")
+        route = _find_route(doc, "ga-radar")
+        assert route is not None
+        patterns = route["match"][0]["path"]
+        assert any(fnmatch.fnmatchcase(self.MAIL_PATH, p) for p in patterns)
+
+    def test_gated_route_keeps_forward_auth_in_front_of_radar(self) -> None:
+        doc = _doc(ga_api_key="secret")
+        route = _find_route(doc, "ga-radar")
+        assert route is not None
+        # The first handler is the forward-auth proxy to transport; the Radar
+        # upstream is only reached after the session check passes.
+        forward_auth = route["handle"][0]
+        assert forward_auth["upstreams"] == [{"dial": "ga-transport:64057"}]
+        assert forward_auth["rewrite"]["uri"] == "/dashboard/auth"
+        assert route["handle"][1]["upstreams"] == [{"dial": "ga-radar:8080"}]
+
+    def test_passthrough_route_matches_mail_subjects_path(self) -> None:
+        import fnmatch
+        doc = _doc(ga_api_key="")
+        route = _find_route(doc, "ga-radar")
+        assert route is not None
+        patterns = route["match"][0]["path"]
+        assert any(fnmatch.fnmatchcase(self.MAIL_PATH, p) for p in patterns)

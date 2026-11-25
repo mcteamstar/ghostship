@@ -149,6 +149,8 @@ export function renderTable(data, filter) {
           loadCrons(crewId, inner);
           loadAgents(crewId, inner);
         }
+        /* Mailbox subjects load on expansion for running and stopped crews only. */
+        if (crew) loadMailSubjects(crewId, inner);
       } else {
         openDetails.delete(crewId);
         detailTr.classList.add("hidden");
@@ -276,5 +278,47 @@ export function loadAgents(crewId, container) {
       } else {
         container.insertAdjacentHTML("afterbegin", html);
       }
+    });
+}
+
+/* Mailbox names shown in the expanded detail, in display order (TRN-370). */
+const MAILBOX_ORDER = ["ghost", "spectre", "banshee", "wraith", "reaper", "raven", "captain", "admiral"];
+
+export function renderMailSubjects(mailboxes) {
+  /* Renders {mailbox: [subject, ...]} grouped by mailbox. Subjects are escaped. */
+  let html = "<div class=\"detail-section\">Mailbox subjects</div>";
+  MAILBOX_ORDER.forEach(function (name) {
+    const subjects = Array.isArray(mailboxes[name]) ? mailboxes[name] : [];
+    html += "<div class=\"mail-mailbox\"><strong>" + esc(name) + "</strong>";
+    if (subjects.length === 0) {
+      html += " <em class=\"empty-cell\">No messages.</em>";
+    } else {
+      html += "<ul class=\"mail-subjects\">";
+      subjects.forEach(function (s) {
+        html += "<li>" + esc(s) + "</li>";
+      });
+      html += "</ul>";
+    }
+    html += "</div>";
+  });
+  return html;
+}
+
+export function renderMailSubjectsUnavailable() {
+  /* One state for the whole crew: a failed read is never shown as empty mailboxes. */
+  return "<div class=\"detail-section\">Mailbox subjects</div>" +
+    "<em class=\"empty-cell\">Mailbox subjects unavailable.</em>";
+}
+
+export function loadMailSubjects(crewId, container) {
+  /* Fetches mailbox subjects on row expand (TRN-370). Never called from fleet polling. */
+  const mailUrl = "/api/crews/" + encodeURIComponent(crewId) + "/mail-subjects";
+  return fetch(mailUrl, { credentials: "include" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .catch(function () { return null; })
+    .then(function (data) {
+      const valid = data && data.mailboxes && typeof data.mailboxes === "object";
+      const html = valid ? renderMailSubjects(data.mailboxes) : renderMailSubjectsUnavailable();
+      container.insertAdjacentHTML("beforeend", html);
     });
 }

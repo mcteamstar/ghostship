@@ -81,6 +81,41 @@ Response shape:
 
 `captain` is `null` when no Captain schedule exists for that crew.
 
+## Mailbox subjects
+
+Expanding a crew row also loads the subject lines of its eight mailboxes: `ghost`, `spectre`, `banshee`, `wraith`, `reaper`, `raven`, `captain`, and `admiral`. Radar groups them by mailbox. An empty mailbox shows `No messages.`. If the crew's mailboxes cannot be read completely, the section shows one `Mailbox subjects unavailable.` state for the whole crew. It never shows a partial list or a false empty state.
+
+- Subjects load only when the row is expanded, not on each five-second fleet poll. Reopening the row fetches a fresh snapshot.
+- Running and stopped crews both work. A stopped crew is read from its filesystem and is not started.
+- Reading never marks a message as read or changes any mailbox.
+- Only subject strings are returned. Message bodies, senders, dates, and counts are never included.
+- Each mailbox shows its 50 most recent subjects, newest first. Each subject is cut to 200 characters.
+
+The browser calls `GET /api/crews/{crew_id}/mail-subjects`. Radar forwards the request to the transport's portside-internal `GET /internal/crews/{crew_id}/mail-subjects`, which requires `X-Transport-Token`. Browser access requires the same Portal `gs_session` as the rest of Radar.
+
+```bash
+curl -b gs_session=<token> https://your-host/api/crews/my-crew/mail-subjects | jq
+```
+
+Response shape:
+
+```json
+{
+  "mailboxes": {
+    "ghost": ["Handoff: TRN-370 radar subjects"],
+    "spectre": [],
+    "banshee": ["Review requested: mailbox endpoint"],
+    "wraith": [],
+    "reaper": [],
+    "raven": ["Check-in: queue empty"],
+    "captain": [],
+    "admiral": []
+  }
+}
+```
+
+Radar always answers these failures with `502`. When the transport answered, the body reports its status: `{"error": "transport error", "status_code": 503}` when the mailbox source could not be read, or `404` for an unknown crew. When the transport cannot be reached, the body is `{"error": "transport unreachable"}`. The browser shows the unavailable state for all of them.
+
 ## Auth
 
 Radar is session-gated via `gs_session` cookie. No bearer token needed for `GET /` or `GET /api/crews`. When `GA_API_KEY` is unset, session check is skipped. See [portal.md#auth](portal.md#auth).
