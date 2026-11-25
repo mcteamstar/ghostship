@@ -130,6 +130,7 @@ jobs:
             crews/_base/graduation
 
           podman --connection ghost-academy run --rm -i \
+            --network host \
             --security-opt no-new-privileges \
             --cap-drop SYS_ADMIN --cap-drop NET_RAW \
             --entrypoint python3 localhost/spec-ops:latest - \
