@@ -8,7 +8,7 @@ Defines what an operator sees and can do in the Radar browser UI: the fleet view
 
 ### Requirement: Radar preserves existing fleet behavior
 
-Radar SHALL keep the fleet table, running and inactive sections, default newest-first ordering, Last Task sort, Captain badges with staleness, gateway warnings, crew detail with agents, crons and mailbox subjects, copy-crew-ID, and `#crew=<id>` deep link behaving as before the migration.
+Radar SHALL keep the fleet table, running and inactive sections, default newest-first ordering, Last Task sort, Captain badges with staleness, gateway warnings, crew detail with agents, crons and mailbox subjects, copy-crew-ID, the `#crew=<id>` deep link, the running count in the page title and the last-refreshed time behaving as before the migration.
 
 #### Scenario: Deep link opens a crew
 - **WHEN** an operator loads Radar with `#crew=<id>` for a listed crew
@@ -17,6 +17,10 @@ Radar SHALL keep the fleet table, running and inactive sections, default newest-
 #### Scenario: Ordering and sort unchanged
 - **WHEN** the fleet loads with no sort selected
 - **THEN** each section lists crews newest created first, and selecting Last Task sort orders each section by last task
+
+#### Scenario: Title and refresh time
+- **WHEN** a fleet refresh succeeds
+- **THEN** the page title shows `Fleet Radar (N running)` for the current running count and the status area shows the time of the refresh
 
 #### Scenario: Stopped crew gateway warning unchanged
 - **WHEN** a stopped crew reports an unreachable gateway
@@ -77,6 +81,74 @@ Radar SHALL distinguish first load, an empty fleet, a failed fetch and stale dat
 #### Scenario: Transport unreachable
 - **WHEN** the fleet fetch returns 502, 503 or 504
 - **THEN** the error message says the transport is unreachable
+
+### Requirement: Uplift changes presentation, not content
+
+Radar SHALL show every field and offer every action that the pre-migration UI did, and SHALL NOT show any new data, including mail bodies, senders or timestamps. Presentation, grouping and layout MAY differ.
+
+#### Scenario: Every existing field remains
+- **WHEN** a crew detail is open
+- **THEN** every item the earlier UI showed (image version, each agent task's agent, ID, done state and elapsed time, Captain schedule, current task and check-in times, scheduled jobs, mailbox subjects, the Credentials action) is still visible or reachable in the redesigned detail
+
+#### Scenario: No new mailbox data
+- **WHEN** mailbox subjects are displayed
+- **THEN** Radar shows only mailbox names and subject strings
+
+### Requirement: Agent tasks are grouped and scannable
+
+Radar SHALL present a crew's agent tasks as cards grouped into running and finished, running first, each card showing the agent name, short task ID, done state and elapsed time. Running tasks SHALL be visually distinct and counted in the group heading, and finished tasks MAY be collapsed behind their count while remaining reachable.
+
+#### Scenario: Mixed running and finished tasks
+- **WHEN** a crew has two running tasks and eleven finished tasks
+- **THEN** the two running tasks appear first as distinct cards under a "running" heading showing a count of 2, and the finished tasks sit under a heading showing a count of 11
+
+#### Scenario: Finished tasks collapsed
+- **WHEN** finished tasks are collapsed
+- **THEN** an operator can expand them with the keyboard or pointer and see each task's agent name, short ID and elapsed time
+
+#### Scenario: Unknown agent name
+- **WHEN** a task reports an empty agent name
+- **THEN** the card shows a neutral "unknown agent" label and the task is still listed
+
+#### Scenario: No active tasks
+- **WHEN** a running crew reports no running tasks
+- **THEN** Radar shows "No active tasks." as the empty state for the running group
+
+### Requirement: Mailbox subjects are grouped by mailbox
+
+Radar SHALL show mailbox subjects as one section per mailbox, named for the mailbox, with the number of subjects, in the same order as today. Long subjects SHALL wrap rather than truncate, and empty mailboxes SHALL stay visible with the explicit text `No messages.`.
+
+#### Scenario: Mailboxes with and without subjects
+- **WHEN** `captain` holds 2 subjects and `ghost` holds none
+- **THEN** the `captain` section shows a count of 2 and both subjects, and the `ghost` section shows `No messages.`
+
+#### Scenario: Long subject
+- **WHEN** a subject is 200 characters long
+- **THEN** the full subject is readable by wrapping, without horizontal scrolling
+
+#### Scenario: Mailboxes cannot be read
+- **WHEN** the mailbox-subject request fails
+- **THEN** Radar shows one unavailable state for all mailboxes and no mailbox as empty
+
+### Requirement: Crew detail sections report load failures
+
+Radar SHALL show a loading state for each of the agents, crons and mailbox-subject sections while its request is pending, and an explicit unavailable state when it fails. It SHALL NOT show a failed section as empty, and a failure in one section SHALL NOT change another.
+
+#### Scenario: Agents request fails
+- **WHEN** the agents request for an open crew fails
+- **THEN** the agents section shows an unavailable state, not "No active tasks"
+
+#### Scenario: Crons request fails
+- **WHEN** the crons request for an open crew fails
+- **THEN** the scheduled-jobs section shows an unavailable state and does not hide the section
+
+#### Scenario: One section fails
+- **WHEN** the crons request fails while agents and mailbox subjects load
+- **THEN** the agents and mailbox sections display their data normally
+
+#### Scenario: Section is genuinely empty
+- **WHEN** a request succeeds with no entries
+- **THEN** the section shows its empty state, which differs from the unavailable state
 
 ### Requirement: Expired session is reported clearly
 

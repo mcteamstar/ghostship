@@ -14,10 +14,11 @@ Radar started as a single table and is now outgrowing a hand-written HTML page. 
   - Light and dark themes that follow the system preference.
   - A responsive layout for narrow screens.
   - Keyboard and screen-reader access for row expansion and actions.
-  - Explicit loading, empty, error and stale states.
+  - Explicit loading, empty, error and stale states, including an unavailable state when the agents or crons section fails to load (today both fail silently).
+  - A redesigned crew detail: running and finished agent tasks shown as grouped, scannable cards instead of one flat table, and mailbox subjects grouped by mailbox with counts instead of a long list.
   - A clear "session expired, sign in again" state (replaces the `Unexpected token '<'` failure).
 - Change how `ga-radar` is built and served: a multi-stage image build compiles the app; assets are content-hashed; `index.html` is always revalidated.
-- Keep the browser-facing API, Caddy routes, session gating and transport contract unchanged.
+- Keep the browser-facing API, Caddy routes, session gating and transport contract unchanged. The uplift changes presentation only: every field and action Radar shows or offers today stays, and no new data (such as mail bodies, senders or timestamps) is shown.
 - Add frontend test tooling (component tests) and run it in CI. Track the new npm dependencies in `dependencies.yaml`.
 - **BREAKING (internal only)**: `radar/static/*.js` ES modules and the `/static/main.js` entry point are removed. No external consumer is known; only the Radar tests and `docs/radar.md` reference them.
 

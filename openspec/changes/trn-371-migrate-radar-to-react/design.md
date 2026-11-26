@@ -12,6 +12,7 @@ Radar today is about 1,100 lines of vanilla JavaScript served as static files by
 - No Node in the runtime image; reproducible, lockfile-pinned builds.
 
 **Non-Goals:**
+- No new data on screen. The uplift redesigns how the existing agent and mailbox data is presented (agent cards grouped by running and finished, mailbox sections with counts) and does not add mail bodies, senders, timestamps or other fields. Richer mail history would need a transport contract change and is a separate decision.
 - No change to the transport API, Caddy routes, session auth or the `ga-radar` network placement.
 - No client-side routing, server-side rendering or state-management library.
 - No new data on screen beyond what the fleet, agents and mail-subjects endpoints already return.
@@ -35,6 +36,9 @@ Alternative: a store such as Zustand or Redux. Rejected: the state is small and 
 
 **4. A small typed fetch wrapper classifies failures.**
 It requests with `credentials: "include"` and `redirect: "manual"`. An opaque redirect, or a 200 with a non-JSON content type, is `session-expired`. 502/503/504 is `transport-unreachable`. A thrown `TypeError` is `network`. Everything else is `http-error`. Fleet, detail and refresh requests share it, which fixes the `Unexpected token '<'` failure in all three. The refresh `POST` keeps TRN-367's behavior: no body, `redirect: "manual"`, an opaque redirect or HTML 200 means session expired, and the outcome label and tone come from a fixed table so a response cannot choose markup or a CSS class.
+
+**5a. Crew detail as components, not tables.**
+`AgentCard` renders one task (agent, short ID, state, elapsed) with a persona accent derived from the agent name for the six known personas and a neutral style otherwise. `AgentGroups` shows running tasks first and finished tasks behind a count (collapsible, keyboard operable). `MailboxSection` renders one mailbox with its name, count and wrapped subjects, with the same `No messages.` and single-unavailable states as today. Because the crews' Captain loop produces many short finished tasks, grouping and collapsing is what makes the list readable.
 
 **5. Plain CSS with custom properties.**
 Design tokens (colour, spacing, radius, type scale) live in CSS variables; `prefers-color-scheme` swaps the token set, and a `matchMedia` listener is unnecessary because CSS handles it. No UI kit or Tailwind: the surface is one table plus detail panels, and a kit adds a large dependency for little gain. Layout uses a CSS grid that collapses table columns into stacked card rows under 640 px. Row expansion uses a real `<button aria-expanded>`; the error banner uses `role="status"` (stale) or `role="alert"` (failure).
@@ -65,15 +69,19 @@ The app is small and has one deployment target. The old and new UIs would have t
 - **Regression in polling behavior** (auto-pause, staleness, deep link) → each behavior is a `radar-ui` scenario with a test; a manual parity pass against the old UI before merge.
 - **Porting TRN-367's Refresh auth UI** (merged) → carry over its six outcomes, failure texts and one-request-at-a-time rule with equivalent component tests; the `POST` route, same-origin check and Caddy gating stay as they are.
 - **Uplift scope creep** → the uplift is limited to the `radar-ui` requirements; further visual work becomes a separate change.
-- **Bundle size** grows from about 25 KB of JS to roughly 150 KB gzip → acceptable on an internal, cached, hashed bundle.
+- **Bundle size** grows from about 680 lines of hand-written JS to a bundle that includes React and ReactDOM, roughly 60 KB gzip on top of the app code (an estimate to confirm at first build) → acceptable on an internal, cached, hashed bundle.
+- **Content-Security-Policy.** Radar sends none today (the nonce policy belongs to the transport). The build avoids inline scripts (Vite's modulePreload polyfill is disabled) and the UI avoids inline script or style injection, so a strict policy can be added later without a rewrite → check the built `index.html` for inline `<script>` in task 1.2.
 
 ## Migration Plan
 
+One change, delivered parity first so a regression can be told apart from a design change:
+
 1. Land the frontend toolchain and an empty app that builds in the image, with CI wired.
-2. Port views in order: data layer, fleet table, detail panels, then the uplift items.
-3. Switch `server.py` and the Containerfile to the built output; delete `radar/static/*.js`.
-4. Move docs and parity tests; run the manual parity checklist in a browser against a running fleet.
-5. Release through the normal `ghostship upgrade`. Rollback: reinstall the previous release image; no data or API migration is involved.
+2. Port the data layer, fleet table, detail panels, copy and Refresh auth with today's behavior and look (group 4), replacing the Node-driven Python client tests with Vitest equivalents.
+3. Cut over: switch `server.py` and the Containerfile to the built output and delete `radar/static/*` (group 5).
+4. Run a side-by-side parity check in a browser against a running fleet. Differences are defects, fixed before any uplift work.
+5. Apply the uplift (group 6): themes, summary, always-visible filter, responsive layout, load and failure states, accessibility.
+6. Release through the normal `ghostship upgrade`. Rollback: reinstall the previous release image; no data or API migration is involved.
 
 ## Open Questions
 
