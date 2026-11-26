@@ -68,30 +68,61 @@ def _oauth_archive(credential: dict) -> bytes:
     return payload
 
 
-def _validate_static_credential(podman, container: str, backend: str, credential: dict) -> None:
-    """Refuse to start an existing container with a rotated static credential."""
-    variable = {
-        ("kiro", "api-key"): "KIRO_API_KEY",
-        ("codex", "api-key"): "OPENAI_API_KEY",
-        ("claude", "api-key"): "ANTHROPIC_API_KEY",
-        ("claude", "setup-token"): "CLAUDE_CODE_OAUTH_TOKEN",
-    }.get((backend, credential.get("method")))
+# Static credential methods become container environment variables at creation
+# and cannot change in place; every other method is a login flow whose
+# credential is written into a running or waking crew.
+_STATIC_CREDENTIAL_VARIABLES = {
+    ("kiro", "api-key"): "KIRO_API_KEY",
+    ("codex", "api-key"): "OPENAI_API_KEY",
+    ("claude", "api-key"): "ANTHROPIC_API_KEY",
+    ("claude", "setup-token"): "CLAUDE_CODE_OAUTH_TOKEN",
+}
+_BACKEND_STATIC_VARIABLES = {
+    "kiro": ("KIRO_API_KEY",),
+    "codex": ("OPENAI_API_KEY",),
+    "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+}
+
+
+def is_static_credential(backend: str, method: str | None) -> bool:
+    """True when *method* is injected as a container environment variable."""
+    return (backend, method) in _STATIC_CREDENTIAL_VARIABLES
+
+
+def static_credential_mismatch(podman, container: str, backend: str, credential: dict) -> str | None:
+    """Compare a stored credential with a container's launch-time environment.
+
+    Returns ``None`` when the container's static environment is consistent with
+    the stored credential, ``"method"`` when the stored credential is a login
+    flow but the container still carries a static value for the backend, and
+    ``"value"`` when the stored credential is static but the container's value
+    is missing or differs. Values are compared in constant time and are never
+    returned, logged or put into an exception message here. Raises whatever
+    ``container_inspect`` raises; callers that log must not include the
+    exception text, which may echo inspect output.
+    """
+    variable = _STATIC_CREDENTIAL_VARIABLES.get((backend, credential.get("method")))
     env = podman.container_inspect(container).get("Config", {}).get("Env", []) or []
     if not variable:
-        static_variables = {
-            "kiro": ("KIRO_API_KEY",),
-            "codex": ("OPENAI_API_KEY",),
-            "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
-        }.get(backend, ())
         if any(item.startswith(name + "=") and item.split("=", 1)[1]
-               for name in static_variables for item in env):
-            raise RuntimeError("Selected credential method changed; the crew container must be recreated with its workspace preserved")
-        return
+               for name in _BACKEND_STATIC_VARIABLES.get(backend, ()) for item in env):
+            return "method"
+        return None
     values = [item.split("=", 1)[1] for item in env if item.startswith(variable + "=")]
     expected = credential["payload"]
     if isinstance(expected, str):
         expected = expected.encode("utf-8")
     if len(values) != 1 or not hmac.compare_digest(values[0].encode("utf-8"), expected):
+        return "value"
+    return None
+
+
+def _validate_static_credential(podman, container: str, backend: str, credential: dict) -> None:
+    """Refuse to start an existing container with a rotated static credential."""
+    mismatch = static_credential_mismatch(podman, container, backend, credential)
+    if mismatch == "method":
+        raise RuntimeError("Selected credential method changed; the crew container must be recreated with its workspace preserved")
+    if mismatch == "value":
         raise RuntimeError("Selected static credential changed; the crew container must be recreated with its workspace preserved")
 
 try:
