@@ -39,6 +39,8 @@ _WILDCARD_PATH_MAP: dict[str, str] = {
     "/crews/*/ui":        "/crews/{crew_id}/ui",
     "/crews/*/api":       "/crews/{crew_id}/api",
     "/crews/*/dashboard": "/crews/{crew_id}/dashboard",
+    "/crews/*/auth/refresh":          "/crews/{crew_id}/auth/refresh",
+    "/internal/crews/*/auth/refresh": "/internal/crews/{crew_id}/auth/refresh",
 }
 
 # Methods that are surfaced in the schema for wildcard routes.
@@ -144,6 +146,12 @@ def _path_description(method: str, path: str, is_public: bool) -> str:
         ("GET",    "/crews/{crew_id}/api"):     "Proxy HTTP requests to a crew's MCP/API gateway",
         ("POST",   "/crews/{crew_id}/dashboard"): "Create or refresh a per-crew dashboard session",
         ("DELETE", "/crews/{crew_id}/dashboard"): "Destroy a per-crew dashboard session",
+        ("POST",   "/crews/{crew_id}/auth/refresh"): (
+            "Refresh the credential assigned to one crew (operator; Bearer auth, no browser Origin)"
+        ),
+        ("POST",   "/internal/crews/{crew_id}/auth/refresh"): (
+            "Refresh the credential assigned to one crew (portside; X-Transport-Token auth)"
+        ),
         ("GET",    "/files/{crew_id}/{path}"):  "Download a file from a crew workspace (presigned-URL auth)",
         ("POST",   "/files/{crew_id}/{path}"):  "Upload a file to a crew workspace (presigned-URL auth)",
         ("POST",   "/mcp"):                     "MCP Streamable-HTTP endpoint (requires Bearer auth)",
@@ -374,6 +382,8 @@ def generate_schema(
 
 def _default_tag(raw_path: str) -> str:
     """Infer a tag from a raw route path."""
+    if raw_path.endswith("/auth/refresh"):
+        return "auth"
     if raw_path.startswith("/crews/"):
         return "crew-proxy"
     if raw_path.startswith("/files/"):

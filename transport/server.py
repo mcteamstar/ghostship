@@ -880,6 +880,11 @@ try:
 except ModuleNotFoundError:
     from transport import openapi as _openapi  # local dev
 
+try:
+    import auth_refresh as _auth_refresh  # container: flat /app/
+except ModuleNotFoundError:
+    from transport import auth_refresh as _auth_refresh  # local dev
+
 mcp = MCPServer(
     name="transport",
     description=(
@@ -1738,6 +1743,62 @@ async def _handle_internal_crew_mail_subjects_get(request: Request) -> Response:
     return JSONResponse({"mailboxes": mailboxes})
 
 
+async def _run_crew_auth_refresh(crew_id: str) -> Response:
+    """Run the shared credential refresh for *crew_id* and shape the HTTP reply (TRN-367).
+
+    Every refresh outcome (``refreshed``, ``pending_on_wake``, ``current``,
+    ``recreate_required``, ``credential_missing``, ``refresh_failed``) is a 200
+    whose body carries the outcome in ``status``: the operation ran and reported
+    a result. Only an unknown crew is a 404. The operation blocks on registry,
+    credential store and container runtime calls, so it runs in a worker thread.
+    """
+    try:
+        result = await asyncio.to_thread(_auth_refresh.refresh_crew_auth, crew_id)
+    except _auth_refresh.CrewNotFound:
+        return JSONResponse({"error": f"crew '{crew_id}' not found"}, status_code=404)
+    except Exception:
+        # The operation reports its own failures as outcomes; only a registry or
+        # programming error reaches here. Never return exception text.
+        logger.error("Crew %s auth refresh failed unexpectedly", crew_id, exc_info=True)
+        return JSONResponse({"error": "crew auth refresh failed"}, status_code=500)
+    return JSONResponse(result)
+
+
+async def _handle_crew_auth_refresh_post(request: Request) -> Response:
+    """POST /crews/{crew_id}/auth/refresh — operator credential refresh (TRN-367).
+
+    Bearer-protected (``BearerAuthMiddleware``) operator endpoint. Accepts no
+    body and no credential: the refreshed credential is always the one stored
+    for the crew's recorded backend and profile. Any request carrying a browser
+    ``Origin`` is refused with 403, as for the dashboard endpoints.
+
+    - 200 ``{"status": <outcome>, ...}`` for every defined outcome.
+    - 404 if ``crew_id`` is not in the registry.
+    """
+    if (denied := _reject_browser_origin(request)) is not None:
+        return denied
+    parts = request.url.path.lstrip("/").split("/")
+    # parts: ["crews", "<crew_id>", "auth", "refresh"]
+    if len(parts) != 4 or not parts[1]:
+        return JSONResponse({"error": "invalid path"}, status_code=400)
+    return await _run_crew_auth_refresh(parts[1])
+
+
+async def _handle_internal_crew_auth_refresh_post(request: Request) -> Response:
+    """POST /internal/crews/{crew_id}/auth/refresh — portside credential refresh (TRN-367).
+
+    Portside-internal; requires ``X-Transport-Token`` (enforced by
+    ``TransportSecretMiddleware``).  No bearer key required. Runs the same
+    operation as ``POST /crews/{crew_id}/auth/refresh`` and returns the same
+    outcome; consumed by ga-radar on behalf of a portal session.
+    """
+    parts = request.url.path.lstrip("/").split("/")
+    # parts: ["internal", "crews", "<crew_id>", "auth", "refresh"]
+    if len(parts) != 5 or not parts[2]:
+        return JSONResponse({"error": "invalid path"}, status_code=400)
+    return await _run_crew_auth_refresh(parts[2])
+
+
 # ── OpenAPI schema ──────────────────────────────────────────────────
 # Generated once at startup (after all routes are defined) and cached here.
 # task 2.2: handler that returns the cached schema.
@@ -1952,6 +2013,8 @@ if __name__ == "__main__":
         ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
         ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
         ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+        # Operator credential refresh for one crew (TRN-367) — bearer-protected.
+        ("POST", "/crews/*/auth/refresh"): _handle_crew_auth_refresh_post,
         ("WS",   "/crews/*/ui"): _handle_crew_ui_ws_proxy,
     }
     _openapi_schema_public_routes = {
@@ -1968,6 +2031,8 @@ if __name__ == "__main__":
         ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
         # Per-crew mailbox subjects for Radar (TRN-370) — transport-secret-only.
         ("GET",  "/internal/crews/*/mail-subjects"): _handle_internal_crew_mail_subjects_get,
+        # Per-crew credential refresh for Radar (TRN-367) — transport-secret-only.
+        ("POST", "/internal/crews/*/auth/refresh"): _handle_internal_crew_auth_refresh_post,
     }
     _openapi_schema = _openapi.generate_schema(
         routes=_openapi_schema_routes,
@@ -2005,6 +2070,8 @@ if __name__ == "__main__":
             ("GET",  "/crews/*/api"): _handle_crew_api_proxy,
             ("POST", "/crews/*/dashboard"): _handle_crew_dashboard_post,
             ("DELETE", "/crews/*/dashboard"): _handle_crew_dashboard_delete,
+            # Operator credential refresh for one crew (TRN-367) — bearer-protected.
+            ("POST", "/crews/*/auth/refresh"): _handle_crew_auth_refresh_post,
         },
         public_routes={
             ("GET",  "/version"): _handle_version_get,
@@ -2026,6 +2093,8 @@ if __name__ == "__main__":
             ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
             # Per-crew mailbox subjects for Radar (TRN-370) — transport-secret-only.
             ("GET",  "/internal/crews/*/mail-subjects"): _handle_internal_crew_mail_subjects_get,
+            # Per-crew credential refresh for Radar (TRN-367) — transport-secret-only.
+            ("POST", "/internal/crews/*/auth/refresh"): _handle_internal_crew_auth_refresh_post,
         },
     )
     # Rate-limit wrapper: sits OUTSIDE BearerAuthMiddleware so all

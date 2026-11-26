@@ -3,7 +3,7 @@
 ## 1. Transport auth refresh operation
 
 - [x] 1.1 Implement a shared per-crew refresh operation that resolves the recorded backend/profile, serializes against credential replacement/logout, injects current flow credentials into running crews, and returns the specified state outcomes; compare static values with `hmac.compare_digest` and keep credential values out of logs, exception text and tracebacks; verify tests cover success, stopped flow, static match/mismatch, missing credential, injection failure, a comparison error, and secret redaction.
-- [ ] 1.2 Expose the operation through bearer-protected `POST /crews/{crew_id}/auth/refresh` and transport-secret-protected `POST /internal/crews/{crew_id}/auth/refresh`, including browser-Origin rejection and OpenAPI registration; return HTTP 200 with `status` for every defined outcome and 404 only for an unknown crew; verify auth tests cover bearer, internal-token, Origin, and unknown-crew cases, assert status codes per outcome, and OpenAPI lists both routes.
+- [x] 1.2 Expose the operation through bearer-protected `POST /crews/{crew_id}/auth/refresh` and transport-secret-protected `POST /internal/crews/{crew_id}/auth/refresh`, including browser-Origin rejection and OpenAPI registration; return HTTP 200 with `status` for every defined outcome and 404 only for an unknown crew; verify auth tests cover bearer, internal-token, Origin, and unknown-crew cases, assert status codes per outcome, and OpenAPI lists both routes.
 
 ## 2. Portal and Radar operator action
 
