@@ -78,8 +78,10 @@ export class RequestGuard {
  * Turns a Response into parsed JSON, or throws a RequestError.
  *
  * Fetch uses redirect "manual", so a redirect to the login page (Caddy's answer to an
- * expired portal session) arrives as an opaque response with no body. That and a 200
- * whose body is not JSON are both session-expired, never a parse error.
+ * expired portal session) arrives as an opaque response with no body. A successful
+ * response that is an HTML page is the login page served in place of data, so it is a
+ * session expiry too. Any other body that is not JSON, such as an empty 200, is an
+ * ordinary failed request, never a session expiry.
  */
 export async function readJsonResponse<T>(response: Response, guard?: RequestGuard): Promise<T> {
   if (response.type === "opaqueredirect" || response.redirected) {
@@ -92,8 +94,11 @@ export async function readJsonResponse<T>(response: Response, guard?: RequestGua
     throw new RequestError("http-error", `HTTP ${response.status}`, response.status);
   }
   const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("text/html")) {
+    throw new RequestError("session-expired", "Session expired", response.status);
+  }
   if (!contentType.includes("application/json")) {
-    throw new RequestError("session-expired", "Non-JSON response", response.status);
+    throw new RequestError("http-error", "Non-JSON response", response.status);
   }
   try {
     return (await response.json()) as T;

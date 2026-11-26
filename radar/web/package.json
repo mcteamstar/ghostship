@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Ghostship Fleet Radar browser UI (built into the ga-radar image at install time).",
   "engines": {
-    "node": ">=26 <27"
+    "node": ">=24 <25"
   },
   "scripts": {
     "dev": "vite",

@@ -40,7 +40,7 @@ Radar SHALL keep open crew details, loaded detail content, the filter text, the 
 
 ### Requirement: Uplift changes presentation, not content
 
-Radar SHALL show every field and offer every action that the pre-migration UI did, and SHALL NOT show any new data, including mail bodies, senders or timestamps. Presentation, grouping and layout MAY differ. Radar SHALL NOT request data from a route that no portal route serves.
+Radar SHALL show every field and offer every action that the pre-migration UI did, except scheduled jobs, which Radar no longer requests (see "No scheduled-jobs request"). Radar SHALL NOT show any new data, including mail bodies, senders or timestamps. Presentation, grouping and layout MAY differ. Radar SHALL NOT request data from a route that no portal route serves.
 
 #### Scenario: Every existing field remains
 - **WHEN** a crew detail is open

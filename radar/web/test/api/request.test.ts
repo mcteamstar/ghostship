@@ -76,7 +76,7 @@ describe("getJson: classification of a response", () => {
     expect((await failureOf(getJson("/api/crews"))).kind).toBe("session-expired");
   });
 
-  it("reports a 200 login page (non-JSON body) as an expired session, not a parse error", async () => {
+  it("reports a 200 login page (HTML body) as an expired session, not a parse error", async () => {
     fetchMock.mockResolvedValue(
       new Response("<!DOCTYPE html><title>Sign in</title>", {
         status: 200,
@@ -86,6 +86,37 @@ describe("getJson: classification of a response", () => {
     const error = await failureOf(getJson("/api/crews"));
     expect(error.kind).toBe("session-expired");
     expect(error.message).not.toMatch(/Unexpected token/);
+  });
+
+  it("reports an empty 200 with no content type as a failed request, not an expired session", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    const error = await failureOf(getJson("/api/crews"));
+    expect(error.kind).toBe("http-error");
+    expect(error.status).toBe(200);
+    expect(error.message).toBe("Non-JSON response");
+  });
+
+  it("reports a 200 with another content type as a failed request, not an expired session", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("plain text", { status: 200, headers: { "content-type": "text/plain" } }),
+    );
+    const error = await failureOf(getJson("/api/crews"));
+    expect(error.kind).toBe("http-error");
+    expect(error.status).toBe(200);
+    expect(error.message).toBe("Non-JSON response");
+  });
+
+  it.each([404, 500])("reports an HTML error page with HTTP %i as a failed request, not an expired session", async (status) => {
+    fetchMock.mockResolvedValue(
+      new Response("<!DOCTYPE html><title>Error</title>", {
+        status,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+    const error = await failureOf(getJson("/api/crews"));
+    expect(error.kind).toBe("http-error");
+    expect(error.status).toBe(status);
+    expect(error.message).toBe(`HTTP ${status}`);
   });
 
   it.each([502, 503, 504])("reports HTTP %i as the transport being unreachable", async (status) => {

@@ -25,17 +25,16 @@ describe("accessibility (6.8)", () => {
           { active_crews: 1, max_active_crews: 3, host_memory_available_gb: 4.1 },
         )),
       "/api/crews/alpha/agents": () => jsonResponse({ agents: [{ task_id: "t1", agent: "ghost", done: false, elapsed_secs: 3 }] }),
-      "/crews/alpha/api/crons": () => jsonResponse({ jobs: [{ name: "nightly", agent: "reaper", schedule: "every 3600s" }] }),
       "/api/crews/alpha/mail-subjects": () => jsonResponse({ mailboxes: mailboxes({ ghost: ["Handoff"] }) }),
       "/api/crews/alpha/auth/refresh": () => jsonResponse({ status: "current" }),
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     fireEvent.click(container.querySelector('tr[data-crew-id="alpha"]') as HTMLElement);
-    await waitFor(() => expect(screen.getByText("nightly")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Handoff")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Refresh auth" }));
     await waitFor(() => expect(screen.getByText("Already current.")).toBeInTheDocument());
-    for (const name of ["Active tasks", "Captain", "Scheduled jobs", "Mailbox subjects", "Credentials"]) {
+    for (const name of ["Active tasks", "Captain", "Mailbox subjects", "Credentials"]) {
       expect(screen.getByRole("heading", { name, level: 2 })).toBeInTheDocument();
     }
 

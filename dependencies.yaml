@@ -124,11 +124,11 @@ components:
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-08.md}
   - id: node-radar-build-image
-    name: Node 26 LTS build image (Radar UI bundle)
+    name: Node 24 LTS build image (Radar UI bundle)
     category: build image
     declarations: [{kind: container_from, path: radar/Containerfile, name: node}]
-    source: {type: dockerhub_image, repository: library/node, tag_regex: '^26(?:\.\d+)?-alpine$'}
-    version_policy: 'Node 26 LTS on Alpine, pinned by index digest sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 (the linux/amd64 image reports NODE_VERSION 26.13.1). Build stage only; no Node in the runtime image.'
+    source: {type: dockerhub_image, repository: library/node, tag_regex: '^24(?:\.\d+)?-alpine$'}
+    version_policy: 'Node 24 LTS on Alpine, pinned by index digest sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 (the Node 24 digest is pending its first real build). Build stage only; no Node in the runtime image.'
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: digest-resolved-image-build-not-run-podman-unavailable, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
   - id: caddy-image

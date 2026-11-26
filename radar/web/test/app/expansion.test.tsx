@@ -1,27 +1,28 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { App } from "../../src/App";
 import { crew, callsTo, fleet, jsonResponse, mailboxes, routeFetch } from "../support/fixtures";
 
 const FLEET_URL = "/api/crews";
 const AGENTS_URL = "/api/crews/alpha/agents";
-const CRONS_URL = "/crews/alpha/api/crons";
 const MAIL_URL = "/api/crews/alpha/mail-subjects";
 const ROW_ALPHA = 'tr[data-crew-id="alpha"]';
 
 const liveAgents = () =>
   jsonResponse({ agents: [{ task_id: "live-task-1", agent: "ghost", done: false, elapsed_secs: 47 }] });
-const cronJobs = () =>
-  jsonResponse({ jobs: [{ name: "nightly-review", agent: "reaper", schedule: "every 3600s", type: "cron" }] });
 const mailSubjects = () => jsonResponse({ mailboxes: mailboxes({ ghost: ["Handoff: TRN-371"] }) });
+
+/** Requests under /crews/, the crew proxy path. No Radar section reads it any more. */
+function crewProxyCalls(mock: Mock): unknown[] {
+  return mock.mock.calls.map((call) => call[0]).filter((url) => String(url).startsWith("/crews/"));
+}
 
 /** Routes the fleet and every listed crew's detail endpoints. `overrides` replaces alpha's. */
 function renderWith(overrides: Record<string, () => Response> = {}, fleetCrews = [crew({ crew_id: "alpha" })]) {
   const routes: Record<string, () => Response> = { [FLEET_URL]: () => jsonResponse(fleet(fleetCrews)) };
   for (const { crew_id: id } of fleetCrews) {
     routes[`/api/crews/${id}/agents`] = liveAgents;
-    routes[`/crews/${id}/api/crons`] = cronJobs;
     routes[`/api/crews/${id}/mail-subjects`] = mailSubjects;
   }
   Object.assign(routes, overrides);
@@ -51,7 +52,6 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     expect(row.querySelector("button.expand-btn")).toHaveAttribute("aria-expanded", "true");
     expect(window.location.hash).toBe("#crew=alpha");
     await waitFor(() => expect(screen.getByText("live-task-1")).toBeInTheDocument());
-    expect(screen.getByText("nightly-review")).toBeInTheDocument();
     expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument();
   });
 
@@ -106,10 +106,9 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     expect(callsTo(mock, FLEET_URL).length).toBeGreaterThan(1);
     expect(container.querySelector(ROW_ALPHA)).toHaveClass("open");
     expect(screen.getByText("live-task-1")).toBeInTheDocument();
-    expect(screen.getByText("nightly-review")).toBeInTheDocument();
     expect(callsTo(mock, AGENTS_URL)).toHaveLength(1);
-    expect(callsTo(mock, CRONS_URL)).toHaveLength(1);
     expect(callsTo(mock, MAIL_URL)).toHaveLength(1);
+    expect(crewProxyCalls(mock)).toHaveLength(0);
   });
 
   it("keeps the same detail DOM across a fleet refresh (no re-mount of the open panel)", async () => {
@@ -202,35 +201,26 @@ describe("detail failure states (6.7)", () => {
     expect(screen.queryByText("No active tasks.")).toBeNull();
   });
 
-  it("shows no scheduled-jobs section when the crons request fails", async () => {
-    renderWith({ [CRONS_URL]: () => new Response("{}", { status: 503, headers: { "content-type": "application/json" } }) });
+  it("shows no scheduled-jobs section and sends no request for one", async () => {
+    const { mock } = renderWith();
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     fireEvent.click(container.querySelector(ROW_ALPHA) as HTMLElement);
     await waitFor(() => expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument());
-    expect(screen.getByText("Scheduled jobs unavailable.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Scheduled jobs" })).toBeNull();
+    expect(screen.queryByText("Session expired, sign in again")).toBeNull();
+    expect(crewProxyCalls(mock)).toHaveLength(0);
     expect(screen.getByText("Credentials")).toBeInTheDocument();
   });
 
-  it("shows an empty scheduled-jobs state when the only job is the captain schedule", async () => {
-    renderWith({
-      [CRONS_URL]: () => jsonResponse({ jobs: [{ name: "captain", type: "captain", schedule: "every 600s" }] }),
-    });
-    const { container } = render(<App />);
-    await screen.findByText(/Refreshed at:/);
-    fireEvent.click(container.querySelector(ROW_ALPHA) as HTMLElement);
-    await waitFor(() => expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument());
-    expect(screen.getByText("No scheduled jobs.")).toBeInTheDocument();
-  });
-
-  it("requests live tasks and scheduled jobs only for a running crew", async () => {
+  it("requests live tasks only for a running crew", async () => {
     const { mock } = renderWith({}, [crew({ crew_id: "alpha", status: "stopped" })]);
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     fireEvent.click(container.querySelector(ROW_ALPHA) as HTMLElement);
     await waitFor(() => expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument());
     expect(callsTo(mock, AGENTS_URL)).toHaveLength(0);
-    expect(callsTo(mock, CRONS_URL)).toHaveLength(0);
+    expect(crewProxyCalls(mock)).toHaveLength(0);
     expect(screen.getByText(/Crew is stopped — live schedule data unavailable\./)).toBeInTheDocument();
   });
 });
@@ -242,13 +232,12 @@ describe("a crew that starts while its row is open", () => {
     window.location.hash = "";
   });
 
-  it("requests live tasks and scheduled jobs once the crew is running, instead of waiting forever", async () => {
+  it("requests live tasks once the crew is running, instead of waiting forever", async () => {
     vi.useFakeTimers();
     let status = "stopped";
     const mock = routeFetch({
       [FLEET_URL]: () => jsonResponse(fleet([crew({ crew_id: "alpha", status: status })])),
       [AGENTS_URL]: liveAgents,
-      [CRONS_URL]: cronJobs,
       [MAIL_URL]: mailSubjects,
     });
     const { container } = render(<App />);
@@ -268,10 +257,8 @@ describe("a crew that starts while its row is open", () => {
     });
 
     expect(callsTo(mock, AGENTS_URL)).toHaveLength(1);
-    expect(callsTo(mock, CRONS_URL)).toHaveLength(1);
     expect(screen.queryByText("Loading tasks…")).toBeNull();
-    expect(screen.queryByText("Loading scheduled jobs…")).toBeNull();
     expect(screen.getByText("live-task-1")).toBeInTheDocument();
-    expect(screen.getByText("nightly-review")).toBeInTheDocument();
+    expect(crewProxyCalls(mock)).toHaveLength(0);
   });
 });

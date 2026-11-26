@@ -24,7 +24,6 @@ function setup(refresh: Reply, crews = [crew({ crew_id: "alpha" })]): Mock {
   for (const c of crews) {
     const id = encodeURIComponent(c.crew_id);
     routes[`/api/crews/${id}/agents`] = () => jsonResponse({ agents: [] });
-    routes[`/crews/${id}/api/crons`] = () => jsonResponse({ jobs: [] });
     routes[`/api/crews/${id}/mail-subjects`] = () => jsonResponse({ mailboxes: {} });
     routes[`/api/crews/${id}/auth/refresh`] = c.crew_id === "alpha" ? refresh : outcome("refreshed");
   }

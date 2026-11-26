@@ -45,18 +45,6 @@ export interface AgentsPayload {
   agents: AgentTask[];
 }
 
-export interface CronJob {
-  name?: string | null;
-  agent?: string | null;
-  schedule?: string | null;
-  cron_expr?: string | null;
-  type?: string | null;
-}
-
-export interface CronsPayload {
-  jobs: CronJob[];
-}
-
 export interface MailSubjectsPayload {
   mailboxes: Record<string, string[]>;
 }

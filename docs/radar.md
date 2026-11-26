@@ -46,13 +46,12 @@ Below 640 px, each crew becomes a card, and each value is labelled with its colu
 
 ## Crew detail
 
-Expanding a row shows, in order: the crew's image version, its active tasks, its Captain state, its credentials, its scheduled jobs, and its mailbox subjects.
+Expanding a row shows, in order: the crew's image version, its active tasks, its Captain state, its credentials, and its mailbox subjects.
 
 - **Active tasks** lists running tasks as cards under a `Running · N` heading. Finished tasks sit behind a `Finished · N` disclosure, which opens from the keyboard or the pointer. Each card shows the agent name, the short task ID, whether the task is running or done, and its elapsed time. The six persona agents each have an accent colour. Any other name is shown on a neutral card, and an empty name is labelled `unknown agent`. A running crew with no running tasks shows `No active tasks.`
-- **Scheduled jobs** lists the crew's jobs, except the Captain schedule, which the Captain block shows. A crew with no other jobs shows `No scheduled jobs.`
 - **Mailbox subjects** has one section per mailbox, in the order listed under [Mailbox subjects](#mailbox-subjects), with the mailbox name and its subject count. Long subjects wrap in full.
 
-Each section shows its own state. While its request is pending, a section shows a loading line: `Loading tasks…`, `Loading scheduled jobs…` or `Loading mailbox subjects…`. If the agents, scheduled-jobs or mailbox request fails, that section shows `Active tasks unavailable.`, `Scheduled jobs unavailable.` or `Mailbox subjects unavailable.`. A failed section never shows an empty list in its place. A request redirected to sign-in shows `Session expired, sign in again`, with a **Sign in** link. The other sections are not affected.
+Each section shows its own state. While its request is pending, a section shows a loading line: `Loading tasks…` or `Loading mailbox subjects…`. If the agents or mailbox request fails, that section shows `Active tasks unavailable.` or `Mailbox subjects unavailable.`. A failed section never shows an empty list in its place. A request redirected to sign-in, or answered with HTTP 200 and an HTML page, shows `Session expired, sign in again`, with a **Sign in** link. Any other answer that is not JSON, such as an empty 200, is a failed request for its section and never shows that note. The other sections are not affected.
 
 ## REST API
 
@@ -157,7 +156,7 @@ When Radar cannot show one of those results, it says why instead:
 
 | Shown | Cause | What to do |
 |:------|:------|:-----------|
-| `Session expired.` and a **Sign in again** link | Your portal session ended, so the request was redirected to the login page. Nothing was refreshed. | Sign in again, then retry. |
+| `Session expired.` and a **Sign in again** link | Your portal session ended, so the request was redirected to the login page, or answered with HTTP 200 and an HTML page. Nothing was refreshed. | Sign in again, then retry. |
 | `Refresh did not complete.` | Radar got no result. The transport was unreachable or answered with an error (HTTP 502, 503 or 504; Radar itself answers 502), Radar refused the request's origin (403), the reply was another unexpected status, or the network failed. | Check that `ga-transport` is running, then retry. A retry is safe: it only re-applies the stored credential. |
 | `Refresh did not complete: no answer after 75 seconds.` | No answer came within 75 seconds, so Radar gave up waiting. The refresh may still finish on the transport. This is not a fixed result. | Check the crew (its Credentials result and its agents), then retry. A retry is safe. |
 | `Refresh result unknown.` | The reply was not a result Radar recognises. | Retry. If it repeats, check the transport log. |

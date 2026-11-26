@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentsUrl,
-  cronsUrl,
   fetchAgents,
-  fetchCrons,
   fetchFleet,
   fetchMailSubjects,
   mailSubjectsUrl,
@@ -26,7 +24,6 @@ function fullMailboxes(overrides: Record<string, unknown> = {}): Record<string, 
 describe("endpoint URLs", () => {
   it("encodes the crew id in every per-crew path", () => {
     expect(agentsUrl("we ird/id")).toBe("/api/crews/we%20ird%2Fid/agents");
-    expect(cronsUrl("alpha")).toBe("/crews/alpha/api/crons");
     expect(mailSubjectsUrl("alpha")).toBe("/api/crews/alpha/mail-subjects");
     expect(refreshAuthUrl("alpha")).toBe("/api/crews/alpha/auth/refresh");
   });
@@ -82,11 +79,9 @@ describe("typed fetchers", () => {
     expect((error as RequestError).message).toBe("Unexpected fleet response");
   });
 
-  it("fails agents and scheduled jobs of the wrong shape instead of showing them as empty", async () => {
+  it("fails agents of the wrong shape instead of showing them as empty", async () => {
     fetchMock.mockResolvedValueOnce(json({ tasks: [] }));
     await expect(fetchAgents("alpha")).rejects.toThrow("Unexpected agents response");
-    fetchMock.mockResolvedValueOnce(json({ jobs: "none" }));
-    await expect(fetchCrons("alpha")).rejects.toThrow("Unexpected scheduled jobs response");
   });
 
   it("fails a partial mailbox payload rather than showing partial data", async () => {

@@ -56,7 +56,7 @@ They are part of the release verification workflow described in RELEASING.md.
 
 ## Radar UI (frontend)
 
-The Radar browser UI is a React app in `radar/web` (TypeScript, Vite, Vitest). Its Node version is pinned in `radar/web/.nvmrc` to Node 26 LTS. The `ga-radar` image compiles the app in a `node:26-alpine` build stage, so Node is only needed on a development machine.
+The Radar browser UI is a React app in `radar/web` (TypeScript, Vite, Vitest). Its Node version is pinned in `radar/web/.nvmrc` to Node 24 LTS. The `ga-radar` image compiles the app in a `node:24-alpine` build stage, so Node is only needed on a development machine.
 
 Run these from `radar/web`:
 

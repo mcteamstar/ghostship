@@ -1,17 +1,12 @@
-// Radar's browser endpoints. The paths match the routes in radar/server.py, and the
-// crew dashboard's cron route is the one the portal serves under /crews/.
-import type { AgentsPayload, CronsPayload, FleetPayload, MailSubjectsPayload } from "./types";
+// Radar's browser endpoints. The paths match the routes in radar/server.py.
+import type { AgentsPayload, FleetPayload, MailSubjectsPayload } from "./types";
 import { RequestError, getJson, type RequestOptions } from "./request";
-import { isAgentsPayload, isCronsPayload, isFleetPayload, isMailSubjectsPayload } from "./guards";
+import { isAgentsPayload, isFleetPayload, isMailSubjectsPayload } from "./guards";
 
 export const FLEET_URL = "/api/crews";
 
 export function agentsUrl(crewId: string): string {
   return `/api/crews/${encodeURIComponent(crewId)}/agents`;
-}
-
-export function cronsUrl(crewId: string): string {
-  return `/crews/${encodeURIComponent(crewId)}/api/crons`;
 }
 
 export function mailSubjectsUrl(crewId: string): string {
@@ -38,11 +33,6 @@ export async function fetchFleet(options: RequestOptions = {}): Promise<FleetPay
 export async function fetchAgents(crewId: string, options: RequestOptions = {}): Promise<AgentsPayload> {
   const body = await getJson<unknown>(agentsUrl(crewId), options);
   return checked(body, isAgentsPayload, "agents");
-}
-
-export async function fetchCrons(crewId: string, options: RequestOptions = {}): Promise<CronsPayload> {
-  const body = await getJson<unknown>(cronsUrl(crewId), options);
-  return checked(body, isCronsPayload, "scheduled jobs");
 }
 
 export async function fetchMailSubjects(

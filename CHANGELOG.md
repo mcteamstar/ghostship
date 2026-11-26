@@ -17,6 +17,12 @@
   session-expired states for each detail section.
 - A session that has expired shows "Session expired, sign in again" with a
   sign-in link, not a JSON parse error.
+- Radar no longer requests a crew's scheduled jobs and no longer shows a
+  Scheduled jobs section. The portal has no route for that request, so it only
+  ever received an empty answer.
+- An empty or non-JSON answer to a Radar request is now a failed request for
+  its section. Only a redirect to sign-in, or an HTML page answered with HTTP
+  200, shows "Session expired, sign in again".
 
 ## v0.13.2
 

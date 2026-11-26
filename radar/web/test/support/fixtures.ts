@@ -79,7 +79,6 @@ export function routeFetch(routes: Record<string, Route>): Mock {
   // that sets its own route for these URLs overrides the default.
   const defaults: Record<string, Route> = {
     "/api/crews/alpha/agents": () => jsonResponse({ agents: [] }),
-    "/crews/alpha/api/crons": () => jsonResponse({ jobs: [] }),
   };
   const table = { ...defaults, ...routes };
   const mock = vi.fn(async (url: string, init: RequestInit = {}) => {

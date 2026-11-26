@@ -8,7 +8,7 @@ Defines what an operator sees and can do in the Radar browser UI: the fleet view
 
 ### Requirement: Radar preserves existing fleet behavior
 
-Radar SHALL keep the fleet table, running and inactive sections, default newest-first ordering, Last Task sort, Captain badges with staleness, gateway warnings, crew detail with agents, crons and mailbox subjects, copy-crew-ID, the `#crew=<id>` deep link, the running count in the page title and the last-refreshed time behaving as before the migration.
+Radar SHALL keep the fleet table, running and inactive sections, default newest-first ordering, Last Task sort, Captain badges with staleness, gateway warnings, crew detail with agents and mailbox subjects, copy-crew-ID, the `#crew=<id>` deep link, the running count in the page title and the last-refreshed time behaving as before the migration.
 
 #### Scenario: Deep link opens a crew
 - **WHEN** an operator loads Radar with `#crew=<id>` for a listed crew
@@ -32,7 +32,7 @@ Radar SHALL keep open crew details, loaded detail content, the filter text, the 
 
 #### Scenario: Open detail across a poll
 - **WHEN** a crew detail is open and a fleet refresh completes
-- **THEN** the detail stays open with its loaded agents, crons and mailbox subjects, and no new detail request is sent
+- **THEN** the detail stays open with its loaded agents and mailbox subjects, and no new detail request is sent
 
 #### Scenario: Filter across a poll
 - **WHEN** the operator has typed a filter and a fleet refresh completes
@@ -84,15 +84,19 @@ Radar SHALL distinguish first load, an empty fleet, a failed fetch and stale dat
 
 ### Requirement: Uplift changes presentation, not content
 
-Radar SHALL show every field and offer every action that the pre-migration UI did, and SHALL NOT show any new data, including mail bodies, senders or timestamps. Presentation, grouping and layout MAY differ.
+Radar SHALL show every field and offer every action that the pre-migration UI did, except scheduled jobs, which Radar no longer requests (see "No scheduled-jobs request"). Radar SHALL NOT show any new data, including mail bodies, senders or timestamps. Presentation, grouping and layout MAY differ. Radar SHALL NOT request data from a route that no portal route serves.
 
 #### Scenario: Every existing field remains
 - **WHEN** a crew detail is open
-- **THEN** every item the earlier UI showed (image version, each agent task's agent, ID, done state and elapsed time, Captain schedule, current task and check-in times, scheduled jobs, mailbox subjects, the Credentials action) is still visible or reachable in the redesigned detail
+- **THEN** every item the earlier UI actually displayed (image version, each agent task's agent, ID, done state and elapsed time, Captain schedule, current task and check-in times, mailbox subjects, the Credentials action) is still visible or reachable in the redesigned detail
 
 #### Scenario: No new mailbox data
 - **WHEN** mailbox subjects are displayed
 - **THEN** Radar shows only mailbox names and subject strings
+
+#### Scenario: No scheduled-jobs request
+- **WHEN** an operator opens a running crew's detail
+- **THEN** Radar sends no request to `/crews/<id>/api/crons` and shows no Scheduled jobs section
 
 ### Requirement: Agent tasks are grouped and scannable
 
@@ -130,21 +134,17 @@ Radar SHALL show mailbox subjects as one section per mailbox, named for the mail
 - **WHEN** the mailbox-subject request fails
 - **THEN** Radar shows one unavailable state for all mailboxes and no mailbox as empty
 
-### Requirement: Crew detail sections report load failures
+### Requirement: Agents and mailbox sections report load failures
 
-Radar SHALL show a loading state for each of the agents, crons and mailbox-subject sections while its request is pending, and an explicit unavailable state when it fails. It SHALL NOT show a failed section as empty, and a failure in one section SHALL NOT change another.
+Radar SHALL show a loading state for each of the agents and mailbox-subject sections while its request is pending, and an explicit unavailable state when it fails. It SHALL NOT show a failed section as empty, and a failure in one section SHALL NOT change another.
 
 #### Scenario: Agents request fails
 - **WHEN** the agents request for an open crew fails
 - **THEN** the agents section shows an unavailable state, not "No active tasks"
 
-#### Scenario: Crons request fails
-- **WHEN** the crons request for an open crew fails
-- **THEN** the scheduled-jobs section shows an unavailable state and does not hide the section
-
 #### Scenario: One section fails
-- **WHEN** the crons request fails while agents and mailbox subjects load
-- **THEN** the agents and mailbox sections display their data normally
+- **WHEN** the agents request fails while mailbox subjects load
+- **THEN** the mailbox section displays its data normally
 
 #### Scenario: Section is genuinely empty
 - **WHEN** a request succeeds with no entries
@@ -152,7 +152,7 @@ Radar SHALL show a loading state for each of the agents, crons and mailbox-subje
 
 ### Requirement: Expired session is reported clearly
 
-Radar SHALL detect that a request was redirected to the login page or answered with a non-JSON body instead of data, and SHALL show a "Session expired, sign in again" state with a link to the login page. It SHALL NOT show a JSON parse error.
+Radar SHALL detect that a request was redirected to the login page or answered with an HTML page instead of data, and SHALL show a "Session expired, sign in again" state with a link to the login page. It SHALL NOT show a JSON parse error. A response that is empty or has another non-JSON, non-HTML body SHALL be an ordinary request failure, not a session expiry.
 
 #### Scenario: Poll after session expiry
 - **WHEN** a fleet poll is redirected to `/dashboard/login`
@@ -161,6 +161,14 @@ Radar SHALL detect that a request was redirected to the login page or answered w
 #### Scenario: Detail fetch after session expiry
 - **WHEN** a crew detail request is redirected to the login page
 - **THEN** the detail shows the same session-expired state
+
+#### Scenario: Login page served as a 200
+- **WHEN** a request is answered with HTTP 200 and an HTML body
+- **THEN** Radar shows the session-expired state with a sign-in link
+
+#### Scenario: Empty 200 is not a session expiry
+- **WHEN** a request is answered with HTTP 200, no content type and an empty body
+- **THEN** Radar treats it as a failed request for that section and does not show "Session expired, sign in again"
 
 ### Requirement: Light and dark themes
 
