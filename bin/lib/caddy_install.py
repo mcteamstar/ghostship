@@ -310,7 +310,19 @@ def _passthrough_auth_routes() -> list[dict]:
 
 
 def _gated_radar_route() -> dict:
-    """Session-gated Radar route (forward-auth via reverse_proxy)."""
+    """Session-gated Radar route (forward-auth via reverse_proxy).
+
+    Two properties here are load-bearing for Radar's one mutating route,
+    ``POST /api/crews/{id}/auth/refresh`` (TRN-367):
+
+    * The matcher deliberately has no ``method`` constraint, so every method
+      goes through the forward-auth gate. Radar is reachable only as the second
+      handler of this route, so a request without a valid ``gs_session`` is
+      redirected to the login page and never reaches it.
+    * The Radar upstream gets the browser's ``Host`` and ``Origin`` unchanged
+      (only ``X-Transport-Token`` is set). Radar's same-origin check on that
+      POST compares them, so do not override ``Host`` here.
+    """
     return {
         "@id": "ga-radar",
         "match": [
