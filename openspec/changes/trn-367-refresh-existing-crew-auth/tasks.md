@@ -13,5 +13,5 @@
 
 ## 3. Auth guidance
 
-- [ ] 3.1 Update `docs/auth.md` with the operator API, refresh outcomes, existing flow behavior, static credential recovery, and approximate Codex ChatGPT (~10 days) and Kiro Identity Center (~90 days) lifetimes; verify the examples match the implemented routes and describe lifetime values as estimates.
+- [x] 3.1 Update `docs/auth.md` with the operator API, refresh outcomes, existing flow behavior, static credential recovery, and approximate Codex ChatGPT (~10 days) and Kiro Identity Center (~90 days) lifetimes; verify the examples match the implemented routes and describe lifetime values as estimates.
 - [ ] 3.2 Update `docs/radar.md` with the Portal action, operator-facing outcome guidance, the same-origin requirement, and a note that Tailscale-gated installs expose the action without a portal session; verify the documented UI behavior matches the Radar implementation.
