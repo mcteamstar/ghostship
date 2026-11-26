@@ -1,0 +1,7 @@
+# Host-side frontend output must not reach the build context. The Node stage
+# installs and builds from the lockfile inside the image.
+web/node_modules
+web/dist
+web/coverage
+**/__pycache__
+**/*.pyc

@@ -53,3 +53,23 @@ continues to run the other suite.
 
 The crew-image checks and the fresh install/start smoke test require Podman.
 They are part of the release verification workflow described in RELEASING.md.
+
+## Radar UI (frontend)
+
+The Radar browser UI is a React app in `radar/web` (TypeScript, Vite, Vitest). Its Node version is pinned in `radar/web/.nvmrc` to Node 26 LTS. The `ga-radar` image compiles the app in a `node:26-alpine` build stage, so Node is only needed on a development machine.
+
+Run these from `radar/web`:
+
+    npm ci              # install from the committed lockfile
+    npm run typecheck   # TypeScript check (CI runs this too)
+    npm test            # Vitest component and hook tests (CI runs this too)
+    npm run build       # bundle to radar/web/dist, the same step the image runs
+    npm run dev         # Vite dev server on http://localhost:5173
+
+The dev server proxies `/api`, `/crews` and `/dashboard` to a running portal. The default target is `http://localhost:64057`. Point it at another portal with `RADAR_PROXY_TARGET`:
+
+    RADAR_PROXY_TARGET=https://your-portal-host npm run dev
+
+The proxy forwards the browser's `Host` header unchanged, so Radar's same-origin check on the Refresh auth action still passes. The portal must accept that `Host` value.
+
+The Python docs-parity tests in `tests/unit` read the React sources, so a change to the wording or wiring of Radar also runs through `bash scripts/run.sh --unit`.

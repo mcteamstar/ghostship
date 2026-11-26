@@ -4,6 +4,10 @@ The operator documentation names routes, outcomes, response fields, status codes
 and session-lifetime estimates. These tests read docs/auth.md (and, for the
 Radar half, docs/radar.md) and check each claim against the code that
 implements it, so the docs cannot drift from the routes without a test failing.
+
+The Radar page is a React app (radar/web). Its wording and wiring are read from
+those sources here; the behaviour itself is exercised by the Vitest suite
+(radar/web/test/app/refresh-auth.test.tsx), which the docs claims point at.
 """
 from __future__ import annotations
 
@@ -253,6 +257,7 @@ class TestAuthDocsLinks:
 # ── docs/radar.md (task 3.2) ─────────────────────────────────────────────────
 
 _RADAR_SECTION = _section(_RADAR_MD, "Refresh a crew's auth")
+_UI = _REPO / "radar" / "web" / "src"
 
 
 def _rows(section: str, first_header: str) -> list[list[str]]:
@@ -276,19 +281,45 @@ def _radar_server():
     return _import_radar_server()
 
 
+def _ui(relative: str) -> str:
+    """Source of one file of the Radar React app (radar/web/src)."""
+    return (_UI / relative).read_text(encoding="utf-8")
+
+
+def _outcome_table() -> dict[str, tuple[str, str]]:
+    """Status -> (label, tone), as the React source declares them in REFRESH_OUTCOMES."""
+    block = re.search(
+        r"export const REFRESH_OUTCOMES[^=]*=\s*\{(.*?)\n\};", _ui("auth/refresh.ts"), re.S,
+    ).group(1)
+    return {
+        status: (label, tone)
+        for status, tone, label in re.findall(r'(\w+): \{\s*tone: "(\w+)",\s*label: "([^"]+)"', block)
+    }
+
+
+def _request_body_of(source: str, function: str) -> str:
+    """The text of one exported async function in a TypeScript module."""
+    start = source.index(f"export async function {function}(")
+    end = source.index("\n}\n", start)
+    return source[start:end]
+
+
 class TestRadarDocsMatchTheSpa:
+    """The Radar page's wording and wiring, read from radar/web/src.
 
-    def _spa(self, tmp_path, scenario: str, **arg) -> dict:
-        from tests.unit.test_radar_auth_refresh_client import _run_scenario
-        return _run_scenario(tmp_path, scenario, **arg)
+    The behaviour of the same actions is asserted by Vitest
+    (radar/web/test/app/refresh-auth.test.tsx); these checks keep the documented
+    words and the request shape in step with the sources.
+    """
 
-    def test_documented_result_labels_and_statuses_are_the_ones_the_spa_draws(self, tmp_path):
+    def test_documented_result_labels_and_statuses_are_the_ones_the_spa_draws(self):
         rows = _rows(_RADAR_SECTION, "Result shown")
         documented = {_unquote(status): _unquote(label) for label, status, _meaning in rows}
         assert set(documented) == set(auth_refresh.OUTCOMES)
+        table = _outcome_table()
+        assert set(table) == set(auth_refresh.OUTCOMES)
         for status, label in documented.items():
-            html = self._spa(tmp_path, "single", response={"body": {"status": status, "message": "m"}})["after"]
-            assert f"<strong>{label}</strong>" in html, (status, label)
+            assert table[status][0] == label, (status, label)
 
     def test_every_documented_outcome_row_carries_the_guidance_the_operation_gives(self):
         meaning = {_unquote(status): text for _label, status, text in _rows(_RADAR_SECTION, "Result shown")}
@@ -296,56 +327,54 @@ class TestRadarDocsMatchTheSpa:
         assert "workspace preserved" in meaning["recreate_required"]
         assert "check the transport log" in meaning["refresh_failed"].lower()
 
-    def test_documented_failure_messages_are_what_the_spa_shows(self, tmp_path):
+    def test_documented_failure_messages_are_what_the_spa_shows(self):
         # Key each row by the first code span in its first cell (the cell may add a link name).
         rows = {re.match(r"`([^`]+)`", r[0]).group(1): r for r in _rows(_RADAR_SECTION, "Shown")}
-        expired = self._spa(tmp_path, "single", response={"kind": "opaqueredirect"})["after"]
-        assert "<strong>Session expired.</strong>" in expired and "Sign in again" in expired
+        notices = _ui("components/detail/CredentialsSection.tsx")
+        assert "<strong>Session expired.</strong>" in notices
+        assert '<a href="/dashboard/login">Sign in again</a>' in notices
         assert "**Sign in again** link" in rows["Session expired."][0]
-        failed = self._spa(tmp_path, "single", response={"status": 502, "body": {}})["after"]
-        assert "<strong>Refresh did not complete.</strong>" in failed
+        assert "<strong>Refresh did not complete.</strong>" in notices
         assert "Refresh did not complete." in rows
-        unknown = self._spa(tmp_path, "single", response={"body": {"status": "nope"}})["after"]
-        assert "<strong>Refresh result unknown.</strong>" in unknown
+        assert "<strong>Refresh result unknown.</strong>" in notices
         assert "Refresh result unknown." in rows
 
-    def test_documented_http_failures_are_the_ones_that_map_to_did_not_complete(self, tmp_path):
+    def test_documented_http_failures_are_the_ones_that_map_to_did_not_complete(self):
         cause = _rows(_RADAR_SECTION, "Shown")[1][1]
-        for status in (502, 503, 504, 403, 500):
-            html = self._spa(tmp_path, "single", response={"status": status, "body": {}})["after"]
-            assert "<strong>Refresh did not complete.</strong>" in html, status
+        refresh = _ui("auth/refresh.ts")
+        assert "status === 403" in refresh
+        assert "status === 502 || status === 503 || status === 504" in refresh
+        assert "Network error. Check your connection, then retry." in refresh
         for fragment in ("502, 503 or 504", "Radar itself answers 502", "(403)", "network failed"):
             assert fragment in cause, fragment
 
-    def test_documented_button_behaviour(self, tmp_path):
+    def test_documented_button_behaviour(self):
         text = _RADAR_SECTION
-        idle = self._spa(tmp_path, "render")["html"]
-        assert ">Refresh auth</button>" in idle and "**Refresh auth**" in text
-        assert '<div class="detail-section">Credentials</div>' in idle and "**Credentials**" in text
-        busy = self._spa(tmp_path, "duplicate", response={"body": {"status": "refreshed"}, "hold": True})
-        in_flight = re.search(r"<button[^>]*data-auth-refresh=\"alpha\"[^>]*>([^<]*)</button>", busy["busyHtml"])
-        idle_button = re.search(r"<button[^>]*data-auth-refresh=\"alpha\"[^>]*>([^<]*)</button>", busy["idleHtml"])
-        assert " disabled" in in_flight.group(0) and in_flight.group(1) == "Refreshing…"
-        assert " disabled" not in idle_button.group(0) and idle_button.group(1) == "Refresh auth"
+        card = _ui("components/detail/CredentialsSection.tsx")
+        assert "Refresh auth" in card and '"Refreshing…"' in card
+        assert "disabled={auth.busy}" in card and "aria-busy={auth.busy || undefined}" in card
+        assert '<h2 className="detail-section">Credentials</h2>' in card and "**Credentials**" in text
         assert "the button is disabled and reads `Refreshing…`" in text
-        assert busy["callsWhileBusy"] == 1 and "a second click does nothing" in text
-        for status in ("running", "stopped"):
-            assert 'data-auth-refresh="alpha"' in self._spa(tmp_path, "render", crew={"status": status})["html"]
+        assert "a second click does nothing" in text
+        # The section is shown for every crew, so it is rendered without a status check.
+        assert "<CredentialsSection crewId={crew.crew_id} auth={auth} />" in _ui("components/CrewDetail.tsx")
         assert "running and stopped crews" in text
 
-    def test_documented_persistence_matches_the_row_state_handling(self, tmp_path):
-        cycle = self._spa(tmp_path, "redraw_cycle", response={"body": {"status": "refreshed"}})
-        assert "<strong>Refreshed.</strong>" in cycle["pollRerender"]       # survives the fleet poll
-        assert "auth-refresh-result" not in cycle["afterCollapse"]          # cleared on collapse and reopen
+    def test_documented_persistence_matches_the_row_state_handling(self):
+        hook = _ui("auth/useAuthRefresh.ts")
+        assert "if (!open) setNotice(null);" in hook
+        assert "useAuthRefresh(crewId, open)" in _ui("components/CrewRow.tsx")
+        assert "FLEET_POLL_MS = 5_000" in _ui("fleet/useFleet.ts")
         assert "stays visible across the five-second fleet refresh" in _RADAR_SECTION
         assert "cleared when the row is collapsed and reopened" in _RADAR_SECTION
-        assert "const REFRESH_INTERVAL = 5000;" in (_REPO / "radar" / "static" / "data.js").read_text(encoding="utf-8")
-        other = self._spa(tmp_path, "other_crew_not_blocked", response={"body": {"status": "refreshed"}, "hold": True})
-        assert other["busy"] == 0 and "Each crew is refreshed independently" in _RADAR_SECTION
+        assert "Each crew is refreshed independently" in _RADAR_SECTION
 
-    def test_documented_request_carries_no_body_and_no_credential(self, tmp_path):
-        options = self._spa(tmp_path, "single", response={"body": {"status": "refreshed"}})["calls"][0]["options"]
-        assert options == {"method": "POST", "credentials": "include", "redirect": "manual"}
+    def test_documented_request_carries_no_body_and_no_credential(self):
+        call = _request_body_of(_ui("auth/refresh.ts"), "requestAuthRefresh")
+        assert 'method: "POST"' in call
+        assert 'credentials: "include"' in call
+        assert 'redirect: "manual"' in call
+        assert "body:" not in call and "headers:" not in call
         assert "with no body" in _RADAR_SECTION and "it sends no credential" in _RADAR_SECTION
 
 
@@ -422,8 +451,20 @@ class TestRadarDocsMatchTheServer:
 
     def test_documented_timeout_is_the_implemented_one(self):
         server = _radar_server()
-        assert server._AUTH_REFRESH_TIMEOUT_SECS == 30.0
-        assert "within 30 seconds" in _RADAR_SECTION
+        assert server._AUTH_REFRESH_TIMEOUT_SECS == 60.0
+        assert "within 60 seconds" in _RADAR_SECTION
+
+    def test_browser_timeout_is_longer_than_the_server_bound_and_documented(self):
+        server = _radar_server()
+        refresh = _ui("auth/refresh.ts")
+        browser_ms = int(re.search(r"REFRESH_TIMEOUT_MS = ([\d_]+);", refresh).group(1).replace("_", ""))
+        slow_ms = int(re.search(r"SLOW_NOTE_MS = ([\d_]+);", refresh).group(1).replace("_", ""))
+        assert browser_ms / 1000 == 75 and slow_ms / 1000 == 10
+        assert browser_ms / 1000 > server._AUTH_REFRESH_TIMEOUT_SECS
+        assert "After 10 seconds a `Still working…` note appears" in _RADAR_SECTION
+        assert "within 75 seconds" in _RADAR_SECTION
+        assert "`Refresh did not complete: no answer after 75 seconds.`" in _RADAR_SECTION
+        assert "not a fixed result" in _RADAR_SECTION
 
     def test_documented_same_origin_rule_matches_the_check(self):
         server = _radar_server()

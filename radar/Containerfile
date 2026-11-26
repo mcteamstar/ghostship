@@ -1,3 +1,16 @@
+# Stage 1 compiles the Radar SPA. The Node image is Node 26 LTS, pinned by the
+# index digest of node:26-alpine. No tests run here: a flaky test must not fail
+# an install or upgrade. Type errors and build errors do fail the image.
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS web-build
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY web/ ./
+RUN npm run typecheck && npm run build
+
+# Stage 2 is the runtime image. It gets the built output only: no Node, no
+# node_modules and no frontend source.
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -6,7 +19,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py ./
-COPY static/ ./static/
+COPY --from=web-build /web/dist/ ./static/
 
 EXPOSE 8080
 

@@ -23,6 +23,27 @@ jobs:
       - name: Run tests
         run: scripts/run.sh --unit
 
+      # Radar browser UI (TRN-371). The Node version comes from radar/web/.nvmrc, the same
+      # pin the ga-radar image build uses. Component tests run here, not in the image build.
+      - name: Set up Node for the Radar UI
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: radar/web/.nvmrc
+          cache: npm
+          cache-dependency-path: radar/web/package-lock.json
+
+      - name: Install Radar UI dependencies
+        working-directory: radar/web
+        run: npm ci
+
+      - name: Radar UI type check
+        working-directory: radar/web
+        run: npm run typecheck
+
+      - name: Radar UI tests
+        working-directory: radar/web
+        run: npm test
+
       - name: Generate OpenAPI schema (TRN-129)
         run: python scripts/generate_openapi.py --output openapi.json
 

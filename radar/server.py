@@ -190,8 +190,11 @@ async def api_crew_mail_subjects(request: Request) -> Response:
 _CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
 # The refresh checks the stored profile, compares the container and may exec into
-# it, behind the credential lock; allow longer than a read-only fleet query.
-_AUTH_REFRESH_TIMEOUT_SECS = 30.0
+# it, behind the credential lock. The transport runs these steps one after another:
+# its Podman client allows 120 s per request, the exec read has no timeout, and the
+# lock wait is unbounded. 60 s covers a slow but normal refresh. The browser waits
+# 75 s (radar/web/src/auth/refresh.ts), so its own bound always outlasts this one.
+_AUTH_REFRESH_TIMEOUT_SECS = 60.0
 
 
 def _is_same_origin(request: Request) -> bool:
@@ -270,42 +273,66 @@ async def api_crew_auth_refresh(request: Request) -> Response:
     )
 
 
-# Radar's ES modules import each other by plain path with no version in the URL.
-# Without an explicit policy, browsers cache them heuristically and can pair a new
-# module with a stale one after an upgrade, which breaks the page on a missing
-# export. "no-cache" makes the browser revalidate each load; the ETag keeps an
-# unchanged file to a 304.
+# Cache policy for the built Radar bundle (TRN-371). The page and every file outside
+# the hashed assets directory are revalidated on each load, and the ETag keeps an
+# unchanged file to a 304. Files under assets/ carry a content hash in their name, so
+# a new build gets new names and an old name can be cached for a year. A page loaded
+# after an upgrade therefore always names assets that exist.
 _REVALIDATE = "no-cache"
+_IMMUTABLE = "public, max-age=31536000, immutable"
+_HASHED_ASSET_PREFIX = "assets/"
 
 
-class _RevalidatingStaticFiles(StaticFiles):
-    """StaticFiles that tells browsers to revalidate every response."""
+class _BundleStaticFiles(StaticFiles):
+    """Serves the Radar bundle under /static/ with the cache policy above.
+
+    A missing file answers 404 from StaticFiles and never falls back to index.html.
+    """
 
     async def get_response(self, path: str, scope):
         response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = _REVALIDATE
+        # A 304 answers a revalidation of the same file, so it keeps the file's policy.
+        hashed = response.status_code in (200, 304) and path.startswith(_HASHED_ASSET_PREFIX)
+        response.headers["Cache-Control"] = _IMMUTABLE if hashed else _REVALIDATE
         return response
 
 
-async def index(request: Request) -> FileResponse:
-    """GET / — serve the Radar SPA root (index.html)."""
-    return FileResponse(
-        str(_STATIC_DIR / "index.html"),
-        media_type="text/html",
-        headers={"Cache-Control": _REVALIDATE},
+def build_app(static_dir: Path) -> Starlette:
+    """Build the Radar ASGI app that serves the built bundle in ``static_dir``.
+
+    ``check_dir=False`` lets the app start before a bundle exists. Until one does,
+    ``/`` and every ``/static/`` path answer 404.
+    """
+    static_dir = Path(static_dir)
+    index_path = static_dir / "index.html"
+
+    async def index(request: Request) -> Response:
+        """GET / — the Radar page: the built index.html."""
+        if not index_path.is_file():
+            return Response("Radar UI bundle is not built.", status_code=404, media_type="text/plain")
+        return FileResponse(
+            str(index_path),
+            media_type="text/html",
+            headers={"Cache-Control": _REVALIDATE},
+        )
+
+    return Starlette(
+        routes=[
+            Route("/health", health),
+            Route("/api/crews", api_crews),
+            Route("/api/crews/{crew_id}/agents", api_crew_agents),
+            Route("/api/crews/{crew_id}/mail-subjects", api_crew_mail_subjects),
+            Route("/api/crews/{crew_id}/auth/refresh", api_crew_auth_refresh, methods=["POST"]),
+            Route("/", index),
+            Mount(
+                "/static",
+                _BundleStaticFiles(directory=str(static_dir), check_dir=False),
+                name="static",
+            ),
+        ],
     )
 
 
 # ── Application ─────────────────────────────────────────────────────────────────
 
-app = Starlette(
-    routes=[
-        Route("/health", health),
-        Route("/api/crews", api_crews),
-        Route("/api/crews/{crew_id}/agents", api_crew_agents),
-        Route("/api/crews/{crew_id}/mail-subjects", api_crew_mail_subjects),
-        Route("/api/crews/{crew_id}/auth/refresh", api_crew_auth_refresh, methods=["POST"]),
-        Route("/", index),
-        Mount("/static", _RevalidatingStaticFiles(directory=str(_STATIC_DIR)), name="static"),
-    ],
-)
+app = build_app(_STATIC_DIR)

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Rebuild the Radar UI as a React app (radar/web) compiled in the ga-radar
+  image build. The runtime image serves only the built output: content-hashed
+  assets are cached as immutable, the page revalidates on every load, and
+  unknown /api and /static paths return 404 instead of the page.
+- Radar keeps its behaviour: the fleet table, default and Last Task ordering,
+  expandable crew detail, copy crew ID, the #crew=<id> link and Refresh auth.
+- Radar summary above the table: running and stopped counts, capacity and free
+  memory when the fleet reports them.
+- The crew filter is always shown. Radar follows the system light or dark
+  preference, and lays each crew out as a card below 640 px.
+- Crew detail: agent tasks as cards under running and finished groups, mailbox
+  subjects with per-mailbox counts, and explicit loading, unavailable and
+  session-expired states for each detail section.
+- A session that has expired shows "Session expired, sign in again" with a
+  sign-in link, not a JSON parse error.
+
 ## v0.13.2
 
 - Add per-dispatch model overrides for crew agents.

@@ -8,13 +8,14 @@ Covers:
   - GET /api/crews with a mocked transport response — returns correct payload
   - GET /api/crews with transport unreachable — returns 502 with error JSON
   - GET /  — returns HTML (index.html)
-  - GET /static/style.css  — returns CSS content-type
-  - GET /static/main.js    — returns JS content-type (TRN-303: app.js split into ES modules)
+  - GET /static/assets/*   — hashed bundle files, immutable cache (TRN-371)
+  - GET /static/*.js|css  — removed source modules answer 404 (TRN-371)
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -208,68 +209,144 @@ class TestRadarApiCrewsTransportDown(unittest.TestCase):
         self.assertIn("error", data)
 
 
-class TestRadarIndex(unittest.TestCase):
-    """GET / returns the index.html with text/html content-type."""
-
-    def test_index_returns_html(self):
-        server = _import_radar_server()
-        scope = _make_scope("GET", "/")
-        messages, body = _run(_call(server.app, scope))
-        self.assertEqual(_status_of(messages), 200)
-        ct = _headers_of(messages).get("content-type", "")
-        self.assertIn("text/html", ct)
-        self.assertIn(b"<html", body.lower())
+BUNDLE_INDEX = (
+    b"<!DOCTYPE html><html><head><title>Ghostship Fleet Radar</title></head><body>"
+    b"<div id=\"root\"></div>"
+    b"<script type=\"module\" crossorigin src=\"/static/assets/app-1a2b3c.js\"></script>"
+    b"</body></html>"
+)
+BUNDLE_JS = b"export const radar = 'bundle';\n" + b"// padding\n" * 20
+BUNDLE_CSS = b"body { color: #0f172a; }\n" + b"/* padding */\n" * 20
 
 
-class TestRadarStaticFiles(unittest.TestCase):
-    """GET /static/style.css and /static/main.js return correct content-types.
+def _write_bundle(root: Path) -> Path:
+    """Write a fixture shaped like the Vite output: index.html plus hashed assets/."""
+    (root / "assets").mkdir(parents=True)
+    (root / "index.html").write_bytes(BUNDLE_INDEX)
+    (root / "assets" / "app-1a2b3c.js").write_bytes(BUNDLE_JS)
+    (root / "assets" / "style-4d5e6f.css").write_bytes(BUNDLE_CSS)
+    return root
 
-    TRN-303: app.js was split into ES modules (main.js, format.js, state.js,
-    render.js, data.js).  The canonical JS entry point is now main.js.
+
+class TestRadarBundleServing(unittest.TestCase):
+    """GET / and /static/* serve the built bundle with the TRN-371 cache policy.
+
+    Uses a fixture bundle rather than radar/static, so these checks do not depend on
+    the committed source tree (which holds no built output).
     """
 
-    def test_style_css_content_type(self):
-        server = _import_radar_server()
-        scope = _make_scope("GET", "/static/style.css")
-        messages, body = _run(_call(server.app, scope))
-        self.assertEqual(_status_of(messages), 200)
-        ct = _headers_of(messages).get("content-type", "")
-        self.assertIn("css", ct)
-        self.assertGreater(len(body), 100)
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.bundle = _write_bundle(Path(tmp.name) / "static")
+        self.server = _import_radar_server()
+        self.app = self.server.build_app(self.bundle)
 
-    def test_main_js_content_type(self):
-        """Entry-point module (replaces app.js after TRN-303 split)."""
-        server = _import_radar_server()
-        scope = _make_scope("GET", "/static/main.js")
-        messages, body = _run(_call(server.app, scope))
-        self.assertEqual(_status_of(messages), 200)
-        ct = _headers_of(messages).get("content-type", "")
-        self.assertIn("javascript", ct)
-        self.assertGreater(len(body), 100)
+    def _get(self, path: str):
+        return _run(_call(self.app, _make_scope("GET", path)))
 
-    def test_static_modules_must_be_revalidated(self):
-        """ES modules import each other by unversioned path; a heuristically cached
-        stale module paired with a new one breaks the page after an upgrade."""
-        server = _import_radar_server()
-        for path in ("/static/main.js", "/static/state.js", "/static/render.js", "/static/style.css"):
-            scope = _make_scope("GET", path)
-            messages, _body = _run(_call(server.app, scope))
-            self.assertEqual(_status_of(messages), 200, path)
-            self.assertEqual(_headers_of(messages).get("cache-control"), "no-cache", path)
-
-    def test_index_must_be_revalidated(self):
-        server = _import_radar_server()
-        scope = _make_scope("GET", "/")
-        messages, _body = _run(_call(server.app, scope))
+    def test_index_is_the_built_page(self):
+        messages, body = self._get("/")
         self.assertEqual(_status_of(messages), 200)
+        self.assertIn("text/html", _headers_of(messages).get("content-type", ""))
+        self.assertEqual(body, BUNDLE_INDEX)
+
+    def test_index_is_revalidated(self):
+        messages, _body = self._get("/")
         self.assertEqual(_headers_of(messages).get("cache-control"), "no-cache")
 
-    def test_app_js_returns_404(self):
-        """app.js was deleted in TRN-303 — must not be served."""
-        server = _import_radar_server()
-        scope = _make_scope("GET", "/static/app.js")
-        messages, _body = _run(_call(server.app, scope))
+    def test_hashed_script_is_served_with_javascript_type_and_immutable_cache(self):
+        messages, body = self._get("/static/assets/app-1a2b3c.js")
+        self.assertEqual(_status_of(messages), 200)
+        self.assertIn("javascript", _headers_of(messages).get("content-type", ""))
+        self.assertEqual(body, BUNDLE_JS)
+        self.assertEqual(_headers_of(messages).get("cache-control"), self.server._IMMUTABLE)
+        self.assertIn("immutable", _headers_of(messages).get("cache-control", ""))
+        self.assertIn("max-age=31536000", _headers_of(messages).get("cache-control", ""))
+
+    def test_hashed_stylesheet_is_served_as_css_and_immutable(self):
+        messages, body = self._get("/static/assets/style-4d5e6f.css")
+        self.assertEqual(_status_of(messages), 200)
+        self.assertIn("css", _headers_of(messages).get("content-type", ""))
+        self.assertEqual(body, BUNDLE_CSS)
+        self.assertIn("immutable", _headers_of(messages).get("cache-control", ""))
+
+    def test_hashed_asset_revalidated_with_a_304_keeps_the_immutable_cache(self):
+        # A browser that revalidates a cached hashed asset gets a 304. That answer must
+        # not overwrite the long-lived policy with "no-cache".
+        messages, _body = self._get("/static/assets/app-1a2b3c.js")
+        etag = _headers_of(messages).get("etag")
+        self.assertIsNotNone(etag)
+        scope = _make_scope("GET", "/static/assets/app-1a2b3c.js")
+        scope["headers"] = [(b"if-none-match", etag.encode())]
+        messages, _body = _run(_call(self.app, scope))
+        self.assertEqual(_status_of(messages), 304)
+        self.assertEqual(_headers_of(messages).get("cache-control"), self.server._IMMUTABLE)
+
+    def test_non_hashed_file_under_static_is_revalidated(self):
+        messages, body = self._get("/static/index.html")
+        self.assertEqual(_status_of(messages), 200)
+        self.assertEqual(body, BUNDLE_INDEX)
+        self.assertEqual(_headers_of(messages).get("cache-control"), "no-cache")
+
+    def test_removed_source_modules_are_not_served(self):
+        for path in (
+            "/static/main.js", "/static/render.js", "/static/app.js", "/static/state.js",
+            "/static/data.js", "/static/format.js", "/static/style.css",
+        ):
+            with self.subTest(path=path):
+                messages, body = self._get(path)
+                self.assertEqual(_status_of(messages), 404)
+                self.assertNotIn(b"<html", body.lower())
+
+    def test_missing_asset_is_404_and_never_the_page(self):
+        messages, body = self._get("/static/assets/missing.js")
         self.assertEqual(_status_of(messages), 404)
+        self.assertNotEqual(body, BUNDLE_INDEX)
+        self.assertNotIn(b"<html", body.lower())
+
+    def test_missing_hashed_looking_asset_is_not_cached_as_immutable(self):
+        messages, _body = self._get("/static/assets/app-ffffff.js")
+        self.assertEqual(_status_of(messages), 404)
+        self.assertNotIn("immutable", _headers_of(messages).get("cache-control", ""))
+
+    def test_unknown_api_path_is_404_and_not_html(self):
+        for path in ("/api/unknown", "/api/crews/alpha/unknown", "/api/"):
+            with self.subTest(path=path):
+                messages, body = self._get(path)
+                self.assertEqual(_status_of(messages), 404)
+                self.assertNotIn("text/html", _headers_of(messages).get("content-type", ""))
+                self.assertNotEqual(body, BUNDLE_INDEX)
+
+    def test_static_directory_listing_and_traversal_are_404(self):
+        for path in ("/static/assets", "/static/assets/../../index.html"):
+            with self.subTest(path=path):
+                messages, body = self._get(path)
+                self.assertEqual(_status_of(messages), 404)
+                self.assertNotEqual(body, BUNDLE_INDEX)
+
+    def test_missing_bundle_answers_404_not_a_server_error(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        app = self.server.build_app(Path(tmp.name))
+        messages, body = _run(_call(app, _make_scope("GET", "/")))
+        self.assertEqual(_status_of(messages), 404)
+        self.assertIn(b"not built", body)
+        messages, _body = _run(_call(app, _make_scope("GET", "/static/assets/app-1a2b3c.js")))
+        self.assertEqual(_status_of(messages), 404)
+
+
+class TestRadarBundleBuildLayout(unittest.TestCase):
+    """The module-level app serves the directory the image copies the bundle into."""
+
+    def test_default_static_directory_is_next_to_server_py(self):
+        server = _import_radar_server()
+        self.assertEqual(server._STATIC_DIR, _RADAR_DIR / "static")
+
+    def test_module_app_uses_the_same_routes_as_build_app(self):
+        server = _import_radar_server()
+        paths = {getattr(r, "path", None) for r in server.app.routes}
+        self.assertTrue({"/", "/health", "/api/crews", "/static"} <= paths)
 
 
 class TestRadarApiCrewAgents(unittest.TestCase):
@@ -487,6 +564,14 @@ class TestRadarApiCrewAuthRefresh(unittest.TestCase):
         _messages, _body, upstream = self._post("alpha")
         self.assertEqual(upstream["timeout"], server._AUTH_REFRESH_TIMEOUT_SECS)
         self.assertGreater(server._AUTH_REFRESH_TIMEOUT_SECS, 10.0)
+
+    def test_refresh_bound_is_60_seconds_and_a_slow_refresh_is_not_cut_short(self):
+        # The browser bound (75 s) must stay above this one, and this one above a
+        # transport step that legitimately takes most of a minute.
+        server = _import_radar_server()
+        self.assertEqual(server._AUTH_REFRESH_TIMEOUT_SECS, 60.0)
+        _messages, _body, upstream = self._post("alpha")
+        self.assertEqual(upstream["timeout"], 60.0)
 
     # ── safe failures ─────────────────────────────────────────────────────────
 
