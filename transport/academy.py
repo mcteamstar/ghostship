@@ -199,6 +199,25 @@ def _manifest_selects(selection: Any, name: str) -> bool:
     return selection == "*" or name in selection
 
 
+def _agent_mcp_servers_for_tools(
+    tools: Any, mcp_servers: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Return composition MCP entries named by an agent's tool grants."""
+    if not isinstance(tools, list):
+        return {}
+    if "*" in tools:
+        return mcp_servers
+    selected: dict[str, dict[str, Any]] = {}
+    for server_name, entry in mcp_servers.items():
+        ref = f"@{server_name}"
+        if any(
+            isinstance(tool, str) and (tool == ref or tool.startswith(f"{ref}/"))
+            for tool in tools
+        ):
+            selected[server_name] = entry
+    return selected
+
+
 def _substitute_env_vars(value: Any, env: dict[str, str]) -> Any:
     """Recursively substitute ${VAR} references in string values using env.
 
@@ -390,6 +409,7 @@ class AcademyLoader:
         self._container = container
         self._comp_entry = comp_entry
         self._acp_backend = acp_backend or "kiro"
+        self._staged_mcp_servers: dict[str, dict[str, Any]] | None = None
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -549,22 +569,15 @@ class AcademyLoader:
         logger.info("Staged steering docs for %s: %s", self._container, staged)
         return staged
 
-    def _stage_mcp(self) -> None:
-        """Write resolved MCP catalogue entries into /home/kirocrew/.agents/mcp/servers.json.
-
-        Replaces the old mcp.json delivery in ``_copy_agents()``.
-        After env-var substitution, each resolved entry gets ``"disabled": false``
-        so academy-delivered servers are active by default (D3 in design.md).
-        ``.agents/setup`` reads this file and writes each detected harness's
-        native MCP config (e.g. kiro mcp.json, claude .claude.json).
-        """
+    def _resolve_mcp_servers(self) -> dict[str, dict[str, Any]]:
+        """Resolve the composition's MCP catalogue entries by server name."""
         manifest = _load_crew_manifest(self._comp_entry)
         mcp_servers_list = manifest.get("mcpServers")
         if not mcp_servers_list:
-            return
+            return {}
 
         env = dict(os.environ)
-        resolved_entries: list[dict[str, Any]] = []
+        servers: dict[str, dict[str, Any]] = {}
 
         for server_name in mcp_servers_list:
             catalogue_path = _MCP_CATALOGUE_DIR / f"{server_name}.json"
@@ -582,35 +595,63 @@ class AcademyLoader:
                     catalogue_path, e,
                 )
                 continue
+            if not isinstance(entry, dict):
+                logger.warning(
+                    "mcp/servers.json: catalogue entry %s is not an object — skipping",
+                    catalogue_path,
+                )
+                continue
             entry = _substitute_env_vars(entry, env)
             if "headers" in entry:
                 entry["poolable"] = False
-            # D3: explicitly set disabled=false so academy-delivered servers are active
+            # Academy-selected servers are active in harnesses using this flag.
             entry["disabled"] = False
-            resolved_entries.append({"name": server_name, **entry})
+            servers[server_name] = entry
+        return servers
 
-        if not resolved_entries:
+    def _stage_mcp(self) -> None:
+        """Write resolved MCP entries into /home/kirocrew/.agents/mcp/.
+
+        Replaces the old mcp.json delivery in ``_copy_agents()``.
+        After env-var substitution, each resolved entry gets ``"disabled": false``
+        so academy-delivered servers are active in harnesses using that field.
+        ``.agents/setup`` merges the shared catalogue into native harness configs;
+        the selected agent also receives the composition server directly in its
+        ``mcpServers`` spec so KiroCrew can project it into ACP sessions.
+        """
+        servers_by_name = self._resolve_mcp_servers()
+        self._staged_mcp_servers = servers_by_name
+        if not servers_by_name:
             logger.info("mcp/servers.json: no valid server entries resolved — skipping write")
             return
-
-        servers_json_data = json.dumps(resolved_entries, indent=2).encode()
+        files = {
+            "servers.json": json.dumps(servers_by_name, indent=2).encode(),
+        }
+        if self._acp_backend == "codex":
+            # Codex's native config uses `enabled` rather than `disabled`. The
+            # persona-level entry is what KiroCrew projects into a session, but
+            # enable the same server in Codex's config for harness parity.
+            files["codex.servers.json"] = json.dumps(
+                {name: {"enabled": True} for name in servers_by_name}, indent=2
+            ).encode()
         try:
             self._podman.container_exec(
                 self._container, ["mkdir", "-p", _AGENTS_MCP_DIR]
             )
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w") as tar:
-                ti = tarfile.TarInfo(name="servers.json")
-                ti.size = len(servers_json_data)
-                ti.mode = 0o644
-                tar.addfile(ti, io.BytesIO(servers_json_data))
+                for name, data in files.items():
+                    ti = tarfile.TarInfo(name=name)
+                    ti.size = len(data)
+                    ti.mode = 0o644
+                    tar.addfile(ti, io.BytesIO(data))
             buf.seek(0)
             self._podman.container_archive_put(
                 self._container, _AGENTS_MCP_DIR, buf.read()
             )
             logger.info(
-                "Wrote .agents/mcp/servers.json to %s (%d server(s))",
-                self._container, len(resolved_entries),
+                "Wrote .agents/mcp/%s to %s (%d server(s))",
+                ", ".join(files), self._container, len(servers_by_name),
             )
         except Exception as e:
             logger.warning(
@@ -620,34 +661,39 @@ class AcademyLoader:
     def _run_setup(self) -> None:
         """Exec .agents/setup --yolo inside the crew container.
 
-        A single call after all staging is complete wires skills, steering, and
-        MCP to the native paths of every harness ``.agents/setup`` detects in
-        the image, not only the crew's own backend. Harness detection is left
-        to ``.agents/setup``. YOLO applies the shared unattended harness settings;
-        KiroCrew runtime sandbox controls remain separate. Both setup confirmation
-        prompts are answered through stdin for unattended crew provisioning.
+        Explicitly configure the selected ACP backend first because it may not
+        have a standalone executable on PATH. Then configure every other
+        detected harness as before. YOLO applies the shared unattended harness
+        settings; KiroCrew runtime sandbox controls remain separate. Both setup
+        confirmation prompts are answered through stdin for unattended crew
+        provisioning.
         Non-zero exit is logged as
         a warning; crew launch continues so agents receive no academy wiring
         rather than failing to launch (per spec: graceful degradation).
         """
-        try:
-            self._podman.container_exec_stdin(
-                self._container,
-                [_AGENTS_SETUP, "--yolo"],
-                b"y\ny\n",
-            )
-            logger.info("Ran .agents/setup --yolo in %s", self._container)
-        except Exception as e:
-            logger.warning(
-                "AcademyLoader: .agents/setup failed in %s: %s — "
-                "crew will launch without academy wiring",
-                self._container, e,
-            )
+        commands = [
+            [_AGENTS_SETUP, self._acp_backend, "--yolo"],
+            [_AGENTS_SETUP, "--yolo"],
+        ]
+        for cmd in commands:
+            try:
+                self._podman.container_exec_stdin(
+                    self._container,
+                    cmd,
+                    b"y\ny\n",
+                )
+                logger.info("Ran %s in %s", " ".join(cmd), self._container)
+            except Exception as e:
+                logger.warning(
+                    "AcademyLoader: %s failed in %s: %s — "
+                    "crew will launch without academy wiring",
+                    " ".join(cmd), self._container, e,
+                )
 
     # ── Agent persona JSON delivery (every backend) ───────────────────────────
 
     def _copy_agents(self) -> list[str]:
-        """Copy agent JSONs selected by the crew manifest to ~/.kiro/agents/.
+        """Copy selected personas and their composition MCP entries to ~/.kiro/agents/.
 
         Required for every backend: ``~/.kiro/agents/`` is KiroCrew's persona
         registry, not a kiro-cli-only location. Without it a claude or codex
@@ -662,12 +708,35 @@ class AcademyLoader:
             return []
         manifest = _load_crew_manifest(self._comp_entry)
         selection = manifest["agents"]
+        mcp_servers = (
+            self._staged_mcp_servers
+            if self._staged_mcp_servers is not None
+            else self._resolve_mcp_servers()
+        )
         copied: list[str] = []
         for af in agents_src.glob("*.json"):
             if not _manifest_selects(selection, af.name):
                 continue
             try:
                 data = af.read_bytes()
+                if mcp_servers:
+                    agent = json.loads(data)
+                    tools = agent.get("tools") if isinstance(agent, dict) else None
+                    selected_mcp_servers = _agent_mcp_servers_for_tools(
+                        tools, mcp_servers
+                    )
+                    if selected_mcp_servers:
+                        agent_mcp_servers = agent.get("mcpServers")
+                        if not isinstance(agent_mcp_servers, dict):
+                            agent_mcp_servers = {}
+                        # An explicit persona entry takes precedence over the
+                        # composition catalogue, matching Kiro's agent-level MCP
+                        # config precedence over shared server settings.
+                        agent["mcpServers"] = {
+                            **selected_mcp_servers,
+                            **agent_mcp_servers,
+                        }
+                        data = json.dumps(agent, indent=2).encode()
                 buf = io.BytesIO()
                 with tarfile.open(fileobj=buf, mode="w") as tar:
                     ti = tarfile.TarInfo(name=af.name)

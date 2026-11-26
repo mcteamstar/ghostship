@@ -15,6 +15,7 @@ import httpx2 as httpx
 from tests.e2e.helpers import (
     GHOSTSHIP_E2E_URL,
     GHOSTSHIP_API_KEY,
+    GHOSTSHIP_E2E_BACKEND,
     GHOSTSHIP_PODMAN_SOCKET,
     _SKIP_REASON,
     _TRANSPORT_REACHABLE,
@@ -337,6 +338,13 @@ class TestResponseSchemas(unittest.TestCase):
         self.assertIn("acp_profile", result, "acp_profile missing from launch response")
         self.assertIsInstance(result["acp_profile"], str)
         self.assertTrue(result["acp_profile"], "acp_profile must be a non-empty string")
+
+    @unittest.skipUnless(GHOSTSHIP_E2E_BACKEND, "GHOSTSHIP_E2E_BACKEND not set")
+    def test_shared_crew_uses_requested_backend(self):
+        crews = _mcp_call("crews").get("crews", [])
+        crew = next((c for c in crews if c.get("crew_id") == SHARED_CREW_ID), None)
+        self.assertIsNotNone(crew, f"{SHARED_CREW_ID} missing from crews()")
+        self.assertEqual(crew.get("acp_backend"), GHOSTSHIP_E2E_BACKEND)
 
     def test_crews_response_shape(self):
         result = _mcp_call("crews")

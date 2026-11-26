@@ -733,11 +733,40 @@ def _build_images(
             finally:
                 shutil.rmtree(ctx, ignore_errors=True)
         else:  # ga-radar
-            subprocess.run([
-                *podman_cmd, "build", "-t", f"localhost/{name}:latest",
-                str(Path(ghostship_dir) / "radar"),
-            ], check=True)
+            _build_radar_bundle(podman_cmd, ghostship_dir)
         print(f"✓ {name} image built")
+
+
+def _build_radar_bundle(podman_cmd: list[str], ghostship_dir: str) -> None:
+    """Build localhost/ga-radar:latest from radar/, compiling the Radar SPA in the image.
+
+    Podman only moves the localhost/ga-radar:latest tag after a successful build, so a
+    failed build leaves the running Radar image in place. The output is streamed as
+    usual; the last ``STEP`` line seen names the step that failed.
+    """
+    cmd = [*podman_cmd, "build", "-t", "localhost/ga-radar:latest",
+           str(Path(ghostship_dir) / "radar")]
+    last_step = ""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="")
+        if line.startswith("STEP "):
+            last_step = line.strip()
+    if proc.wait() == 0:
+        return
+    if "npm ci" in last_step:
+        cause = ("The frontend packages could not be installed. Check that the npm registry "
+                 "is reachable, then retry.")
+    elif "typecheck" in last_step or "run build" in last_step:
+        cause = "The frontend failed its type check or bundle build. Fix radar/web, then retry."
+    else:
+        cause = "Check the podman output above, then retry."
+    step_desc = f"at '{last_step}'" if last_step else "before its first build step"
+    _die(
+        f"Radar bundle build failed {step_desc}. {cause} "
+        "The existing localhost/ga-radar:latest image was left in place, so the running Radar is unchanged."
+    )
 
 
 def _compute_transport_hash(ghostship_dir: str) -> str:

@@ -79,6 +79,7 @@ _ROUTES: dict[tuple[str, str], None] = {
     ("GET",  "/crews/*/api"):         None,
     ("POST", "/crews/*/dashboard"):   None,
     ("DELETE", "/crews/*/dashboard"): None,
+    ("POST", "/crews/*/auth/refresh"): None,
     ("WS",   "/crews/*/ui"):          None,
 }
 
@@ -89,6 +90,7 @@ _PUBLIC_ROUTES: dict[tuple[str, str], None] = {
     ("GET",  "/dashboard/auth"):      None,
     ("GET",  "/dashboard/login"):     None,
     ("GET",  "/openapi.json"):        None,
+    ("POST", "/internal/crews/*/auth/refresh"): None,
 }
 
 

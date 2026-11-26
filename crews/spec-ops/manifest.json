@@ -2,5 +2,5 @@
   "agents": "*",
   "skills": "*",
   "steering": "*",
-  "mcpServers": []
+  "mcpServers": ["playwright"]
 }

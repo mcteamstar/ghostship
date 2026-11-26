@@ -22,7 +22,7 @@ Credentials live in `DATA_DIR/credentials/<backend>/<profile>.json` and are reso
 | Claude | `oauth` | `api-key`, `setup-token` |
 | Codex | `chatgpt` | `api-key` |
 
-When a login-flow method completes, Ghostship attempts to inject the newly stored credential into crews registered as running for the same backend and profile. Stopped crews are not targeted; their stored flow credential is injected when they next wake. A flow-completion response can include `propagation_failed` crew IDs if an injection fails. Switching a profile from a static method to a login-flow method does not remove the static environment value already present in a crew, so recreate that crew to complete the method change.
+When a login-flow method completes, Ghostship attempts to inject the newly stored credential into crews registered as running for the same backend and profile. Stopped crews are not targeted; their stored flow credential is injected when they next wake. A flow-completion response can include `propagation_failed` crew IDs if an injection fails; retry one crew with [Refresh a crew's auth](#refresh-a-crews-auth). Switching a profile from a static method to a login-flow method does not remove the static environment value already present in a crew, so recreate that crew to complete the method change.
 
 Static credentials are injected into the container environment at creation and are not propagated. After rotating a static value or changing its method, an already-running container keeps its launch-time environment value. When the crew stops, the launcher refuses to wake it if the stored credential is missing or no longer matches the container's static method/value. Because `evac` follows the same wake path, preserve the workspace with `evac` before changing or removing the static credential whenever possible. If the crew is already stopped after the credential changed or was removed, restore the exact launch-time static method and value under its recorded profile (for example, with `ghostship auth login <backend> --profile <name> --method <method> --yes`), then wake it and run `evac`. Without that credential, `evac` cannot wake the crew. Do not `nuke` until `evac` succeeds: `nuke` deletes the workspace and home volumes. Then `launch` a replacement and `supply` the saved workspace. See [Repository transfer](architecture.md#repository-transfer).
 
@@ -69,6 +69,69 @@ Profile resolution at `launch` time:
 The `launch` MCP tool checks credentials before it registers or creates a crew. If the resolved profile is `default` and has no stored credential, `launch` starts that backend's login flow and returns `not_authenticated` with the login URL/code, or reports that a login is already pending. Complete the returned flow as directed, then retry `launch`. This response does not create a crew, so there is nothing to nuke.
 
 If the resolved profile is named and has no stored credential, `launch` returns `not_authenticated` without starting a flow or falling back to another profile. Authenticate it first with `ghostship auth login <backend> --profile <name>`, then retry `launch`. In non-interactive use, also pass `--method <method>`.
+
+### Refresh a crew's auth
+
+A running crew keeps the credential it was launched with, plus any login-flow credential pushed to it since. A refresh re-applies the credential **currently stored** for one crew's backend and profile. Use it to retry a crew that a login completion listed in `propagation_failed`, or to check whether a static credential change needs the crew recreated.
+
+- A refresh only re-applies what is stored. It does not contact the provider or extend a session. If the stored login has expired, log in again first (`ghostship auth logout <backend>`, then `ghostship auth login <backend>`).
+- It takes no credential and always uses the backend and profile recorded for the crew. It never starts, stops or recreates a crew.
+- For a Kiro crew, a successful refresh also clears the crew's recorded sign-in state so the next dispatch re-checks it.
+
+Trigger it from [Radar](radar.md#refresh-a-crews-auth), with the **Refresh auth** button in the crew's detail panel, or call the transport's REST API:
+
+- **`POST /crews/{crew_id}/auth/refresh`** — operator endpoint. Requires `Authorization: Bearer <key>` when `GA_API_KEY` is set. It answers 403 to any request that carries a browser `Origin` header, and 405 to other methods. It is not an MCP tool.
+- **`POST /internal/crews/{crew_id}/auth/refresh`** — portside-internal twin used by Radar. Requires `X-Transport-Token` and no bearer key. It runs the same operation and returns the same body.
+- The request has no body and takes no credential. Every defined outcome is HTTP 200 with the outcome in `status`, so branch on `status`. An unknown crew is 404, missing or wrong credentials are 401, and an unexpected transport error is 500 with `{"error": "crew auth refresh failed"}`.
+
+> **Reaching the operator endpoint.** The transport publishes no host port, and the Portal configuration generated by this release forwards `/crews/*/dashboard` to it but has no route for `/crews/*/auth/refresh`. Until the Portal routes that path, the operator endpoint is reachable only by a caller that is already on `ga-portside` and can present both the transport token and the bearer key. Radar's button uses the internal route and needs no Portal route.
+
+Against a transport API you can reach directly:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $GHOSTSHIP_API_KEY" \
+  "$TRANSPORT_URL/crews/my-crew/auth/refresh" | jq
+```
+
+```json
+{
+  "status": "refreshed",
+  "crew_id": "my-crew",
+  "backend": "kiro",
+  "profile": "default",
+  "message": "The current stored credential was injected into the running crew."
+}
+```
+
+| `status` | Meaning | What to do |
+|:---------|:--------|:-----------|
+| `refreshed` | The stored login-flow credential was injected into the running crew. | Nothing. |
+| `pending_on_wake` | The crew is stopped. It receives the stored login-flow credential the next time it wakes. | Nothing, or wake it. |
+| `current` | Static credential: the container already holds the stored value. | Nothing. |
+| `recreate_required` | The stored static credential or its method differs from the container's launch-time environment, which cannot change in place. | Recreate the crew with its workspace preserved (below). |
+| `credential_missing` | Nothing is stored for the crew's backend and profile. | `ghostship auth login <backend>` (add `--profile <name>` for a named profile), then refresh again. |
+| `refresh_failed` | The comparison or the injection failed. The crew was left as it was. | Check the transport log, then retry. |
+
+Login-flow methods (`builder-id`, `identity-center`, `oauth`, `chatgpt`) are written into the crew's home: a completed login pushes the credential to matching running crews, and a stopped crew receives it when it wakes. A refresh covers the gap when a push failed. Static methods (`api-key`, `setup-token`) are environment values fixed at container creation, so a refresh can only compare them. A profile switched from a static method to a login flow also reports `recreate_required`, because the old value stays in the container's environment.
+
+**Recovering from `recreate_required`.** Preserve the workspace, then replace the crew. This is the workflow described under [Credential lifecycle](#credential-lifecycle):
+
+1. Save the workspace with `evac`. A running crew still works with its launch-time value, so `evac` succeeds now. A stopped crew cannot wake while the stored credential differs from its container: restore the launch-time method and value under its profile (`ghostship auth login <backend> --profile <name> --method <method> --yes`), wake it, then `evac`.
+2. Only after `evac` succeeds, `nuke` the crew. `nuke` deletes its workspace and home volumes.
+3. `launch` a replacement with the same profile and `supply` the saved workspace. See [Repository transfer](architecture.md#repository-transfer).
+
+### Session lifetime (estimates)
+
+Login-flow sessions end after a while. These are rough observations, not guarantees:
+
+| Method | Observed session lifetime |
+|:-------|:--------------------------|
+| Codex `chatgpt` | about 10 days |
+| Kiro `identity-center` | about 90 days |
+
+Actual lifetimes depend on the provider and on the account or organisation's settings, and they can change. Treat them as a prompt to re-check, not an expiry date. No estimate is recorded for the other methods.
+
+When a session ends, log in again (`ghostship auth logout <backend>`, then `ghostship auth login <backend>`). Completion updates matching running crews and stopped crews pick it up on wake. If a crew still fails after that, refresh it as above.
 
 ## Kiro auth
 

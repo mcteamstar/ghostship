@@ -115,6 +115,62 @@ class TestGhostshipSpawn(TestCase):
         )
         self.assertEqual(request["headers"]["Cookie"], f"mc_token_5476={self.cookie}")
 
+    def test_dispatch_request_with_model(self) -> None:
+        rc, output, error = self._run(
+            ["ghost", "--model", "claude-opus-5"], "do the work\n"
+        )
+        self.assertEqual(rc, 0, error)
+        self.assertEqual(json.loads(output), {"id": "task-1"})
+        request = _Handler.requests[0]
+        self.assertEqual((request["method"], request["path"]), ("POST", "/api/spawn"))
+        self.assertEqual(
+            json.loads(request["body"]),
+            {
+                "task": "do the work\n",
+                "agent": "ghost",
+                "keep": True,
+                "model": "claude-opus-5",
+            },
+        )
+
+    def test_dispatch_accepts_500_character_model(self) -> None:
+        model = "a" * 500
+        rc, _output, error = self._run(["ghost", "--model", model], "do the work")
+        self.assertEqual(rc, 0, error)
+        self.assertEqual(json.loads(_Handler.requests[0]["body"])["model"], model)
+
+    def test_invalid_model_is_rejected_without_a_request(self) -> None:
+        invalid_args = (
+            ["ghost", "--model"],
+            ["ghost", "--model", ""],
+            ["ghost", "--model", "bad/id"],
+            ["ghost", "--model", "x" * 501],
+        )
+        for argv in invalid_args:
+            with self.subTest(argv=argv):
+                rc, output, error = self._run(argv, "do the work")
+                self.assertEqual(rc, 1)
+                self.assertEqual(output, "")
+                self.assertTrue(error.startswith("ghostship-spawn: usage: "), error)
+                self.assertEqual(len(error.splitlines()), 1)
+        self.assertEqual(_Handler.requests, [])
+
+    def test_model_option_is_rejected_for_non_dispatch_operations(self) -> None:
+        invalid_args = (
+            ["--list", "--model", "claude-opus-5"],
+            ["--status", "task-1", "--model", "claude-opus-5"],
+            ["--steer", "task-1", "--model", "claude-opus-5"],
+            ["--continue", "task-1", "--model", "claude-opus-5"],
+        )
+        for argv in invalid_args:
+            with self.subTest(argv=argv):
+                rc, output, error = self._run(argv, "do the work")
+                self.assertEqual(rc, 1)
+                self.assertEqual(output, "")
+                self.assertTrue(error.startswith("ghostship-spawn: usage: "), error)
+                self.assertEqual(len(error.splitlines()), 1)
+        self.assertEqual(_Handler.requests, [])
+
     def test_gateway_redirect_is_not_followed(self) -> None:
         _Handler.response_status = 302
         _Handler.response_headers = {"Location": "/redirect"}
@@ -216,6 +272,7 @@ class TestGhostshipSpawn(TestCase):
         self.assertIn("name: ghostship-spawn", skill)
         self.assertIn("allowed-tools:", skill)
         self.assertIn("--status", skill)
+        self.assertIn("--model", skill)
         self.assertIn("--steer", skill)
         self.assertIn("--continue", skill)
         self.assertIn("keep briefs short", skill.lower())

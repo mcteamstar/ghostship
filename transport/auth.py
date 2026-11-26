@@ -552,7 +552,73 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 await response(scope, receive, send)
                 return True
 
+        # Pattern match for /internal/crews/{id}/mail-subjects (TRN-370) — transport-secret-only,
+        # no bearer key required. Consumed by ga-radar.
+        if (
+            scope["method"] == "GET"
+            and len(_parts) == 4
+            and _parts[0] == "internal"
+            and _parts[1] == "crews"
+            and _parts[3] == "mail-subjects"
+        ):
+            subjects_handler = self._public_routes.get(("GET", "/internal/crews/*/mail-subjects"))
+            if subjects_handler is not None:
+                request = Request(scope, receive)
+                response = await subjects_handler(request)
+                await response(scope, receive, send)
+                return True
+
+        # Pattern match for POST /internal/crews/{id}/auth/refresh (TRN-367) — transport-secret-only,
+        # no bearer key required. Consumed by ga-radar on behalf of a portal session.
+        if (
+            scope["method"] == "POST"
+            and len(_parts) == 5
+            and _parts[0] == "internal"
+            and _parts[1] == "crews"
+            and _parts[3] == "auth"
+            and _parts[4] == "refresh"
+        ):
+            refresh_handler = self._public_routes.get(("POST", "/internal/crews/*/auth/refresh"))
+            if refresh_handler is not None:
+                request = Request(scope, receive)
+                response = await refresh_handler(request)
+                await response(scope, receive, send)
+                return True
+
         return False
+
+    async def _dispatch_crew_auth_refresh(self, scope, receive, send) -> bool:
+        """Serve ``POST /crews/{id}/auth/refresh`` (operator credential refresh, TRN-367).
+
+        Returns True once a response has been sent: the registered handler's, or
+        405 for any other method on this path so it never falls through to the
+        MCP app. Callers invoke it only after bearer validation, or when no API
+        key is configured.
+        """
+        from starlette.requests import Request
+        from starlette.responses import PlainTextResponse
+
+        parts = scope["path"].lstrip("/").split("/")
+        if not (
+            len(parts) == 4
+            and parts[0] == "crews"
+            and parts[2] == "auth"
+            and parts[3] == "refresh"
+        ):
+            return False
+        if scope["method"] != "POST":
+            response = PlainTextResponse(
+                "Method Not Allowed", status_code=405, headers={"Allow": "POST"},
+            )
+            await response(scope, receive, send)
+            return True
+        handler = self._routes.get(("POST", "/crews/*/auth/refresh"))
+        if handler is None:
+            return False
+        request = Request(scope, receive)
+        response = await handler(request)
+        await response(scope, receive, send)
+        return True
 
     async def _dispatch_file(self, scope, receive, send) -> bool:
         """Pass presigned-URL /files/ requests to the file app (bypasses API key).
@@ -632,6 +698,9 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                     response = PlainTextResponse("Method Not Allowed", status_code=405)
                     await response(scope, receive, send)
                     return
+            # POST /crews/{id}/auth/refresh (TRN-367)
+            if await self._dispatch_crew_auth_refresh(scope, receive, send):
+                return
             await self.app(scope, receive, send)
             return
 
@@ -740,6 +809,10 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
                 response = PlainTextResponse("Method Not Allowed", status_code=405)
                 await response(scope, receive, send)
                 return
+
+        # POST /crews/{id}/auth/refresh (TRN-367) — bearer already validated above.
+        if await self._dispatch_crew_auth_refresh(scope, receive, send):
+            return
 
         await self.app(scope, receive, send)
 

@@ -25,18 +25,23 @@ Image: `localhost/ga-radar:latest`, built from `radar/Containerfile`.
 
 ### Requirement: ga-radar serves the Radar SPA and fleet API
 
-`ga-radar` SHALL serve the SPA and static assets, proxy fleet and per-crew agent data to `ga-transport`, and expose unauthenticated `/health`. Static ES modules SHALL be baked into the image; the SPA polls fleet data every five seconds and fetches live tasks when a row expands.
+`ga-radar` SHALL serve the SPA and static assets, proxy fleet and per-crew agent data to `ga-transport`, and expose unauthenticated `/health`. The SPA SHALL be a bundle built at image build time and baked into the image; it polls fleet data every five seconds and fetches live tasks when a row expands.
 
 #### Scenario: SPA served at root
 
 - **WHEN** `GET /` is requested through Caddy with a valid session
 - **THEN** `ga-radar` returns HTTP 200 with `Content-Type: text/html`
-- **THEN** the response body is `static/index.html`
+- **THEN** the response body is the built `index.html`
 
 #### Scenario: Static assets served
 
-- **WHEN** `GET /static/main.js` or `GET /static/style.css` is requested
+- **WHEN** an asset referenced by the built `index.html` under `/static/` is requested
 - **THEN** `ga-radar` returns the asset with the correct content-type
+
+#### Scenario: Removed source modules not served
+
+- **WHEN** `GET /static/main.js`, `GET /static/render.js` or `GET /static/app.js` is requested
+- **THEN** `ga-radar` returns HTTP 404
 
 #### Scenario: Fleet API proxied to transport
 
@@ -126,3 +131,143 @@ Radar SHALL order crews by creation time, newest first, within each running and 
 #### Scenario: Last Task sort selected
 - **WHEN** the user selects the Last Task sort
 - **THEN** the selected Last Task ordering applies within each section
+
+### Requirement: Radar shows crew mailbox subjects
+Radar SHALL show subject strings grouped by mailbox in a crew's expanded detail. It SHALL fetch them on demand and SHALL expose no message bodies or message metadata beyond mailbox names and subjects.
+
+#### Scenario: Subjects are loaded when crew detail opens
+- **WHEN** an operator expands a registered crew's detail
+- **THEN** Radar fetches and displays subjects from `ghost`, `spectre`, `banshee`, `wraith`, `reaper`, `raven`, `captain`, and `admiral` without adding mailbox reads to the fleet polling request
+
+#### Scenario: Subjects remain available for stopped crews
+- **WHEN** an operator expands a stopped crew's detail and its mailbox files are readable
+- **THEN** Radar displays the same mailbox subjects available for a running crew
+- **THEN** reading the subjects does not alter or consume any mailbox messages
+
+#### Scenario: Empty mailbox
+- **WHEN** a crew mailbox has no messages with a subject
+- **THEN** Radar displays an explicit empty state for that mailbox
+
+#### Scenario: Mailbox subjects cannot be loaded
+- **WHEN** the mailbox-subject request fails
+- **THEN** Radar displays a single unavailable state for the crew's mailboxes without presenting any mailbox as empty
+
+#### Scenario: Browser request requires the Portal session
+- **WHEN** an unauthenticated browser requests crew mailbox subjects while API-key authentication is enabled
+- **THEN** the existing Portal session gate prevents the request from reaching Radar and no mailbox data is returned
+
+### Requirement: Transport provides a protected subject-only mailbox endpoint
+Transport SHALL expose a portside-internal, transport-secret-protected endpoint that returns each registered crew's mailbox names and subject strings only. It SHALL leave mailbox messages unchanged.
+
+#### Scenario: Read subjects from a registered crew
+- **WHEN** Radar requests a registered crew's mailbox subjects with a valid `X-Transport-Token`
+- **THEN** Transport returns `ghost`, `spectre`, `banshee`, `wraith`, `reaper`, `raven`, `captain`, and `admiral`, each mapped to a list of subject strings
+- **THEN** the response contains no message bodies, sender details, timestamps, or separate count fields
+
+#### Scenario: Subjects are ordered and bounded
+- **WHEN** a mailbox holds more than 50 messages with subjects
+- **THEN** Transport returns that mailbox's 50 most recently delivered subjects, newest first
+- **THEN** each subject is at most 200 characters
+
+#### Scenario: Mailbox has never been created
+- **WHEN** a registered crew has no directory or file for one of the eight mailboxes (for example, a stopped crew that has never received `admiral` mail)
+- **THEN** Transport returns an empty list for that mailbox and does not report the crew's mailboxes as unavailable
+
+#### Scenario: Registered crew's container no longer exists
+- **WHEN** Radar requests subjects for a registered crew whose container has been removed
+- **THEN** Transport returns an error response that Radar can display as unavailable, and does not return empty mailboxes
+
+#### Scenario: Read subjects for a stopped crew
+- **WHEN** Radar requests subjects for a registered stopped crew with a valid `X-Transport-Token`
+- **THEN** Transport returns subjects from readable mailbox files without starting the crew
+
+#### Scenario: Unknown crew
+- **WHEN** Radar requests mailbox subjects for an unregistered crew
+- **THEN** Transport returns HTTP 404
+
+#### Scenario: Missing or invalid transport secret
+- **WHEN** a request omits or supplies an invalid `X-Transport-Token`
+- **THEN** Transport rejects the request without returning mailbox data
+
+#### Scenario: Mailbox source is unavailable
+- **WHEN** Transport cannot read any existing mailbox of a registered crew, or cannot reach the crew's container filesystem
+- **THEN** Transport returns an error response for the whole request that Radar can display as unavailable, rather than reporting any mailbox as empty or returning a partial result
+
+### Requirement: Radar exposes the crew auth refresh operation
+Radar SHALL provide an operator action for each crew and a browser-facing `POST /api/crews/{crew_id}/auth/refresh` endpoint. The endpoint SHALL proxy to the transport's internal refresh API using `X-Transport-Token` and return the transport outcome without modification.
+
+#### Scenario: Operator refreshes auth from a crew detail panel
+- **WHEN** an operator selects the auth refresh action for a crew in Radar
+- **THEN** the browser calls `POST /api/crews/{crew_id}/auth/refresh` and Radar proxies it to `POST /internal/crews/{crew_id}/auth/refresh`
+- **THEN** Radar displays the returned outcome, including pending-on-wake or recreate-required guidance
+
+#### Scenario: Transport is unavailable during refresh
+- **WHEN** Radar cannot reach the transport while proxying a refresh request
+- **THEN** Radar returns HTTP 502 with a safe transport-unavailable message and displays that refresh did not complete
+
+#### Scenario: Cross-origin or missing Origin is rejected
+- **WHEN** `POST /api/crews/{crew_id}/auth/refresh` reaches Radar without an `Origin` header, or with an `Origin` that does not match the request host
+- **THEN** Radar returns HTTP 403 and does not call the transport
+
+#### Scenario: Portal session expires before refresh
+- **WHEN** the operator selects the refresh action after the portal session has expired and Caddy responds with a redirect to `/dashboard/login`
+- **THEN** Radar's UI tells the operator to sign in again and does not display a refresh outcome
+
+### Requirement: Portal session gates the Radar auth refresh action
+Caddy SHALL route `POST /api/crews/{crew_id}/auth/refresh` through the existing Radar session gate. When API-key auth is configured, the browser action SHALL require a valid `gs_session` cookie.
+
+#### Scenario: Authenticated portal operator refreshes a crew
+- **WHEN** a valid portal session calls `POST /api/crews/{crew_id}/auth/refresh`
+- **THEN** Caddy forwards the request to Radar
+
+#### Scenario: Unauthenticated portal request
+- **WHEN** the refresh action is requested without a valid portal session and API-key auth is configured
+- **THEN** Caddy redirects the browser to `/dashboard/login` and does not forward the request to Radar
+
+### Requirement: Radar bundle is built in the image build
+
+The `ga-radar` image build, run by `./install.sh` and `ghostship upgrade`, SHALL compile the SPA from source in a build stage and copy only the built output into the runtime image. The host SHALL need no Node. The runtime image SHALL NOT contain Node, the package manager or the frontend source tree.
+
+#### Scenario: Runtime image contents
+- **WHEN** the `ga-radar` image is built from `radar/Containerfile`
+- **THEN** the runtime image holds the built bundle and the Python service, and no Node runtime or `node_modules`
+
+#### Scenario: Build fails on a broken frontend
+- **WHEN** the frontend type check or bundle build fails
+- **THEN** the image build fails instead of producing an image with a stale or partial bundle
+
+#### Scenario: Install on a host without Node
+- **WHEN** an operator runs `./install.sh` or `ghostship upgrade` on a host with Podman and no Node
+- **THEN** the `ga-radar` image is built with the bundle included
+
+#### Scenario: Package registry unreachable
+- **WHEN** the build cannot fetch frontend packages
+- **THEN** the installer reports that the Radar bundle build failed and why, and the previously built `ga-radar` image is left in place
+
+### Requirement: Radar assets use a safe cache policy
+
+`ga-radar` SHALL answer `GET /` with `Cache-Control: no-cache` so each load revalidates. It SHALL serve content-hashed assets under `/static/` as long-lived and immutable, and SHALL serve any other static file with `no-cache`.
+
+#### Scenario: Index revalidated
+- **WHEN** `GET /` is requested
+- **THEN** the response carries `Cache-Control: no-cache`
+
+#### Scenario: Hashed asset cached
+- **WHEN** a content-hashed asset under `/static/` is requested
+- **THEN** the response carries a long-lived `immutable` cache policy
+
+#### Scenario: Upgrade does not mix versions
+- **WHEN** Radar is upgraded while a browser holds an older bundle
+- **THEN** the next page load uses the new `index.html` and its new hashed assets, and never loads an old asset with a new page
+
+### Requirement: Radar unknown paths do not fall back to the SPA for API routes
+
+`ga-radar` SHALL return HTTP 404 for an unknown path under `/api/` or `/static/` and SHALL NOT answer it with `index.html`.
+
+#### Scenario: Unknown API path
+- **WHEN** `GET /api/unknown` is requested
+- **THEN** `ga-radar` returns HTTP 404 with a non-HTML body
+
+#### Scenario: Missing static asset
+- **WHEN** `GET /static/assets/missing.js` is requested
+- **THEN** `ga-radar` returns HTTP 404

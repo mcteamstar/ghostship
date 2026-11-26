@@ -64,6 +64,18 @@ Raven SHALL use `ghostship-spawn` for gateway operations that the `kirocrew` CLI
 #### Scenario: Raven's lean prompt still covers gateway auth
 - **WHEN** Raven needs to dispatch a named persona, steer a task, or continue a finished task
 - **THEN** Raven's base prompt directs it to the `ghostship-spawn` skill for those operations, since this is generic dispatch capability not Captain-loop-specific, and the prompt does not mention `.local_secret`, `X-Internal-Secret` or `X-Session-Key`
+
+#### Scenario: Raven waits for dispatched tasks in the foreground
+- **WHEN** Raven needs a dispatched task's result before it can finish its turn
+- **THEN** Raven's base prompt directs it to re-run `ghostship-spawn --status <task_id>` in the foreground and never to start a background poll or monitor, because Raven's task ends when its turn does
+
+### Requirement: Raven honors explicit model choices for delegated tasks
+When Raven is instructed to dispatch a named persona task using a specific model, Raven SHALL pass that model through `ghostship-spawn` using its `--model` option.
+
+#### Scenario: Standing order requests a model for delegated work
+- **WHEN** Raven is instructed to start a named persona task using `claude-opus-5`
+- **THEN** Raven dispatches through `ghostship-spawn <persona> --model claude-opus-5`
+
 ### Requirement: OpenSpec workflow division by persona
 The system SHALL scope each persona's prompt to the intended OpenSpec workflow division: Spectre to explore/propose/update-change, Ghost to all six operations with apply-change as its implementation path, Banshee to explore/propose/update-change/apply-change for independent review and fixes, and Reaper to sync-specs/archive-change. Banshee SHALL hand specification synchronization and change archival to Reaper rather than owning those close-out operations.
 

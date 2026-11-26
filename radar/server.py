@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # httpx2 is the httpx-compatible HTTP client used in the ghostship stack.
 try:
@@ -140,19 +142,197 @@ async def api_crew_agents(request: Request) -> Response:
     )
 
 
-async def index(request: Request) -> FileResponse:
-    """GET / — serve the Radar SPA root (index.html)."""
-    return FileResponse(str(_STATIC_DIR / "index.html"), media_type="text/html")
+async def api_crew_mail_subjects(request: Request) -> Response:
+    """GET /api/crews/{crew_id}/mail-subjects — proxy to transport mailbox subjects (TRN-370).
+
+    Forwards the X-Transport-Token header to transport's
+    ``GET /internal/crews/{crew_id}/mail-subjects`` endpoint.  Subject strings
+    only are returned.  Any transport failure, including an unreadable mailbox
+    source (transport 503), becomes a 502 so the browser shows the crew's
+    mailboxes as unavailable rather than empty.
+    """
+    crew_id = request.path_params.get("crew_id", "")
+    url = f"{TRANSPORT_URL}/internal/crews/{crew_id}/mail-subjects"
+    headers = {"X-Transport-Token": _TRANSPORT_SECRET}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        logger.error("Transport unreachable for crew mail subjects %s: %s", crew_id, exc)
+        return JSONResponse(
+            {"error": "transport unreachable"},
+            status_code=502,
+        )
+
+    if resp.status_code != 200:
+        logger.error(
+            "Transport returned %d for %s: %s",
+            resp.status_code,
+            url,
+            resp.text[:200],
+        )
+        return JSONResponse(
+            {"error": "transport error", "status_code": resp.status_code},
+            status_code=502,
+        )
+
+    return Response(
+        content=resp.content,
+        status_code=200,
+        media_type="application/json",
+    )
+
+
+# Crew ids are lowercase alphanumerics and interior hyphens, at most 50 characters
+# (the same rule the transport enforces at launch). Checking it before building
+# the upstream URL keeps a browser-supplied path segment from rewriting the
+# transport path it is proxied to.
+_CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
+
+# The refresh checks the stored profile, compares the container and may exec into
+# it, behind the credential lock. The transport runs these steps one after another:
+# its Podman client allows 120 s per request, the exec read has no timeout, and the
+# lock wait is unbounded. 60 s covers a slow but normal refresh. The browser waits
+# 75 s (radar/web/src/auth/refresh.ts), so its own bound always outlasts this one.
+_AUTH_REFRESH_TIMEOUT_SECS = 60.0
+
+
+def _is_same_origin(request: Request) -> bool:
+    """True when the request carries exactly one ``Origin`` naming its own host.
+
+    Radar's session gate validates only the ``gs_session`` cookie, which is
+    ``SameSite=Lax`` and so still accompanies same-site requests from other
+    pages. A state-changing route therefore also requires the browser's
+    ``Origin`` to match the ``Host`` the request was made to. Browsers always
+    send ``Origin`` on a ``fetch`` POST and scripts cannot set or alter it, so
+    the SPA needs no token and a request without one (or from another origin)
+    is refused. Caddy passes ``Host`` through unchanged.
+    """
+    origins = request.headers.getlist("origin")
+    hosts = request.headers.getlist("host")
+    if len(origins) != 1 or len(hosts) != 1:
+        return False
+    try:
+        origin = urlsplit(origins[0])
+    except ValueError:
+        return False
+    if (
+        origin.scheme not in ("http", "https")
+        or not origin.netloc
+        or origin.path
+        or origin.query
+        or origin.fragment
+    ):
+        return False
+    return origin.netloc.lower() == hosts[0].strip().lower()
+
+
+async def api_crew_auth_refresh(request: Request) -> Response:
+    """POST /api/crews/{crew_id}/auth/refresh — proxy to transport's credential refresh (TRN-367).
+
+    The browser-facing half of the per-crew "Refresh auth" action. The request
+    must carry a same-origin ``Origin`` (see ``_is_same_origin``); anything else
+    is a 403 and transport is not called. Otherwise this forwards to
+    ``POST /internal/crews/{crew_id}/auth/refresh`` with ``X-Transport-Token``
+    and returns transport's outcome unchanged. Radar holds no backend credential
+    and sends none: the request has no body, and transport refreshes only the
+    credential stored for the crew's own backend and profile.
+
+    Any failure to get an outcome, including transport answering with a non-200
+    status such as 404 for an unknown crew, becomes a 502 with a fixed message.
+    """
+    if not _is_same_origin(request):
+        return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
+    crew_id = request.path_params.get("crew_id", "")
+    if not _CREW_ID_RE.fullmatch(crew_id):
+        return JSONResponse({"error": "crew not found"}, status_code=404)
+    url = f"{TRANSPORT_URL}/internal/crews/{crew_id}/auth/refresh"
+    headers = {"X-Transport-Token": _TRANSPORT_SECRET}
+    try:
+        async with httpx.AsyncClient(timeout=_AUTH_REFRESH_TIMEOUT_SECS) as client:
+            resp = await client.post(url, headers=headers)
+    except httpx.RequestError as exc:
+        logger.error(
+            "Transport unreachable for crew auth refresh %s (%s)", crew_id, type(exc).__name__,
+        )
+        return JSONResponse({"error": "transport unreachable"}, status_code=502)
+
+    if resp.status_code != 200:
+        logger.error(
+            "Transport returned %d for crew auth refresh %s", resp.status_code, crew_id,
+        )
+        return JSONResponse(
+            {"error": "transport error", "status_code": resp.status_code},
+            status_code=502,
+        )
+
+    return Response(
+        content=resp.content,
+        status_code=200,
+        media_type="application/json",
+    )
+
+
+# Cache policy for the built Radar bundle (TRN-371). The page and every file outside
+# the hashed assets directory are revalidated on each load, and the ETag keeps an
+# unchanged file to a 304. Files under assets/ carry a content hash in their name, so
+# a new build gets new names and an old name can be cached for a year. A page loaded
+# after an upgrade therefore always names assets that exist.
+_REVALIDATE = "no-cache"
+_IMMUTABLE = "public, max-age=31536000, immutable"
+_HASHED_ASSET_PREFIX = "assets/"
+
+
+class _BundleStaticFiles(StaticFiles):
+    """Serves the Radar bundle under /static/ with the cache policy above.
+
+    A missing file answers 404 from StaticFiles and never falls back to index.html.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        # A 304 answers a revalidation of the same file, so it keeps the file's policy.
+        hashed = response.status_code in (200, 304) and path.startswith(_HASHED_ASSET_PREFIX)
+        response.headers["Cache-Control"] = _IMMUTABLE if hashed else _REVALIDATE
+        return response
+
+
+def build_app(static_dir: Path) -> Starlette:
+    """Build the Radar ASGI app that serves the built bundle in ``static_dir``.
+
+    ``check_dir=False`` lets the app start before a bundle exists. Until one does,
+    ``/`` and every ``/static/`` path answer 404.
+    """
+    static_dir = Path(static_dir)
+    index_path = static_dir / "index.html"
+
+    async def index(request: Request) -> Response:
+        """GET / — the Radar page: the built index.html."""
+        if not index_path.is_file():
+            return Response("Radar UI bundle is not built.", status_code=404, media_type="text/plain")
+        return FileResponse(
+            str(index_path),
+            media_type="text/html",
+            headers={"Cache-Control": _REVALIDATE},
+        )
+
+    return Starlette(
+        routes=[
+            Route("/health", health),
+            Route("/api/crews", api_crews),
+            Route("/api/crews/{crew_id}/agents", api_crew_agents),
+            Route("/api/crews/{crew_id}/mail-subjects", api_crew_mail_subjects),
+            Route("/api/crews/{crew_id}/auth/refresh", api_crew_auth_refresh, methods=["POST"]),
+            Route("/", index),
+            Mount(
+                "/static",
+                _BundleStaticFiles(directory=str(static_dir), check_dir=False),
+                name="static",
+            ),
+        ],
+    )
 
 
 # ── Application ─────────────────────────────────────────────────────────────────
 
-app = Starlette(
-    routes=[
-        Route("/health", health),
-        Route("/api/crews", api_crews),
-        Route("/api/crews/{crew_id}/agents", api_crew_agents),
-        Route("/", index),
-        Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
-    ],
-)
+app = build_app(_STATIC_DIR)

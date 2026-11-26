@@ -123,6 +123,14 @@ components:
     version_policy: Floating patch tag within Python 3.12.
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-08.md}
+  - id: node-radar-build-image
+    name: Node 24 LTS build image (Radar UI bundle)
+    category: build image
+    declarations: [{kind: container_from, path: radar/Containerfile, name: node}]
+    source: {type: dockerhub_image, repository: library/node, tag_regex: '^24(?:\.\d+)?-alpine$'}
+    version_policy: 'Node 24 LTS on Alpine, pinned by index digest sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 (the Node 24 digest is pending its first real build). Build stage only; no Node in the runtime image.'
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: digest-resolved-image-build-not-run-podman-unavailable, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
   - id: caddy-image
     name: Caddy portal image
     category: runtime image
@@ -173,6 +181,14 @@ components:
     version_policy: Python 3.12 stream requested; the runner resolves the patch version.
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: runtime-patch-unknown, next_review: 2026-12-08, evidence: https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-08.md}
+  - id: action-setup-node
+    name: GitHub Actions setup-node
+    category: CI action
+    declarations: [{kind: github_action, path: .github/workflows/test.yml, name: actions/setup-node}]
+    source: {type: github_release, repository: actions/setup-node}
+    version_policy: Major branch ref; the Node runtime version is declared in radar/web/.nvmrc.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: candidate-observed, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
   - id: action-upload-artifact
     name: GitHub Actions upload-artifact
     category: CI action
@@ -334,6 +350,53 @@ components:
     version_policy: Exact pin; direct runtime dependency.
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-08, outcome: candidate-observed, next_review: 2026-12-08, evidence: https://github.com/mcteamstar/ghostship/blob/e98c54ebb43d41b63513536c4bada038a39cbbc3/docs/dependency-review-2026-11-08.md}
+  - id: radar-web-runtime
+    name: React and ReactDOM (Radar UI)
+    category: frontend runtime dependency
+    declarations:
+      - {kind: manual, path: radar/web/package.json, term: '"react": "19.3.1"'}
+      - {kind: manual, path: radar/web/package.json, term: '"react-dom": "19.3.1"'}
+    source: {type: npm, package: react}
+    version_policy: Exact pins in radar/web/package.json, recorded in package-lock.json; the only runtime code in the bundle besides the Radar source.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: pinned-lockfile-built-and-tested-on-host-node-24, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
+  - id: radar-web-build
+    name: Vite, Vite React plugin and TypeScript (Radar UI build)
+    category: frontend build dependency
+    declarations:
+      - {kind: manual, path: radar/web/package.json, term: '"vite": "8.3.8"'}
+      - {kind: manual, path: radar/web/package.json, term: '"@vitejs/plugin-react": "6.3.0"'}
+      - {kind: manual, path: radar/web/package.json, term: '"typescript": "6.0.3"'}
+    source: {type: npm, package: vite}
+    version_policy: Exact pins; build-time only, runs inside the ga-radar build stage and is absent from the runtime image.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: pinned-lockfile-built-on-host-node-24-image-build-pending, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
+  - id: radar-web-test
+    name: Vitest, jsdom, Testing Library and axe-core (Radar UI tests)
+    category: frontend test dependency
+    declarations:
+      - {kind: manual, path: radar/web/package.json, term: '"vitest": "5.1.2"'}
+      - {kind: manual, path: radar/web/package.json, term: '"jsdom": "31.0.1"'}
+      - {kind: manual, path: radar/web/package.json, term: '"@testing-library/react": "16.3.3"'}
+      - {kind: manual, path: radar/web/package.json, term: '"@testing-library/dom": "10.4.2"'}
+      - {kind: manual, path: radar/web/package.json, term: '"@testing-library/user-event": "14.6.13"'}
+      - {kind: manual, path: radar/web/package.json, term: '"@testing-library/jest-dom": "8.0.0"'}
+      - {kind: manual, path: radar/web/package.json, term: '"axe-core": "4.14.1"'}
+    source: {type: npm, package: vitest}
+    version_policy: Exact pins; test-only, run in CI and never in the image build.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: pinned-lockfile-tests-pass-on-host-node-24, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
+  - id: radar-web-types
+    name: Type declarations (Radar UI)
+    category: frontend build dependency
+    declarations:
+      - {kind: manual, path: radar/web/package.json, term: '"@types/react": "19.3.3"'}
+      - {kind: manual, path: radar/web/package.json, term: '"@types/react-dom": "19.3.0"'}
+      - {kind: manual, path: radar/web/package.json, term: '"@types/node": "26.6.11"'}
+    source: {type: npm, package: '@types/react'}
+    version_policy: Exact pins; compile-time only.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: pinned-lockfile-typecheck-passes-on-host-node-24, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
   - id: cryptography-base
     name: cryptography (base admission image)
     category: derived component

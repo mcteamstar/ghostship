@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.13.2
+
+- Add per-dispatch model overrides for crew agents.
+- Keep Captain task polling in the foreground until dispatched work completes.
+- Open device-auth links in the default browser when Enter is pressed, while
+  preserving terminal input during auth polling.
+- Let E2E runs select the crew backend explicitly.
+- Wire Playwright into spec-ops crews, include Chromium in the image, and
+  expose its MCP server through the crew composition.
+- Add a credential refresh for an existing crew. `POST /crews/{crew_id}/auth/refresh`
+  (bearer-protected when `GA_API_KEY` is set) re-applies the credential stored for
+  the crew's backend and profile, and reports whether it was refreshed, is
+  pending until wake, is already current, needs the crew recreated, is missing,
+  or failed. Credential values never appear in a request or response. Radar's
+  crew detail has a **Refresh auth** button that uses a session-gated proxy.
+- Show crew mailbox subjects in Radar's expanded crew detail, for running and
+  stopped crews, without exposing message bodies or changing any mailbox.
+- Keep Radar's on-expand sections (tasks, mailbox subjects) visible across fleet
+  refreshes, and make browsers revalidate Radar's static files so an upgrade
+  cannot mix old and new modules.
+- Rebuild the Radar UI as a React and TypeScript app (`radar/web`) compiled in the
+  `ga-radar` image build on `node:24-alpine`, pinned by digest. The runtime image
+  has no Node and serves only the built output: content-hashed assets are cached
+  as immutable, the page revalidates on every load, and unknown `/api` and
+  `/static` paths return 404 instead of the page. Building the image fetches npm
+  packages, so `./install.sh` and `ghostship upgrade` need access to the npm
+  registry.
+- Radar keeps its behaviour: the fleet table, default and Last Task ordering,
+  expandable crew detail, copy crew ID, the `#crew=<id>` link and Refresh auth.
+- Radar summary above the table: running and stopped counts, capacity and free
+  memory when the fleet reports them.
+- The crew filter is always shown. Radar follows the system light or dark
+  preference, and lays each crew out as a card below 640 px.
+- Crew detail: agent tasks as cards under running and finished groups, mailbox
+  subjects with per-mailbox counts, and explicit loading, unavailable and
+  session-expired states for each detail section.
+- A session that has expired shows "Session expired, sign in again" with a
+  sign-in link, not a JSON parse error.
+- Radar no longer requests a crew's scheduled jobs and no longer shows a
+  Scheduled jobs section. The portal has no route for that request, so it only
+  ever received an empty answer.
+- An empty or non-JSON answer to a Radar request is now a failed request for
+  its section. Only a redirect to sign-in, or an HTML page answered with HTTP
+  200, shows "Session expired, sign in again".
+
 ## v0.13.1
 
 - Upgrade the crew base to KiroCrew 0.13.1 at multi-arch index digest

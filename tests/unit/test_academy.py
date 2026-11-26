@@ -258,12 +258,130 @@ def test_stage_mcp_writes_servers_json_with_disabled_false(tmp_path: Path) -> No
     assert "servers.json" in members
 
     servers = json.loads(members["servers.json"][0])
-    assert isinstance(servers, list)
-    assert len(servers) == 1
-    entry = servers[0]
-    assert entry["name"] == "playwright"
+    assert isinstance(servers, dict)
+    assert list(servers) == ["playwright"]
+    entry = servers["playwright"]
     assert entry["disabled"] is False
     assert entry["command"] == "npx"
+
+
+def test_spec_ops_playwright_configuration_is_delivered() -> None:
+    """The real spec-ops manifest stages Playwright and Ghost receives its grant."""
+    import transport.academy as academy
+
+    repo_root = Path(__file__).resolve().parents[2]
+    manifest = json.loads(
+        (repo_root / "crews/spec-ops/manifest.json").read_text(encoding="utf-8")
+    )
+    podman = _CapturePodman()
+    loader = academy.AcademyLoader(podman, "gs-spec-ops", acp_backend="codex")
+
+    def academy_path(path: str | Path) -> Path:
+        return repo_root / "academy/agents" if str(path) == "/agents" else Path(path)
+
+    with (
+        patch.object(academy, "Path", academy_path),
+        patch.object(academy, "_MCP_CATALOGUE_DIR", repo_root / "academy/mcp"),
+        patch.object(academy, "_load_crew_manifest", return_value=manifest),
+    ):
+        loader._stage_mcp()
+        copied_agents = loader._copy_agents()
+
+    assert "ghost.json" in copied_agents
+    mcp_archive = next(
+        _archive_members(body)
+        for _, dest, body in podman.archives
+        if dest == "/home/kirocrew/.agents/mcp"
+    )
+    servers = json.loads(mcp_archive["servers.json"][0])
+    assert list(servers) == ["playwright"]
+    assert servers["playwright"]["disabled"] is False
+    assert servers["playwright"]["command"] == "npx"
+    assert servers["playwright"]["args"] == [
+        "--yes",
+        "@playwright/mcp@latest",
+        "--executable-path",
+        "/usr/bin/chromium",
+        "--headless",
+        "--no-sandbox",
+    ]
+    assert servers["playwright"]["env"] == {"PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}
+    assert json.loads(mcp_archive["codex.servers.json"][0]) == {
+        "playwright": {"enabled": True}
+    }
+
+    delivered_agents = {}
+    for _, dest, body in podman.archives:
+        if dest == "/home/kirocrew/.kiro/agents":
+            delivered_agents.update(_archive_members(body))
+    delivered_ghost = json.loads(delivered_agents["ghost.json"][0])
+    assert "@playwright" in delivered_ghost["tools"]
+    assert "@playwright" in delivered_ghost["allowedTools"]
+    assert delivered_ghost["mcpServers"] == {
+        "playwright": {
+            "type": "stdio",
+            "command": "npx",
+            "args": [
+                "--yes",
+                "@playwright/mcp@latest",
+                "--executable-path",
+                "/usr/bin/chromium",
+                "--headless",
+                "--no-sandbox",
+            ],
+            "env": {"PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"},
+            "disabled": False,
+        }
+    }
+    for agent_path in (repo_root / "academy/agents").glob("*.json"):
+        if agent_path.name == "ghost.json":
+            continue
+        agent = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert "@playwright" not in agent.get("tools", [])
+        assert "@playwright" not in agent.get("allowedTools", [])
+        if agent_path.name in delivered_agents:
+            delivered = json.loads(delivered_agents[agent_path.name][0])
+            assert "playwright" not in delivered.get("mcpServers", {})
+
+
+def test_copy_agents_preserves_persona_mcp_entry_over_composition_entry(tmp_path: Path) -> None:
+    """An agent's explicit MCP config wins over the selected composition entry."""
+    import transport.academy as academy
+
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "ghost.json").write_text(json.dumps({
+        "name": "ghost",
+        "tools": ["@playwright"],
+        "mcpServers": {
+            "playwright": {"command": "persona-command", "args": ["own"]},
+            "private": {"command": "private-command", "args": []},
+        },
+    }), encoding="utf-8")
+
+    original_path = academy.Path
+
+    def academy_path(path: str | Path) -> Path:
+        return agents_dir if str(path) == "/agents" else original_path(path)
+
+    podman = _CapturePodman()
+    loader = academy.AcademyLoader(podman, "gs-persona-mcp")
+    loader._staged_mcp_servers = {
+        "playwright": {"command": "composition-command", "args": []},
+        "nexus": {"command": "nexus-command", "args": []},
+    }
+
+    with (
+        patch.object(academy, "Path", academy_path),
+        patch.object(academy, "_load_crew_manifest", return_value={"agents": "*"}),
+    ):
+        assert loader._copy_agents() == ["ghost.json"]
+
+    delivered = json.loads(_archive_members(podman.archives[0][2])["ghost.json"][0])
+    assert delivered["mcpServers"] == {
+        "playwright": {"command": "persona-command", "args": ["own"]},
+        "private": {"command": "private-command", "args": []},
+    }
 
 
 def test_stage_mcp_skips_missing_catalogue_entry(tmp_path: Path) -> None:
@@ -301,8 +419,8 @@ def test_stage_mcp_no_mcp_servers_key(tmp_path: Path) -> None:
 
 # ── _run_setup tests ──────────────────────────────────────────────────────────
 
-def test_run_setup_calls_agents_setup_with_yolo_without_harness_arg() -> None:
-    """Setup applies unattended settings to every detected harness."""
+def test_run_setup_configures_selected_and_detected_harnesses() -> None:
+    """Setup always configures the selected backend, then all detected ones."""
     import transport.academy as academy
 
     podman = _CapturePodman()
@@ -310,13 +428,19 @@ def test_run_setup_calls_agents_setup_with_yolo_without_harness_arg() -> None:
     loader._run_setup()
 
     exec_cmds = [cmd for _, cmd in podman.execs]
-    assert ["/home/kirocrew/.agents/setup", "--yolo"] in exec_cmds
-    assert podman.stdin_execs == [("gs-test", ["/home/kirocrew/.agents/setup", "--yolo"], b"y\ny\n")]
+    assert exec_cmds == [
+        ["/home/kirocrew/.agents/setup", "kiro", "--yolo"],
+        ["/home/kirocrew/.agents/setup", "--yolo"],
+    ]
+    assert podman.stdin_execs == [
+        ("gs-test", ["/home/kirocrew/.agents/setup", "kiro", "--yolo"], b"y\ny\n"),
+        ("gs-test", ["/home/kirocrew/.agents/setup", "--yolo"], b"y\ny\n"),
+    ]
 
 
 @pytest.mark.parametrize("backend", ["kiro", "claude", "codex"])
-def test_run_setup_ignores_crew_backend(backend: str) -> None:
-    """The crew's backend never narrows setup to a single harness."""
+def test_run_setup_explicitly_targets_crew_backend(backend: str) -> None:
+    """The selected backend is set up even if its executable is not detected."""
     import transport.academy as academy
 
     podman = _CapturePodman()
@@ -324,7 +448,10 @@ def test_run_setup_ignores_crew_backend(backend: str) -> None:
     loader._run_setup()
 
     setup_cmds = [cmd for _, cmd in podman.execs if cmd and cmd[0] == "/home/kirocrew/.agents/setup"]
-    assert setup_cmds == [["/home/kirocrew/.agents/setup", "--yolo"]]
+    assert setup_cmds == [
+        ["/home/kirocrew/.agents/setup", backend, "--yolo"],
+        ["/home/kirocrew/.agents/setup", "--yolo"],
+    ]
 
 
 def test_run_setup_logs_warning_on_failure() -> None:
