@@ -7,7 +7,7 @@
 
 ## 2. Portal and Radar operator action
 
-- [ ] 2.1 Add Radar's `POST /api/crews/{crew_id}/auth/refresh` proxy to the internal transport route, rejecting requests whose `Origin` is missing or does not match the request host with 403 before calling Transport; verify Radar tests assert token forwarding, outcome passthrough, safe 502 behavior, and Origin rejection (missing, cross-origin, same-origin accepted).
+- [x] 2.1 Add Radar's `POST /api/crews/{crew_id}/auth/refresh` proxy to the internal transport route, rejecting requests whose `Origin` is missing or does not match the request host with 403 before calling Transport; verify Radar tests assert token forwarding, outcome passthrough, safe 502 behavior, and Origin rejection (missing, cross-origin, same-origin accepted).
 - [ ] 2.2 Add a per-crew auth refresh action in the Radar detail panel and display refreshed, pending-on-wake, current, recreate-required, missing, and failed outcomes; call the endpoint with `redirect: "manual"` (or detect a redirected/non-JSON response) and show a sign-in-again message on session expiry; verify the UI disables duplicate submissions, handles the expired-session redirect, and renders actionable text without credential data.
 - [ ] 2.3 Preserve Portal session gating for the mutating Radar endpoint; verify generated Caddy config routes the POST through `forward_auth` when API-key auth is enabled and the request reaches Radar only for an authenticated session.
 

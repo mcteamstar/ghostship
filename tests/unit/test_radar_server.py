@@ -387,5 +387,261 @@ class TestRadarApiCrewMailSubjects(unittest.TestCase):
         self.assertEqual(json.loads(body), {"error": "transport unreachable"})
 
 
+class TestRadarApiCrewAuthRefresh(unittest.TestCase):
+    """POST /api/crews/{crew_id}/auth/refresh — same-origin proxy to transport (TRN-367).
+
+    Drives the whole ASGI app so routing, method filtering and path parameters
+    are exercised, with a mock transport that records what Radar sends upstream.
+    """
+
+    SECRET = "test-transport-secret"
+    HOST = "radar.example:64057"
+    ORIGIN = "https://radar.example:64057"
+    OUTCOMES = (
+        "refreshed", "pending_on_wake", "current",
+        "recreate_required", "credential_missing", "refresh_failed",
+    )
+
+    def _post(
+        self,
+        crew_id="alpha",
+        *,
+        headers=None,
+        method="POST",
+        status=200,
+        content=b"{}",
+        request_error=None,
+    ):
+        """Return (messages, body, upstream) for one request through the app."""
+        server = _import_radar_server()
+        client_library = server.httpx
+        upstream: dict = {"requests": []}
+
+        def handle(request):
+            upstream["requests"].append(request)
+            if request_error is not None:
+                raise request_error(request)
+            return client_library.Response(status, content=content, request=request)
+
+        transport = client_library.MockTransport(handle)
+        real_async_client = client_library.AsyncClient
+
+        def async_client(*args, **kwargs):
+            upstream["timeout"] = kwargs.get("timeout")
+            kwargs["transport"] = transport
+            return real_async_client(*args, **kwargs)
+
+        if headers is None:
+            headers = {"host": self.HOST, "origin": self.ORIGIN}
+        scope = _make_scope(method, f"/api/crews/{crew_id}/auth/refresh")
+        scope["headers"] = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
+        with patch.object(server, "_TRANSPORT_SECRET", self.SECRET), \
+             patch.object(server.httpx, "AsyncClient", side_effect=async_client):
+            messages, body = _run(_call(server.app, scope))
+        return messages, body, upstream
+
+    # ── proxying ──────────────────────────────────────────────────────────────
+
+    def test_forwards_post_to_the_internal_route_with_the_transport_token(self):
+        messages, _body, upstream = self._post("alpha")
+        self.assertEqual(_status_of(messages), 200)
+        (request,) = upstream["requests"]
+        self.assertEqual(request.method, "POST")
+        self.assertTrue(str(request.url).endswith("/internal/crews/alpha/auth/refresh"))
+        self.assertEqual(request.headers.get("x-transport-token"), self.SECRET)
+
+    def test_forwards_no_browser_data_and_no_credential(self):
+        headers = {
+            "host": self.HOST,
+            "origin": self.ORIGIN,
+            "cookie": "gs_session=browser-session-cookie",
+            "authorization": "Bearer browser-supplied-key",
+            "content-type": "application/json",
+        }
+        _messages, _body, upstream = self._post("alpha", headers=headers)
+        (request,) = upstream["requests"]
+        sent = {name.lower() for name in request.headers.keys()}
+        for browser_header in ("cookie", "authorization", "origin"):
+            self.assertNotIn(browser_header, sent)
+        self.assertEqual(request.content, b"")
+        self.assertEqual(request.url.query, b"")
+
+    def test_passes_every_transport_outcome_through_unmodified(self):
+        for status in self.OUTCOMES:
+            with self.subTest(status=status):
+                payload = json.dumps(
+                    {"status": status, "crew_id": "alpha", "backend": "kiro",
+                     "profile": "default", "message": f"message for {status}"},
+                ).encode()
+                messages, body, _upstream = self._post("alpha", content=payload)
+                self.assertEqual(_status_of(messages), 200)
+                self.assertEqual(body, payload)
+                self.assertIn("application/json", _headers_of(messages)["content-type"])
+
+    def test_crew_id_is_taken_from_the_path(self):
+        _messages, _body, upstream = self._post("crew-2")
+        self.assertTrue(str(upstream["requests"][0].url).endswith("/internal/crews/crew-2/auth/refresh"))
+
+    def test_refresh_is_given_longer_than_a_fleet_read(self):
+        server = _import_radar_server()
+        _messages, _body, upstream = self._post("alpha")
+        self.assertEqual(upstream["timeout"], server._AUTH_REFRESH_TIMEOUT_SECS)
+        self.assertGreater(server._AUTH_REFRESH_TIMEOUT_SECS, 10.0)
+
+    # ── safe failures ─────────────────────────────────────────────────────────
+
+    def test_transport_unreachable_is_a_safe_502(self):
+        def refused(request):
+            return _import_radar_server().httpx.ConnectError(
+                f"connection refused to {self.SECRET} at ga-transport", request=request,
+            )
+
+        with self.assertLogs("radar", level="ERROR") as captured:
+            messages, body, _upstream = self._post("alpha", request_error=refused)
+        self.assertEqual(_status_of(messages), 502)
+        self.assertEqual(json.loads(body), {"error": "transport unreachable"})
+        self.assertNotIn(self.SECRET.encode(), body)
+        self.assertNotIn(self.SECRET, "\n".join(captured.output))
+
+    def test_transport_timeout_is_a_safe_502(self):
+        def timed_out(request):
+            return _import_radar_server().httpx.ReadTimeout("read timed out", request=request)
+
+        with self.assertLogs("radar", level="ERROR"):
+            messages, body, _upstream = self._post("alpha", request_error=timed_out)
+        self.assertEqual(_status_of(messages), 502)
+        self.assertEqual(json.loads(body), {"error": "transport unreachable"})
+
+    def test_non_200_from_transport_is_a_502_naming_only_the_status(self):
+        for status in (401, 404, 500, 503):
+            with self.subTest(status=status):
+                with self.assertLogs("radar", level="ERROR") as captured:
+                    messages, body, _upstream = self._post(
+                        "alpha", status=status, content=b'{"error": "upstream detail secret-body"}',
+                    )
+                self.assertEqual(_status_of(messages), 502)
+                self.assertEqual(json.loads(body), {"error": "transport error", "status_code": status})
+                self.assertNotIn(b"secret-body", body)
+                self.assertNotIn("secret-body", "\n".join(captured.output))
+
+    # ── same-origin guard ─────────────────────────────────────────────────────
+
+    def _assert_rejected(self, headers, label):
+        with self.subTest(case=label):
+            messages, body, upstream = self._post("alpha", headers=headers)
+            self.assertEqual(_status_of(messages), 403)
+            self.assertEqual(json.loads(body), {"error": "cross-origin request rejected"})
+            self.assertEqual(upstream["requests"], [], "transport must not be called")
+
+    def test_missing_origin_is_rejected_without_calling_transport(self):
+        self._assert_rejected({"host": self.HOST}, "no origin header")
+
+    def test_cross_origin_is_rejected_without_calling_transport(self):
+        for label, origin in (
+            ("other host", "https://evil.example"),
+            ("other host same port", "https://evil.example:64057"),
+            ("same host other port", "https://radar.example:64058"),
+            ("same host no port", "https://radar.example"),
+            ("subdomain", "https://sub.radar.example:64057"),
+            ("suffix attack", "https://radar.example:64057.evil.example"),
+            ("userinfo", "https://radar.example:64057@evil.example"),
+            ("opaque origin", "null"),
+            ("empty", ""),
+            ("not a url", "radar.example:64057"),
+            ("file scheme", "file://radar.example:64057"),
+            ("javascript scheme", "javascript://radar.example:64057"),
+            ("with path", "https://radar.example:64057/"),
+            ("with path segment", "https://radar.example:64057/x"),
+            ("with query", "https://radar.example:64057?x=1"),
+            ("with fragment", "https://radar.example:64057#x"),
+        ):
+            self._assert_rejected({"host": self.HOST, "origin": origin}, label)
+
+    def test_malformed_origin_is_rejected(self):
+        self._assert_rejected({"host": self.HOST, "origin": "http://[::1"}, "unbalanced IPv6 bracket")
+
+    def test_missing_host_is_rejected(self):
+        self._assert_rejected({"origin": self.ORIGIN}, "no host header")
+
+    def test_duplicate_origin_headers_are_rejected(self):
+        server = _import_radar_server()
+        scope = _make_scope("POST", "/api/crews/alpha/auth/refresh")
+        scope["headers"] = [
+            (b"host", self.HOST.encode()),
+            (b"origin", self.ORIGIN.encode()),
+            (b"origin", self.ORIGIN.encode()),
+        ]
+        called = []
+        with patch.object(server.httpx, "AsyncClient", side_effect=lambda *a, **k: called.append(1)):
+            messages, _body = _run(_call(server.app, scope))
+        self.assertEqual(_status_of(messages), 403)
+        self.assertEqual(called, [])
+
+    def test_origin_check_runs_before_crew_validation_and_transport(self):
+        messages, body, upstream = self._post("NOT A CREW", headers={"host": self.HOST})
+        self.assertEqual(_status_of(messages), 403)
+        self.assertEqual(upstream["requests"], [])
+
+    def test_same_origin_is_accepted(self):
+        for label, host, origin in (
+            ("https with port", "radar.example:64057", "https://radar.example:64057"),
+            ("http with port", "radar.example:64057", "http://radar.example:64057"),
+            ("https default port", "radar.example", "https://radar.example"),
+            ("localhost dev", "localhost:64057", "http://localhost:64057"),
+            ("ipv4", "127.0.0.1:64057", "http://127.0.0.1:64057"),
+            ("ipv6", "[::1]:64057", "http://[::1]:64057"),
+            ("case differs", "Radar.Example:64057", "https://radar.example:64057"),
+        ):
+            with self.subTest(case=label):
+                messages, _body, upstream = self._post("alpha", headers={"host": host, "origin": origin})
+                self.assertEqual(_status_of(messages), 200)
+                self.assertEqual(len(upstream["requests"]), 1)
+
+    def test_origin_guard_helper_returns_booleans_for_a_direct_call(self):
+        from starlette.requests import Request
+        server = _import_radar_server()
+
+        def request(headers):
+            scope = _make_scope("POST", "/x")
+            scope["headers"] = [(k.encode(), v.encode()) for k, v in headers]
+            return Request(scope)
+
+        self.assertTrue(server._is_same_origin(request([("host", "a:1"), ("origin", "http://a:1")])))
+        self.assertFalse(server._is_same_origin(request([("host", "a:1")])))
+        self.assertFalse(server._is_same_origin(request([("origin", "http://a:1")])))
+        self.assertFalse(server._is_same_origin(request([("host", "a:1"), ("origin", "http://b:1")])))
+
+    # ── routing ───────────────────────────────────────────────────────────────
+
+    def test_only_post_is_routed(self):
+        for method in ("GET", "PUT", "DELETE", "PATCH"):
+            with self.subTest(method=method):
+                messages, _body, upstream = self._post("alpha", method=method)
+                self.assertEqual(_status_of(messages), 405)
+                self.assertEqual(upstream["requests"], [])
+
+    def test_invalid_crew_ids_are_not_proxied(self):
+        for crew_id in ("..", ".", "Alpha", "a" * 51, "-alpha", "alpha-", "a_b", "a%3Fb", "a%2Fb", "a b"):
+            with self.subTest(crew_id=crew_id):
+                messages, body, upstream = self._post(crew_id)
+                self.assertIn(_status_of(messages), (404,))
+                self.assertEqual(upstream["requests"], [])
+
+    def test_valid_crew_id_shapes_are_proxied(self):
+        for crew_id in ("a", "ab", "a-b", "alpha-2", "a" * 50, "0"):
+            with self.subTest(crew_id=crew_id):
+                messages, _body, upstream = self._post(crew_id)
+                self.assertEqual(_status_of(messages), 200)
+                self.assertEqual(len(upstream["requests"]), 1)
+
+    def test_existing_read_routes_are_unchanged(self):
+        server = _import_radar_server()
+        routes = {getattr(r, "path", None): getattr(r, "methods", None) for r in server.app.routes}
+        self.assertEqual(routes["/api/crews/{crew_id}/auth/refresh"], {"POST"})
+        for path in ("/api/crews", "/api/crews/{crew_id}/agents", "/api/crews/{crew_id}/mail-subjects"):
+            self.assertIn("GET", routes[path])
+            self.assertNotIn("POST", routes[path])
+
+
 if __name__ == "__main__":
     unittest.main()

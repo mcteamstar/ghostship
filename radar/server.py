@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # httpx2 is the httpx-compatible HTTP client used in the ghostship stack.
 try:
@@ -181,6 +183,93 @@ async def api_crew_mail_subjects(request: Request) -> Response:
     )
 
 
+# Crew ids are lowercase alphanumerics and interior hyphens, at most 50 characters
+# (the same rule the transport enforces at launch). Checking it before building
+# the upstream URL keeps a browser-supplied path segment from rewriting the
+# transport path it is proxied to.
+_CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
+
+# The refresh checks the stored profile, compares the container and may exec into
+# it, behind the credential lock; allow longer than a read-only fleet query.
+_AUTH_REFRESH_TIMEOUT_SECS = 30.0
+
+
+def _is_same_origin(request: Request) -> bool:
+    """True when the request carries exactly one ``Origin`` naming its own host.
+
+    Radar's session gate validates only the ``gs_session`` cookie, which is
+    ``SameSite=Lax`` and so still accompanies same-site requests from other
+    pages. A state-changing route therefore also requires the browser's
+    ``Origin`` to match the ``Host`` the request was made to. Browsers always
+    send ``Origin`` on a ``fetch`` POST and scripts cannot set or alter it, so
+    the SPA needs no token and a request without one (or from another origin)
+    is refused. Caddy passes ``Host`` through unchanged.
+    """
+    origins = request.headers.getlist("origin")
+    hosts = request.headers.getlist("host")
+    if len(origins) != 1 or len(hosts) != 1:
+        return False
+    try:
+        origin = urlsplit(origins[0])
+    except ValueError:
+        return False
+    if (
+        origin.scheme not in ("http", "https")
+        or not origin.netloc
+        or origin.path
+        or origin.query
+        or origin.fragment
+    ):
+        return False
+    return origin.netloc.lower() == hosts[0].strip().lower()
+
+
+async def api_crew_auth_refresh(request: Request) -> Response:
+    """POST /api/crews/{crew_id}/auth/refresh — proxy to transport's credential refresh (TRN-367).
+
+    The browser-facing half of the per-crew "Refresh auth" action. The request
+    must carry a same-origin ``Origin`` (see ``_is_same_origin``); anything else
+    is a 403 and transport is not called. Otherwise this forwards to
+    ``POST /internal/crews/{crew_id}/auth/refresh`` with ``X-Transport-Token``
+    and returns transport's outcome unchanged. Radar holds no backend credential
+    and sends none: the request has no body, and transport refreshes only the
+    credential stored for the crew's own backend and profile.
+
+    Any failure to get an outcome, including transport answering with a non-200
+    status such as 404 for an unknown crew, becomes a 502 with a fixed message.
+    """
+    if not _is_same_origin(request):
+        return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
+    crew_id = request.path_params.get("crew_id", "")
+    if not _CREW_ID_RE.fullmatch(crew_id):
+        return JSONResponse({"error": "crew not found"}, status_code=404)
+    url = f"{TRANSPORT_URL}/internal/crews/{crew_id}/auth/refresh"
+    headers = {"X-Transport-Token": _TRANSPORT_SECRET}
+    try:
+        async with httpx.AsyncClient(timeout=_AUTH_REFRESH_TIMEOUT_SECS) as client:
+            resp = await client.post(url, headers=headers)
+    except httpx.RequestError as exc:
+        logger.error(
+            "Transport unreachable for crew auth refresh %s (%s)", crew_id, type(exc).__name__,
+        )
+        return JSONResponse({"error": "transport unreachable"}, status_code=502)
+
+    if resp.status_code != 200:
+        logger.error(
+            "Transport returned %d for crew auth refresh %s", resp.status_code, crew_id,
+        )
+        return JSONResponse(
+            {"error": "transport error", "status_code": resp.status_code},
+            status_code=502,
+        )
+
+    return Response(
+        content=resp.content,
+        status_code=200,
+        media_type="application/json",
+    )
+
+
 # Radar's ES modules import each other by plain path with no version in the URL.
 # Without an explicit policy, browsers cache them heuristically and can pair a new
 # module with a stale one after an upgrade, which breaks the page on a missing
@@ -215,6 +304,7 @@ app = Starlette(
         Route("/api/crews", api_crews),
         Route("/api/crews/{crew_id}/agents", api_crew_agents),
         Route("/api/crews/{crew_id}/mail-subjects", api_crew_mail_subjects),
+        Route("/api/crews/{crew_id}/auth/refresh", api_crew_auth_refresh, methods=["POST"]),
         Route("/", index),
         Mount("/static", _RevalidatingStaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],
