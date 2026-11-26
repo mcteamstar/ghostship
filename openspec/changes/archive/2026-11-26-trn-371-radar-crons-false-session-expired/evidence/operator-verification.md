@@ -57,7 +57,8 @@ Conventions used below:
 
 | Task | Date | Host | Pass or fail | Notes |
 |:-----|:-----|:-----|:-------------|:------|
-| 4.1 Radar crew detail after the scheduled-jobs removal | | | | |
+| 4.1 Radar crew detail after the scheduled-jobs removal | 2026-11-26 | macOS, Podman machine ghost-academy, commit 413f4496 | Pass | `ghostship upgrade --yes` succeeded. Radar through Caddy at `http://localhost:64057/`, running crew `trn-371-fix` expanded: Active tasks, Captain, Credentials (Refresh auth) and Mailbox subjects all loaded; no Scheduled jobs section and no "Session expired" text; the only detail requests were `/api/crews/trn-371-fix/mail-subjects` and `/api/crews/trn-371-fix/agents`, none to `/crews/<id>/api/crons`. |
+| Node 24 pin (image build) | 2026-11-26 | macOS, Podman machine ghost-academy, commit 413f4496 | Pass | The `ga-radar` build used `node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5`: `npm ci` added 98 packages with no engines warning, `tsc --noEmit` passed, Vite v8.3.8 built 41 modules. `node --version` on that digest prints `v24.22.3`. The runtime image has no `node` or `npm`. `GET /` returns `no-cache`; a hashed asset returns `public, max-age=31536000, immutable`. |
 
 When the row is a pass, the operator ticks task 4.1 in `tasks.md`. Do not tick it for a row that is not recorded as a pass.
 

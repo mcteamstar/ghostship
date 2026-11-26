@@ -14,7 +14,7 @@
 
 ## 4. Verification on a live fleet
 
-- [ ] 4.1 Operator: run `ghostship upgrade`, open Radar through Caddy against a fleet with a running crew, and expand it. Verify there is no Scheduled jobs section and no "Session expired" text, that Active tasks, Captain, Credentials and Mailbox subjects still load, and that the browser shows no request to `/crews/<id>/api/crons`.
+- [x] 4.1 Operator: run `ghostship upgrade`, open Radar through Caddy against a fleet with a running crew, and expand it. Verify there is no Scheduled jobs section and no "Session expired" text, that Active tasks, Captain, Credentials and Mailbox subjects still load, and that the browser shows no request to `/crews/<id>/api/crons`.
 
 ## Workflow follow-up
 
