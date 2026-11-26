@@ -41,7 +41,12 @@ INTERNAL_DOC_ROUTE = "POST /internal/crews/{crew_id}/auth/refresh"
 def _section(markdown: str, heading: str) -> str:
     """The text under ``heading`` (any level) up to the next heading of the same or higher level."""
     lines = markdown.splitlines()
-    start = next(i for i, line in enumerate(lines) if re.match(r"#+ " + re.escape(heading) + r"\s*$", line))
+    start = next(
+        (i for i, line in enumerate(lines) if re.match(r"#+ " + re.escape(heading) + r"\s*$", line)),
+        None,
+    )
+    if start is None:
+        raise AssertionError(f"docs heading not found: {heading!r}")
     level = len(lines[start]) - len(lines[start].lstrip("#"))
     end = len(lines)
     for i in range(start + 1, len(lines)):
@@ -243,3 +248,289 @@ class TestAuthDocsLinks:
     def test_the_lifecycle_paragraph_points_at_the_new_section(self):
         lifecycle = _section(_AUTH_MD, "Credential lifecycle")
         assert "[Refresh a crew's auth](#refresh-a-crews-auth)" in lifecycle
+
+
+# ── docs/radar.md (task 3.2) ─────────────────────────────────────────────────
+
+_RADAR_SECTION = _section(_RADAR_MD, "Refresh a crew's auth")
+
+
+def _rows(section: str, first_header: str) -> list[list[str]]:
+    """Body rows of the markdown table whose header starts with ``first_header``, split into cells."""
+    lines = section.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"| {first_header}"))
+    rows = []
+    for line in lines[start + 2:]:
+        if not line.startswith("|"):
+            break
+        rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
+    return rows
+
+
+def _unquote(cell: str) -> str:
+    return cell.strip().strip("`")
+
+
+def _radar_server():
+    from tests.unit.test_radar_server import _import_radar_server
+    return _import_radar_server()
+
+
+class TestRadarDocsMatchTheSpa:
+
+    def _spa(self, tmp_path, scenario: str, **arg) -> dict:
+        from tests.unit.test_radar_auth_refresh_client import _run_scenario
+        return _run_scenario(tmp_path, scenario, **arg)
+
+    def test_documented_result_labels_and_statuses_are_the_ones_the_spa_draws(self, tmp_path):
+        rows = _rows(_RADAR_SECTION, "Result shown")
+        documented = {_unquote(status): _unquote(label) for label, status, _meaning in rows}
+        assert set(documented) == set(auth_refresh.OUTCOMES)
+        for status, label in documented.items():
+            html = self._spa(tmp_path, "single", response={"body": {"status": status, "message": "m"}})["after"]
+            assert f"<strong>{label}</strong>" in html, (status, label)
+
+    def test_every_documented_outcome_row_carries_the_guidance_the_operation_gives(self):
+        meaning = {_unquote(status): text for _label, status, text in _rows(_RADAR_SECTION, "Result shown")}
+        assert "ghostship auth login <backend>" in meaning["credential_missing"]
+        assert "workspace preserved" in meaning["recreate_required"]
+        assert "check the transport log" in meaning["refresh_failed"].lower()
+
+    def test_documented_failure_messages_are_what_the_spa_shows(self, tmp_path):
+        # Key each row by the first code span in its first cell (the cell may add a link name).
+        rows = {re.match(r"`([^`]+)`", r[0]).group(1): r for r in _rows(_RADAR_SECTION, "Shown")}
+        expired = self._spa(tmp_path, "single", response={"kind": "opaqueredirect"})["after"]
+        assert "<strong>Session expired.</strong>" in expired and "Sign in again" in expired
+        assert "**Sign in again** link" in rows["Session expired."][0]
+        failed = self._spa(tmp_path, "single", response={"status": 502, "body": {}})["after"]
+        assert "<strong>Refresh did not complete.</strong>" in failed
+        assert "Refresh did not complete." in rows
+        unknown = self._spa(tmp_path, "single", response={"body": {"status": "nope"}})["after"]
+        assert "<strong>Refresh result unknown.</strong>" in unknown
+        assert "Refresh result unknown." in rows
+
+    def test_documented_http_failures_are_the_ones_that_map_to_did_not_complete(self, tmp_path):
+        cause = _rows(_RADAR_SECTION, "Shown")[1][1]
+        for status in (502, 503, 504, 403, 500):
+            html = self._spa(tmp_path, "single", response={"status": status, "body": {}})["after"]
+            assert "<strong>Refresh did not complete.</strong>" in html, status
+        for fragment in ("502, 503 or 504", "Radar itself answers 502", "(403)", "network failed"):
+            assert fragment in cause, fragment
+
+    def test_documented_button_behaviour(self, tmp_path):
+        text = _RADAR_SECTION
+        idle = self._spa(tmp_path, "render")["html"]
+        assert ">Refresh auth</button>" in idle and "**Refresh auth**" in text
+        assert '<div class="detail-section">Credentials</div>' in idle and "**Credentials**" in text
+        busy = self._spa(tmp_path, "duplicate", response={"body": {"status": "refreshed"}, "hold": True})
+        in_flight = re.search(r"<button[^>]*data-auth-refresh=\"alpha\"[^>]*>([^<]*)</button>", busy["busyHtml"])
+        idle_button = re.search(r"<button[^>]*data-auth-refresh=\"alpha\"[^>]*>([^<]*)</button>", busy["idleHtml"])
+        assert " disabled" in in_flight.group(0) and in_flight.group(1) == "Refreshing…"
+        assert " disabled" not in idle_button.group(0) and idle_button.group(1) == "Refresh auth"
+        assert "the button is disabled and reads `Refreshing…`" in text
+        assert busy["callsWhileBusy"] == 1 and "a second click does nothing" in text
+        for status in ("running", "stopped"):
+            assert 'data-auth-refresh="alpha"' in self._spa(tmp_path, "render", crew={"status": status})["html"]
+        assert "running and stopped crews" in text
+
+    def test_documented_persistence_matches_the_row_state_handling(self, tmp_path):
+        cycle = self._spa(tmp_path, "redraw_cycle", response={"body": {"status": "refreshed"}})
+        assert "<strong>Refreshed.</strong>" in cycle["pollRerender"]       # survives the fleet poll
+        assert "auth-refresh-result" not in cycle["afterCollapse"]          # cleared on collapse and reopen
+        assert "stays visible across the five-second fleet refresh" in _RADAR_SECTION
+        assert "cleared when the row is collapsed and reopened" in _RADAR_SECTION
+        assert "const REFRESH_INTERVAL = 5000;" in (_REPO / "radar" / "static" / "data.js").read_text(encoding="utf-8")
+        other = self._spa(tmp_path, "other_crew_not_blocked", response={"body": {"status": "refreshed"}, "hold": True})
+        assert other["busy"] == 0 and "Each crew is refreshed independently" in _RADAR_SECTION
+
+    def test_documented_request_carries_no_body_and_no_credential(self, tmp_path):
+        options = self._spa(tmp_path, "single", response={"body": {"status": "refreshed"}})["calls"][0]["options"]
+        assert options == {"method": "POST", "credentials": "include", "redirect": "manual"}
+        assert "with no body" in _RADAR_SECTION and "it sends no credential" in _RADAR_SECTION
+
+
+class TestRadarDocsMatchTheServer:
+
+    HEADERS = {"host": "radar.example:64057", "origin": "https://radar.example:64057"}
+
+    @staticmethod
+    def _call(server, headers, *, method="POST", crew_id="alpha", status=200, content=b'{"status": "refreshed"}', error=None):
+        import asyncio
+        from tests.unit.test_radar_server import _call as call_app, _make_scope
+
+        client_library = server.httpx
+        seen = []
+
+        def handle(request):
+            seen.append(request)
+            if error is not None:
+                raise error(request)
+            return client_library.Response(status, content=content, request=request)
+
+        transport = client_library.MockTransport(handle)
+        real = client_library.AsyncClient
+
+        def client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real(*args, **kwargs)
+
+        scope = _make_scope(method, f"/api/crews/{crew_id}/auth/refresh")
+        scope["headers"] = [(k.encode(), v.encode()) for k, v in headers.items()]
+        loop = asyncio.new_event_loop()
+        try:
+            with patch.object(server.httpx, "AsyncClient", side_effect=client):
+                messages, body = loop.run_until_complete(call_app(server.app, scope))
+        finally:
+            loop.close()
+        status_code = next(m["status"] for m in messages if m["type"] == "http.response.start")
+        return status_code, body, seen
+
+    def _table(self) -> dict:
+        rows = _rows(_RADAR_SECTION, "Radar answers")
+        return {_unquote(r[0].split(" ", 1)[0]): r for r in rows} | {r[0]: r for r in rows}
+
+    def test_documented_answers_are_what_radar_returns(self):
+        server = _radar_server()
+        text = _RADAR_SECTION
+
+        status, body, seen = self._call(server, {"host": self.HEADERS["host"]})
+        assert status == 403 and json.loads(body) == {"error": "cross-origin request rejected"} and seen == []
+        assert '`403` `{"error": "cross-origin request rejected"}`' in text
+
+        status, body, seen = self._call(server, self.HEADERS, crew_id="NOT-valid")
+        assert status == 404 and json.loads(body) == {"error": "crew not found"} and seen == []
+        assert '`404` `{"error": "crew not found"}`' in text
+
+        status, _body, seen = self._call(server, self.HEADERS, method="GET")
+        assert status == 405 and seen == []
+        assert "| `405` |" in text
+
+        status, body, _seen = self._call(
+            server, self.HEADERS, error=lambda r: server.httpx.ConnectError("refused", request=r),
+        )
+        assert status == 502 and json.loads(body) == {"error": "transport unreachable"}
+        assert '`502` `{"error": "transport unreachable"}`' in text
+
+        status, body, _seen = self._call(server, self.HEADERS, status=404, content=b"{}")
+        assert status == 502 and json.loads(body) == {"error": "transport error", "status_code": 404}
+        assert '`502` `{"error": "transport error", "status_code": <n>}`' in text
+
+        payload = json.dumps(_outcome("recreate_required")).encode()
+        status, body, _seen = self._call(server, self.HEADERS, content=payload)
+        assert status == 200 and body == payload
+        assert "| `200` and the transport's body |" in text
+
+    def test_documented_timeout_is_the_implemented_one(self):
+        server = _radar_server()
+        assert server._AUTH_REFRESH_TIMEOUT_SECS == 30.0
+        assert "within 30 seconds" in _RADAR_SECTION
+
+    def test_documented_same_origin_rule_matches_the_check(self):
+        server = _radar_server()
+        text = _RADAR_SECTION
+        for claim in (
+            "exactly one `Origin` header whose host and port equal the `Host` header",
+            "`SameSite=Lax`",
+            "A request without an `Origin`, such as plain `curl`, is refused",
+            "pass the `Host` header through unchanged",
+        ):
+            assert claim in text, claim
+        # host and port must both match
+        assert self._call(server, {"host": "a.example:1", "origin": "https://a.example:1"})[0] == 200
+        assert self._call(server, {"host": "a.example:1", "origin": "https://a.example:2"})[0] == 403
+        assert self._call(server, {"host": "a.example:1", "origin": "https://b.example:1"})[0] == 403
+        # plain curl sends no Origin
+        assert self._call(server, {"host": "a.example:1"})[0] == 403
+
+    def test_documented_cookie_attribute_is_the_real_one(self):
+        dashboard = (_REPO / "transport" / "dashboard.py").read_text(encoding="utf-8")
+        assert "gs_session={token}; HttpOnly; SameSite=Lax" in dashboard
+
+    def test_documented_forwarding_sends_only_the_transport_token(self):
+        server = _radar_server()
+        headers = self.HEADERS | {"cookie": "gs_session=x", "authorization": "Bearer y"}
+        with patch.object(server, "_TRANSPORT_SECRET", "doc-test-secret"):
+            _status, _body, seen = self._call(server, headers)
+        (request,) = seen
+        assert request.url.path == "/internal/crews/alpha/auth/refresh" and request.method == "POST"
+        assert request.headers["x-transport-token"] == "doc-test-secret"
+        sent = {name.lower() for name in request.headers.keys()}
+        assert not {"cookie", "authorization", "origin"} & sent
+        text = _RADAR_SECTION
+        assert "with `X-Transport-Token`" in text and "passes on none of the browser's cookies or headers" in text
+
+    def test_documented_endpoint_is_for_the_radar_page_and_points_scripts_to_the_operator_route(self):
+        assert "This endpoint exists for the Radar page." in _RADAR_SECTION
+        assert "auth.md#refresh-a-crews-auth" in _RADAR_SECTION
+
+
+class TestRadarDocsGating:
+
+    def _routes(self, key: str) -> list[dict]:
+        from bin.lib.caddy_install import CaddyConfig, generate_caddy_config
+        return generate_caddy_config(CaddyConfig(ga_api_key=key))["apps"]["http"]["servers"]["ga-main"]["routes"]
+
+    def test_with_a_key_the_post_sits_behind_the_session_gate(self):
+        from tests.unit.test_caddy_installer import REFRESH_PATH, _serve
+        doc = {"apps": {"http": {"servers": {"ga-main": {"routes": self._routes("k")}}}}}
+        _id, reached, _response = _serve(doc, "POST", REFRESH_PATH, auth_status=401)
+        assert not any(step.startswith("ga-radar") for step in reached)
+        assert _serve(doc, "POST", REFRESH_PATH, auth_status=401)[2] == {
+            "status": 302, "location": "/dashboard/login?next=" + REFRESH_PATH,
+        }
+        text = _RADAR_SECTION
+        assert "redirected to `/dashboard/login` and never reaches Radar" in text
+
+    def test_without_a_key_nothing_gates_it_as_documented(self):
+        from tests.unit.test_caddy_installer import REFRESH_PATH, _serve
+        doc = {"apps": {"http": {"servers": {"ga-main": {"routes": self._routes("")}}}}}
+        _id, reached, response = _serve(doc, "POST", REFRESH_PATH, auth_status=401)
+        assert reached == ["ga-radar:8080" + REFRESH_PATH] and response == {"proxied": True}
+        text = _RADAR_SECTION
+        assert "**Tailscale-gated installs have no portal session.**" in text
+        assert "anyone who can reach Radar on the tailnet" in text
+        assert "same-origin rule still stops other web pages" in text
+
+    def test_documented_limits_of_the_action_are_real(self):
+        # "It can only re-apply the credential already stored for that crew's own backend and profile."
+        import inspect
+        assert list(inspect.signature(auth_refresh.refresh_crew_auth).parameters) == ["crew_id"]
+        assert "It cannot supply or choose a credential" in _RADAR_SECTION
+
+    def test_the_auth_section_still_says_the_key_less_install_skips_the_session_check(self):
+        auth = _section(_RADAR_MD, "Auth")
+        assert "When `GA_API_KEY` is unset, session check is skipped" in auth
+        assert "[Refresh auth](#refresh-a-crews-auth)" in auth and "same-origin `Origin` header" in auth
+        # "with or without a key": the check is in Radar's handler, which takes no session or key input,
+        # so it runs on every request. Only the missing Origin differs between callers.
+        assert "with or without a key" in auth
+        import ast
+        import inspect
+        import textwrap
+        server = _radar_server()
+        assert "_is_same_origin(request)" in inspect.getsource(server.api_crew_auth_refresh)
+        check = ast.parse(textwrap.dedent(inspect.getsource(server._is_same_origin))).body[0]
+        code = ast.Module(body=check.body[1:], type_ignores=[])  # drop the docstring, keep the logic
+        read = {n.value for n in ast.walk(code) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        assert read == {"origin", "host", "http", "https"}, read  # no cookie, key or session input
+        assert [a.arg for a in check.args.args] == ["request"]
+
+
+class TestRadarDocsLinks:
+
+    def test_anchors_resolve(self):
+        assert "refresh-a-crews-auth" in _anchors(_RADAR_MD)
+        assert "auth" in _anchors(_RADAR_MD)
+        assert {"refresh-a-crews-auth", "credential-lifecycle"} <= _anchors(_AUTH_MD)
+        local = set(re.findall(r"\]\(#([\w-]+)\)", _RADAR_MD))
+        assert local <= _anchors(_RADAR_MD), local - _anchors(_RADAR_MD)
+
+    def test_cross_document_links_resolve(self):
+        for target in re.findall(r"\]\((auth\.md#[\w-]+)\)", _RADAR_MD):
+            assert target.split("#", 1)[1] in _anchors(_AUTH_MD), target
+        for target in re.findall(r"\]\((radar\.md#[\w-]+)\)", _AUTH_MD):
+            assert target.split("#", 1)[1] in _anchors(_RADAR_MD), target
+
+    def test_radar_doc_names_no_credential_or_secret_values(self):
+        for forbidden in ("Bearer ey", "sk-", "gs_session=", "ga-api-key"):
+            assert forbidden not in _RADAR_SECTION, forbidden
