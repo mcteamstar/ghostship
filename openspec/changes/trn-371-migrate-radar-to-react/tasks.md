@@ -2,8 +2,8 @@
 
 ## 1. Frontend toolchain and image build
 
-- [ ] 1.1 Create `radar/web/` with React, TypeScript, Vite (`base: "/static/"`), Vitest and Testing Library, plus a committed lockfile. Verify `npm ci && npm run build && npm test` succeeds and the build emits `index.html` and hashed files under `assets/`.
-- [ ] 1.2 Make `radar/Containerfile` multi-stage: a pinned Node stage runs `npm ci`, the type check and the build (no tests); the Python stage copies only the built output to `/app/static/`. Verify `podman build radar/` succeeds, the runtime image has no `node` binary or `node_modules`, the built `index.html` contains no inline `<script>`, and a deliberate type error fails the build.
+- [ ] 1.1 Create `radar/web/` with an `engines`/`.nvmrc` pin to Node 26, React, TypeScript, Vite (`base: "/static/"`), Vitest and Testing Library, plus a committed lockfile. Verify `npm ci && npm run build && npm test` succeeds and the build emits `index.html` and hashed files under `assets/`.
+- [ ] 1.2 Make `radar/Containerfile` multi-stage: a Node 26 LTS stage (`node:26-alpine`, pinned by digest) runs `npm ci`, the type check and the build (no tests); the Python stage copies only the built output to `/app/static/`. Verify `podman build radar/` succeeds, the runtime image has no `node` binary or `node_modules`, the built `index.html` contains no inline `<script>`, and a deliberate type error fails the build.
 - [ ] 1.3 Wire the build into install: confirm `_build_images` in `bin/lib/install_main.py` builds the new Containerfile for both `./install.sh` and `ghostship upgrade`, and report a clear "Radar bundle build failed" message that leaves the existing `ga-radar:latest` in place. Verify with an installer test (fake Podman) for the failure message, and a real `./install.sh` run on a host without Node.
 - [ ] 1.4 Add a Node setup step and the frontend test and type-check commands to `.github/workflows/test.yml`. Verify the workflow YAML parses and the job runs the commands.
 - [ ] 1.5 Add the new npm packages and the Node build image to `dependencies.yaml`. Verify `python3 scripts/dependency_check.py validate` passes.

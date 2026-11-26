@@ -44,7 +44,7 @@ It requests with `credentials: "include"` and `redirect: "manual"`. An opaque re
 Design tokens (colour, spacing, radius, type scale) live in CSS variables; `prefers-color-scheme` swaps the token set, and a `matchMedia` listener is unnecessary because CSS handles it. No UI kit or Tailwind: the surface is one table plus detail panels, and a kit adds a large dependency for little gain. Layout uses a CSS grid that collapses table columns into stacked card rows under 640 px. Row expansion uses a real `<button aria-expanded>`; the error banner uses `role="status"` (stale) or `role="alert"` (failure).
 
 **6. Build in a Containerfile stage, as part of install.**
-The installer already builds `ga-radar` with `podman build <repo>/radar` in `_build_images`, which both `./install.sh` and `ghostship upgrade` run. A multi-stage `radar/Containerfile` therefore compiles the bundle during install with no new installer logic and no Node on the host. The Node stage (`node:<pinned>`) runs `npm ci`, `tsc --noEmit` and `vite build`; the Python stage copies only `dist/` to `/app/static/`. Source goes in `radar/web/`; `radar/static/` is removed.
+The installer already builds `ga-radar` with `podman build <repo>/radar` in `_build_images`, which both `./install.sh` and `ghostship upgrade` run. A multi-stage `radar/Containerfile` therefore compiles the bundle during install with no new installer logic and no Node on the host. The Node stage (`node:26-alpine`, Node 26 LTS "Lithium", pinned by digest per the `dependencies.yaml` image policy) runs `npm ci`, `tsc --noEmit` and `vite build`; the Python stage copies only `dist/` to `/app/static/`. Source goes in `radar/web/`; `radar/static/` is removed.
 - Component tests do **not** run in the image build. They run in CI. A test flake must not be able to fail an operator's install or upgrade; the type check and the bundle build still fail the image if the source is broken.
 - If the build cannot fetch packages, the installer reports that the Radar bundle build failed because the npm registry was unreachable, names the build step, and stops. The existing `ga-radar:latest` image is not replaced on failure, so `ghostship upgrade` leaves the running Radar untouched.
 - Client-only installs build no images and are unaffected.
@@ -86,4 +86,5 @@ One change, delivered parity first so a regression can be told apart from a desi
 ## Open Questions
 
 - Exact visual design (palette, density, icon set). The `radar-ui` requirements fix behavior; visuals are reviewed on screenshots during implementation.
-- The Node base image tag and digest pin, to be chosen against the `dependencies.yaml` image policy when the Containerfile stage is written.
+- The Node digest is resolved when the Containerfile stage is written; the major version is fixed at Node 26 LTS.
+- Visual polish. The first delivery builds the scaffold and a working, plainly styled UI that meets the `radar-ui` behavior; the visual design is iterated afterwards.
