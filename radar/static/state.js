@@ -23,3 +23,8 @@ export function cacheDetail(crewId, key, html) {
   detailCache.set(crewId, entry);
 }
 export function clearDetailCache(crewId) { detailCache.delete(crewId); }
+
+/* Crews with a credential refresh request in flight (TRN-367). The fleet table is
+   rebuilt on every poll, so the "Refresh auth" button is drawn disabled from this set
+   rather than from DOM state; that is what blocks a duplicate submission. */
+export const authRefreshing = new Set();

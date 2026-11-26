@@ -2,11 +2,14 @@
 
 import { fetchFleet, startPolling } from "./data.js";
 import * as state from "./state.js";
-import { renderTable } from "./render.js";
+import { renderTable, wireAuthRefresh } from "./render.js";
 
 const bodyEl = document.getElementById("fleet-body");
 
 document.addEventListener("DOMContentLoaded", function () {
+  /* Per-crew "Refresh auth" buttons in the expanded detail panel (TRN-367). */
+  wireAuthRefresh(bodyEl);
+
   /* Delegated copy-to-clipboard handler.
      Uses capture phase so it fires before the row expand/collapse
      bubbling listener and can stop further propagation. */

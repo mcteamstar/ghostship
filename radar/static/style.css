@@ -275,3 +275,26 @@
     .detail-image-version {
       font-size: 0.78rem; color: #64748b; margin-bottom: 0.4rem;
     }
+
+    /* ── Detail panel — credential refresh (TRN-367) ────────── */
+    .auth-refresh {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem;
+      margin-top: 0.25rem;
+    }
+    .auth-refresh-btn {
+      background: rgba(109,40,217,0.18); color: #c4b5fd;
+      border: 1px solid rgba(109,40,217,0.4); border-radius: 6px;
+      padding: 0.3rem 0.8rem; font: inherit; font-size: 0.78rem; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .auth-refresh-btn:hover:not(:disabled) {
+      background: rgba(109,40,217,0.32); border-color: rgba(139,92,246,0.7);
+    }
+    .auth-refresh-btn:focus-visible { outline: 2px solid #818cf8; outline-offset: 2px; }
+    .auth-refresh-btn:disabled { opacity: 0.55; cursor: progress; }
+    .auth-refresh-result { font-size: 0.8rem; color: #94a3b8; }
+    .auth-refresh-result strong { font-weight: 600; }
+    .auth-ok strong { color: #6ee7b7; }
+    .auth-info strong { color: #67e8f9; }
+    .auth-warn strong { color: #fbbf24; }
+    .auth-error strong { color: #f87171; }

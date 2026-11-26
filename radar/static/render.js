@@ -1,7 +1,7 @@
 /* Radar SPA — DOM builders. */
 
 import { fmtDate, fmtUptime, statusBadge, esc, parseInterval } from "./format.js";
-import { openDetails, detailCache, cacheDetail, clearDetailCache } from "./state.js";
+import { openDetails, detailCache, cacheDetail, clearDetailCache, authRefreshing } from "./state.js";
 import * as state from "./state.js";
 
 const bodyEl = document.getElementById("fleet-body");
@@ -230,7 +230,136 @@ export function renderDetail(crew, agentsHtml) {
   if (crew.status !== "running") {
     html += "<br><em class=\"empty-cell\">Crew is stopped — live schedule data unavailable.</em>";
   }
-  return html;
+  return html + renderAuthRefresh(crew.crew_id);
+}
+
+/* ── credential refresh (TRN-367) ────────────────────────────── */
+
+/* Outcomes the transport reports for POST /api/crews/{id}/auth/refresh. Label and tone
+   come from this fixed table, never from the response, so the response cannot choose
+   markup or a CSS class. The transport's own guidance (esc'd) is shown beside the label;
+   the default text is used only if a response carries none. */
+const AUTH_REFRESH_OUTCOMES = {
+  refreshed: {
+    tone: "ok", label: "Refreshed.",
+    text: "The stored credential was injected into the running crew.",
+  },
+  pending_on_wake: {
+    tone: "info", label: "Pending until wake.",
+    text: "The crew is stopped; it receives the stored credential when it wakes.",
+  },
+  current: {
+    tone: "ok", label: "Already current.",
+    text: "The crew already uses the stored credential.",
+  },
+  recreate_required: {
+    tone: "warn", label: "Recreate required.",
+    text: "The crew must be recreated with its workspace preserved. See docs/auth.md.",
+  },
+  credential_missing: {
+    tone: "warn", label: "No credential stored.",
+    text: "No credential is stored for this crew's backend and profile.",
+  },
+  refresh_failed: {
+    tone: "error", label: "Refresh failed.",
+    text: "The credential could not be refreshed. Check the transport log, then retry.",
+  },
+};
+
+function authNotice(tone, label, text) {
+  return "<div class=\"auth-refresh-result auth-" + tone + "\" role=\"status\">" +
+    "<strong>" + esc(label) + "</strong> " + esc(text) + "</div>";
+}
+
+function authSessionExpiredHtml() {
+  /* Caddy answers an expired portal session with a redirect to the login page, which is
+     not a refresh outcome and must never be shown as one. */
+  return "<div class=\"auth-refresh-result auth-warn\" role=\"status\">" +
+    "<strong>Session expired.</strong> Your portal session has ended, so nothing was " +
+    "refreshed. <a href=\"/dashboard/login\">Sign in again</a>, then retry.</div>";
+}
+
+function authFailureText(httpStatus) {
+  if (httpStatus === 403) return "Radar rejected the request (same-origin check).";
+  if (httpStatus === 502 || httpStatus === 503 || httpStatus === 504) {
+    return "Radar could not get a result from ga-transport. Check that it is running, then retry.";
+  }
+  return "Unexpected response (HTTP " + httpStatus + "). Check the transport log, then retry.";
+}
+
+function authRefreshResultHtml(resp) {
+  /* Maps a fetch Response to the result markup. Resolves to a string, never throws. */
+  if (resp.type === "opaqueredirect" || resp.redirected) return authSessionExpiredHtml();
+  if (!resp.ok) return authNotice("error", "Refresh did not complete.", authFailureText(resp.status));
+  const type = (resp.headers && resp.headers.get && resp.headers.get("content-type")) || "";
+  /* A 200 HTML page is the login page served instead of the API. */
+  if (type.indexOf("text/html") !== -1) return authSessionExpiredHtml();
+  return resp.json().then(function (data) {
+    const known = data && typeof data.status === "string" &&
+      Object.prototype.hasOwnProperty.call(AUTH_REFRESH_OUTCOMES, data.status);
+    if (!known) return authNotice("error", "Refresh result unknown.", "The response was not recognised. Retry.");
+    const outcome = AUTH_REFRESH_OUTCOMES[data.status];
+    const guidance = typeof data.message === "string" && data.message ? data.message : outcome.text;
+    return authNotice(outcome.tone, outcome.label, guidance);
+  }, function () {
+    return authNotice("error", "Refresh result unknown.", "The response was not recognised. Retry.");
+  });
+}
+
+export function renderAuthRefresh(crewId) {
+  /* The "Credentials" section: the refresh button plus the last outcome for this open row. */
+  const busy = authRefreshing.has(crewId);
+  const cached = detailCache.get(crewId) || {};
+  return "<div class=\"detail-section\">Credentials</div>" +
+    "<div class=\"auth-refresh\">" +
+    "<button type=\"button\" class=\"auth-refresh-btn\" data-auth-refresh=\"" + esc(crewId) + "\"" +
+    " title=\"Re-apply this crew's assigned credential if it can be refreshed in place\"" +
+    (busy ? " disabled aria-busy=\"true\"" : "") + ">" +
+    (busy ? "Refreshing…" : "Refresh auth") + "</button>" +
+    (cached.auth || "") + "</div>";
+}
+
+export function refreshCrewAuth(crewId) {
+  /* Asks Radar to refresh one crew's assigned credential. The request carries no body:
+     Radar and the transport use only the crew id, so nothing sensitive is sent. A second
+     call while one is in flight does nothing. The outcome is cached for the open row so a
+     poll re-render redraws it rather than dropping it. Resolves to the result markup. */
+  if (authRefreshing.has(crewId)) return Promise.resolve(null);
+  authRefreshing.add(crewId);
+  cacheDetail(crewId, "auth", "");
+  redrawOpenDetail(crewId);
+  let request;
+  try {
+    /* redirect "manual": an expired portal session answers with a redirect to the login
+       page; following it would hand this code the login page as a "response". */
+    request = fetch("/api/crews/" + encodeURIComponent(crewId) + "/auth/refresh", {
+      method: "POST", credentials: "include", redirect: "manual",
+    });
+  } catch (err) {
+    request = Promise.reject(err);
+  }
+  return request
+    .then(authRefreshResultHtml)
+    .catch(function () {
+      return authNotice("error", "Refresh did not complete.", "Network error. Check your connection, then retry.");
+    })
+    .then(function (html) {
+      authRefreshing.delete(crewId);
+      cacheDetail(crewId, "auth", html);
+      redrawOpenDetail(crewId);
+      return html;
+    });
+}
+
+export function wireAuthRefresh(root) {
+  /* One delegated listener on the stable <tbody>: the rows inside are replaced on every
+     fleet poll, so listeners attached to the buttons themselves would be lost. */
+  root.addEventListener("click", function (e) {
+    const btn = e.target && e.target.closest ? e.target.closest("[data-auth-refresh]") : null;
+    if (!btn) return;
+    e.stopPropagation();
+    refreshCrewAuth(btn.dataset.authRefresh);
+  });
 }
 
 export function renderAgents(agents) {
