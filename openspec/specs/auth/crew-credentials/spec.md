@@ -15,7 +15,7 @@ Logout SHALL NOT modify running crews or the credentials they received at launch
 - **THEN** no running crew is executed into, restarted or stopped, and each keeps the credential it launched with until it is relaunched
 
 ### Requirement: Credentials resolved at each crew launch
-The transport SHALL read a backend's active credential from the store when it launches a crew, not once at startup. A credential stored, replaced or cleared SHALL take effect for the next crew launch without restarting the transport. Crews already running keep the credential they launched with: logout does not touch them, and the only exception is that a completed kiro device login is injected into running kiro crews (crew-auth).
+The transport SHALL read a backend's active credential from the store when it launches a crew, not once at startup. A credential stored, replaced or cleared SHALL take effect for the next crew launch without restarting the transport. Running crews SHALL keep their launch-time credential unless a login-flow completion or an explicit operator refresh successfully injects the current flow credential for their recorded backend and profile. Static credentials SHALL remain fixed in the container environment; a changed or replaced static credential or method SHALL require workspace-preserving crew recreation.
 
 #### Scenario: Rotation without restart
 - **WHEN** a new claude API key is stored while the transport is running and a claude crew is then launched
@@ -23,7 +23,16 @@ The transport SHALL read a backend's active credential from the store when it la
 
 #### Scenario: Logout takes effect at the next launch
 - **WHEN** a backend is logged out while one of its crews is running, and a new crew of that backend is then launched
-- **THEN** the running crew keeps working with its launch-time credential, and the new crew receives no credential and starts that backend's login instead
+- **THEN** the running crew keeps the credential it already received, and the new crew receives no credential and starts that backend's login instead
+
+#### Scenario: Flow credential refresh applies to matching running crew
+- **WHEN** a login-flow credential completes or an operator refreshes a crew assigned to that backend and profile
+- **THEN** the current flow credential is injected into that running crew
+- **AND** crews assigned to a different backend or profile are not modified
+
+#### Scenario: Changed static credential requires recreation
+- **WHEN** a stored static credential or its method changes after a crew container was created
+- **THEN** the existing container keeps its launch-time environment and the operator is told that the crew must be recreated with its workspace preserved
 
 ### Requirement: Credential delivered to crews according to its method
 At crew launch the transport SHALL deliver only the backend's active credential. `api-key` (kiro, claude, codex) SHALL be set as `KIRO_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` respectively. Claude `setup-token` SHALL be set as `CLAUDE_CODE_OAUTH_TOKEN`. Kiro device-flow, Claude authorisation-code and Codex `chatgpt` credentials SHALL be installed as the CLI's login state inside the crew (for codex, `~/.codex/auth.json`).
