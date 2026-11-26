@@ -762,9 +762,9 @@ def _build_radar_bundle(podman_cmd: list[str], ghostship_dir: str) -> None:
         cause = "The frontend failed its type check or bundle build. Fix radar/web, then retry."
     else:
         cause = "Check the podman output above, then retry."
-    where = f"at '{last_step}'" if last_step else "before its first build step"
+    step_desc = f"at '{last_step}'" if last_step else "before its first build step"
     _die(
-        f"Radar bundle build failed {where}. {cause} "
+        f"Radar bundle build failed {step_desc}. {cause} "
         "The existing localhost/ga-radar:latest image was left in place, so the running Radar is unchanged."
     )
 
