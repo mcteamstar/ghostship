@@ -28,12 +28,13 @@ Vite `base: "/static/"` puts assets at `/static/assets/<name>-<hash>.js` and `in
 **3. State lives in components, not singletons.**
 - One `useFleet` hook owns polling: the five-second interval, the 25-second auto-pause while any detail is open, the last good data, the last success time and the error kind.
 - Each crew row is a keyed component that owns its own expanded flag and its detail data (agents, crons, mail subjects). A fleet refresh re-renders props but does not unmount the row, so open state and loaded detail survive without a cache.
+- The Refresh auth request state (in flight, last outcome) is also per-row state, so the disabled button and the outcome survive polls without the old `authRefreshing` set and detail cache. Collapsing a row drops it, as today.
 - Filter and sort are top-level state, so a refresh never touches them.
 - The "stale after 15 s, critical after 30 s" indicators derive from the last success time on a one-second tick.
 Alternative: a store such as Zustand or Redux. Rejected: the state is small and tree-shaped, and the dependency adds review cost under `dependencies.yaml`.
 
 **4. A small typed fetch wrapper classifies failures.**
-It requests with `credentials: "include"` and `redirect: "manual"`. An opaque redirect, or a 200 with a non-JSON content type, is `session-expired`. 502/503/504 is `transport-unreachable`. A thrown `TypeError` is `network`. Everything else is `http-error`. Fleet and detail fetches share it, which fixes the `Unexpected token '<'` failure in both.
+It requests with `credentials: "include"` and `redirect: "manual"`. An opaque redirect, or a 200 with a non-JSON content type, is `session-expired`. 502/503/504 is `transport-unreachable`. A thrown `TypeError` is `network`. Everything else is `http-error`. Fleet, detail and refresh requests share it, which fixes the `Unexpected token '<'` failure in all three. The refresh `POST` keeps TRN-367's behavior: no body, `redirect: "manual"`, an opaque redirect or HTML 200 means session expired, and the outcome label and tone come from a fixed table so a response cannot choose markup or a CSS class.
 
 **5. Plain CSS with custom properties.**
 Design tokens (colour, spacing, radius, type scale) live in CSS variables; `prefers-color-scheme` swaps the token set, and a `matchMedia` listener is unnecessary because CSS handles it. No UI kit or Tailwind: the surface is one table plus detail panels, and a kit adds a large dependency for little gain. Layout uses a CSS grid that collapses table columns into stacked card rows under 640 px. Row expansion uses a real `<button aria-expanded>`; the error banner uses `role="status"` (stale) or `role="alert"` (failure).
@@ -62,7 +63,7 @@ The app is small and has one deployment target. The old and new UIs would have t
 - **Image builds now fetch npm packages.** This is the same network access the installer already needs for pip, base images and the crew toolchains → committed `package-lock.json` and `npm ci` for reproducible installs.
 - **Supply-chain surface grows** (React, Vite, test tooling and transitive packages) → exact pins in the lockfile, entries in `dependencies.yaml`, `npm audit` in the review process, no runtime Node.
 - **Regression in polling behavior** (auto-pause, staleness, deep link) → each behavior is a `radar-ui` scenario with a test; a manual parity pass against the old UI before merge.
-- **Overlap with TRN-367** (Refresh auth button, session-expiry display) → sequence this change after TRN-367 merges and port its behavior with its tests; if the order flips, TRN-367's UI work must land in the React tree.
+- **Porting TRN-367's Refresh auth UI** (merged) → carry over its six outcomes, failure texts and one-request-at-a-time rule with equivalent component tests; the `POST` route, same-origin check and Caddy gating stay as they are.
 - **Uplift scope creep** → the uplift is limited to the `radar-ui` requirements; further visual work becomes a separate change.
 - **Bundle size** grows from about 25 KB of JS to roughly 150 KB gzip → acceptable on an internal, cached, hashed bundle.
 

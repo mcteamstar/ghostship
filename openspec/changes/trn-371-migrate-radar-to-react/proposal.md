@@ -7,7 +7,7 @@ Radar started as a single table and is now outgrowing a hand-written HTML page. 
 ## What Changes
 
 - Rewrite the Radar SPA in React, built with a bundler at image build time. The source lives in the repository; the runtime image serves only the built output.
-- Preserve every existing user-visible behavior: fleet table, running and inactive sections, default newest-first ordering, Last Task sort, expandable crew detail (agents, crons, mailbox subjects), Captain badges and staleness, gateway warnings, copy crew ID, `#crew=<id>` deep link, five-second polling with auto-pause while a row is open.
+- Preserve every existing user-visible behavior: fleet table, running and inactive sections, default newest-first ordering, Last Task sort, expandable crew detail (agents, crons, mailbox subjects), Captain badges and staleness, gateway warnings, copy crew ID, `#crew=<id>` deep link, five-second polling with auto-pause while a row is open, and the Refresh auth action with its outcomes and failure messages (added by TRN-367).
 - Uplift the UI as part of the rewrite:
   - A fleet summary header (running, stopped, capacity, memory).
   - A crew filter that is always available, not only above 8 crews.
@@ -24,7 +24,7 @@ Radar started as a single table and is now outgrowing a hand-written HTML page. 
 ## Capabilities
 
 ### New Capabilities
-- `transport/radar-ui`: Observable behavior of the Radar browser UI: fleet view, filtering, expansion, deep links, refresh and staleness states, session-expiry handling, themes, responsive layout and accessibility.
+- `transport/radar-ui`: Observable behavior of the Radar browser UI: fleet view, credential refresh action, filtering, expansion, deep links, refresh and staleness states, session-expiry handling, themes, responsive layout and accessibility.
 
 ### Modified Capabilities
 - `transport/radar`: The SPA is delivered as a built, content-hashed bundle under `/static/` instead of baked ES modules, with cache policy to match. The image build gains a frontend build stage. Fleet API, health, transport secret and Caddy route requirements keep their behavior.
@@ -35,5 +35,5 @@ Radar started as a single table and is now outgrowing a hand-written HTML page. 
 - Tests: `tests/unit/test_radar_server.py` (static-asset assertions) and the Radar docs-parity tests move to the new layout; new frontend component tests run in `.github/workflows/test.yml`.
 - Docs: `docs/radar.md`, `CONTRIBUTING.md` (frontend dev loop), `CHANGELOG.md`.
 - Dependencies: Node toolchain at image build time only, run inside `podman build` by `./install.sh` and `ghostship upgrade`; no Node on the host or in the runtime image. React, a bundler and a test runner added to `dependencies.yaml`. The `ga-radar` build fetches npm packages, as the installer already does for pip, base images and the crew toolchains.
-- Interactions: overlaps with TRN-367 (Refresh auth button and session-expiry display in Radar). This change assumes TRN-367 merges first and ports its behavior; if the order flips, the TRN-367 UI work must be carried into the React tree.
+- Interactions: TRN-367 has merged. Its Refresh auth button, outcome table and session-expiry display are ported into the React UI with their behavior unchanged. Its same-origin POST route in `radar/server.py` and its Caddy gating need no change.
 - Not affected: transport endpoints, Caddy config, `ga-radar` networking and the transport shared secret.

@@ -11,7 +11,7 @@
 ## 2. Server changes
 
 - [ ] 2.1 Update `radar/server.py`: `no-cache` for `/` and non-hashed files, `immutable` long-lived caching for `/static/assets/*`, and 404 (never `index.html`) for unknown `/api/` and `/static/` paths. Verify with updated unit tests in `tests/unit/test_radar_server.py` using a fixture `static/` directory, including the removed-module 404 scenarios.
-- [ ] 2.2 Confirm the API proxy routes and health endpoint are unchanged. Verify the existing proxy and mail-subjects tests pass without edits to their assertions.
+- [ ] 2.2 Confirm the API proxy routes, the health endpoint and TRN-367's `POST /api/crews/{crew_id}/auth/refresh` route with its same-origin check are unchanged. Verify the existing proxy, mail-subjects and `test_radar_auth_refresh_client.py` tests pass without edits to their assertions.
 
 ## 3. Data layer and shell
 
@@ -31,16 +31,16 @@
 - [ ] 5.1 Implement the per-row expand control (`<button aria-expanded>`), the `#crew=<id>` deep link, and per-row state that survives polls. Verify tests that an open row keeps its content and sends no new detail request when a fleet refresh arrives, and that the deep link opens the right crew.
 - [ ] 5.2 Implement the agents, crons and mailbox-subjects sections with their loading, empty and unavailable states, session-expired handling and no partial mailbox lists. Verify tests ported from the mailbox-subject scenarios, including the single unavailable state and the empty-mailbox state.
 - [ ] 5.3 Implement copy-crew-ID as a keyboard-reachable control that does not toggle the row. Verify tests for mouse and keyboard activation and the confirmation state.
-- [ ] 5.4 Run an accessibility pass: accessible names, focus order, live-region announcements and AA contrast in both themes. Verify with `axe` in component tests (no violations) and a manual keyboard-only walkthrough.
+- [ ] 5.4 Port the Refresh auth action from TRN-367: the Credentials section and button, the six fixed outcomes, the unknown-result state, the session-expired, rejected, transport and network failure messages, `redirect: "manual"` handling, and the one-request-at-a-time rule that survives polls. Verify component tests mirroring the `radar-ui` Refresh auth scenarios, including that a hostile response cannot inject markup or a CSS class and that the outcome survives a fleet refresh.
+- [ ] 5.5 Run an accessibility pass: accessible names, focus order, live-region announcements and AA contrast in both themes. Verify with `axe` in component tests (no violations) and a manual keyboard-only walkthrough.
 
 ## 6. Cutover, tests and docs
 
 - [ ] 6.1 Remove `radar/static/*.js`, `index.html` and `style.css` and the legacy references in tests. Verify `git grep` finds no reference to the removed modules and the full Python unit suite passes.
-- [ ] 6.2 Move the docs-parity tests and any test that reads Radar UI source to the new layout, keeping their assertions about behavior. Verify they pass and still fail when the documented UI behavior is deliberately broken.
+- [ ] 6.2 Move the docs-parity tests, including `test_auth_refresh_docs.py`, and any test that reads Radar UI source to the new layout, keeping their assertions about behavior. Verify they pass and still fail when the documented UI behavior is deliberately broken.
 - [ ] 6.3 Update `docs/radar.md` (UI behavior, themes, layout, session-expired state, build and dev loop), `CONTRIBUTING.md` (frontend commands and a dev proxy against a running fleet) and `CHANGELOG.md`. Verify the docs-parity tests pass and every documented command runs as written.
 - [ ] 6.4 Integration check: build and start `ga-radar`, load it through Caddy against a running fleet, and walk the `radar-ui` scenarios (poll, open detail across a poll, filter, deep link, session expiry, dark mode, 360 px width). Verify `GET /static/main.js` returns 404, `GET /` returns `no-cache`, a hashed asset returns `immutable`, and the existing Caddy routes needed no change.
 
 ## Workflow follow-up
 
-- Sequence this change after TRN-367 merges, then port its Refresh auth button and session-expiry display.
 - Archive the change after review requirements are satisfied, and verify the archived result.

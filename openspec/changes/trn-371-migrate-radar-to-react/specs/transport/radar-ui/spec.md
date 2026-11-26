@@ -125,3 +125,39 @@ Radar SHALL let an operator expand and collapse a crew, copy a crew ID, open a d
 #### Scenario: Copy by keyboard
 - **WHEN** an operator activates the copy control for a crew by keyboard
 - **THEN** the crew ID is copied and the control confirms it without expanding the row
+
+### Requirement: Radar preserves the Refresh auth action
+
+Radar SHALL show a Credentials section with a Refresh auth button in each open crew detail. Activating it SHALL send one same-origin `POST /api/crews/{crew_id}/auth/refresh` with no body and SHALL show the returned outcome in that crew's detail.
+
+#### Scenario: Outcome shown with a fixed label
+- **WHEN** the refresh response status is `refreshed`, `pending_on_wake`, `current`, `recreate_required`, `credential_missing` or `refresh_failed`
+- **THEN** Radar shows that outcome's fixed label and tone, and the transport's guidance message as escaped text, falling back to the outcome's default text when none is sent
+
+#### Scenario: Unrecognised result
+- **WHEN** the response is OK but its status is not a known outcome, or its body is not valid JSON
+- **THEN** Radar shows "Refresh result unknown" as an error and does not render any response content as markup or style
+
+#### Scenario: One request at a time
+- **WHEN** a refresh for a crew is in flight
+- **THEN** that crew's button is disabled and marked busy, including after a fleet refresh redraws the table, and activating it again sends no second request
+
+#### Scenario: Outcome kept while the detail stays open
+- **WHEN** a refresh finishes and a later fleet refresh arrives while the detail remains open
+- **THEN** the outcome stays visible, and it is cleared when the detail is collapsed and reopened
+
+### Requirement: Refresh auth failures are reported distinctly
+
+Radar SHALL tell the operator whether a refresh did not complete because the session expired, Radar rejected the request, the transport was unavailable, or the network failed. It SHALL NOT show any of these as a refresh outcome.
+
+#### Scenario: Session expired during refresh
+- **WHEN** the refresh request is redirected to the login page or answered with an HTML page
+- **THEN** Radar shows "Session expired" with a sign-in link and nothing is reported as refreshed
+
+#### Scenario: Request rejected or transport unavailable
+- **WHEN** the response is 403, or 502, 503 or 504, or another non-OK status
+- **THEN** Radar shows "Refresh did not complete" with a reason specific to a same-origin rejection, a transport problem, or an unexpected status
+
+#### Scenario: Network failure
+- **WHEN** the request fails before any response arrives
+- **THEN** Radar shows "Refresh did not complete" with a network error message and re-enables the button
