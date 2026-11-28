@@ -1,4 +1,4 @@
-import { Search, X } from "lucide-react";
+import { ArrowDownToLine, Search, X } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { getJson, RequestError } from "../../api/request";
 import { MAILBOX_ORDER, PERSONA_AGENTS } from "../../api/types";
@@ -10,6 +10,7 @@ type Delivery = { subject: string | null; sender: string | null; timestamp: stri
 type Snapshot = { mailboxes: Record<string, Delivery[]>; capped: boolean };
 type Group = "Time" | "Sender" | "Recipient";
 type Mailbox = typeof MAILBOX_ORDER[number];
+const jumpTarget = { Time: "date", Sender: "sender", Recipient: "mailbox" } as const;
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 const clock = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
 
@@ -19,6 +20,10 @@ function senderLabel(sender: string | null): string {
   if (!sender) return "Unknown sender";
   const local = /^([^+@]+)(?:\+[^@]+)?@localhost$/i.exec(sender)?.[1].toLowerCase();
   return local && shortSenders.has(local) ? local : sender;
+}
+
+function groupLabel(name: string | null, group: Group) {
+  return group === "Sender" ? senderLabel(name) : name ?? "Undated deliveries";
 }
 
 function Sender({ address }: { address: string | null }) {
@@ -56,11 +61,14 @@ export function MailHistory({ crewId }: { crewId: string }) {
   const [group, setGroup] = useState<Group>("Time");
   const [query, setQuery] = useState("");
   const [mailbox, setMailbox] = useState<Mailbox | "">("");
+  const [jump, setJump] = useState("");
   const search = useRef<HTMLInputElement>(null);
   const results = useRef<HTMLDivElement>(null);
   const mailboxId = useId();
+  const groupId = useId();
 
   function resetScroll() {
+    setJump("");
     if (results.current) results.current.scrollTop = 0;
   }
 
@@ -101,6 +109,11 @@ export function MailHistory({ crewId }: { crewId: string }) {
     if (items) items.push(row);
     else groups.set(name, [row]);
   }
+  const sections = [...groups].map(([name, items], index) => ({
+    name, items, id: `${groupId}-${index}`, key: JSON.stringify(name),
+  }));
+  const destinations = sections.filter(section => section.items.length);
+  const destination = destinations.find(section => section.key === jump);
   const count = restricted ? `${matches.length} of ${rows.length} deliveries`
     : `${rows.length} ${rows.length === 1 ? "delivery" : "deliveries"}`;
 
@@ -110,7 +123,7 @@ export function MailHistory({ crewId }: { crewId: string }) {
         <div className="history-search">
           <Search size={16} aria-hidden="true" />
           <input ref={search} type="search" className="fleet-filter" aria-label="Search retained messages"
-            placeholder="Search retained messages…" value={query} onChange={event => {
+            placeholder="Search messages…" value={query} onChange={event => {
               setQuery(event.target.value);
               resetScroll();
             }} />
@@ -147,18 +160,39 @@ export function MailHistory({ crewId }: { crewId: string }) {
         {controls}
       </div>
       {failure}
+      <div className="history-summary">
+        <div>
+          <p className="state" role="status">{count}</p>
+          {snapshot.data.capped && <p className="state">Showing up to 50 per mailbox</p>}
+        </div>
+        {destinations.length > 1 && <form className="history-jump" onSubmit={event => {
+          event.preventDefault();
+          if (!destination) return;
+          const section = document.getElementById(destination.id);
+          section?.scrollIntoView?.({ block: "start" });
+          section?.querySelector("h3")?.focus({ preventScroll: true });
+        }}>
+          <select aria-label={`Jump to ${jumpTarget[group]}`} value={destination?.key ?? ""}
+            onChange={event => setJump(event.target.value)}>
+            <option value="">Jump to {jumpTarget[group]}…</option>
+            {destinations.map(({ name, key }) =>
+              <option key={key} value={key}>
+                {group === "Sender" ? name || "Unknown sender" : groupLabel(name, group)}
+              </option>)}
+          </select>
+          <button className="radar-icon-action" type="submit" disabled={!destination} aria-label="Go to message group" title="Go to message group">
+            <ArrowDownToLine size={15} aria-hidden="true" />
+          </button>
+        </form>}
+      </div>
     </div>
     <div className="history-results" ref={results}>
-      <div className="history-summary">
-        <p className="state" role="status">{count}</p>
-        {snapshot.data.capped && <p className="state">Showing up to 50 per mailbox</p>}
-      </div>
       {!matches.length && (group !== "Recipient" || restricted) && <div className="history-empty">
         <p>{!rows.length ? "No messages." : "No matching deliveries."}</p>
         {restricted && <button type="button" className="radar-action" onClick={clearFilters}>Clear message filters</button>}
       </div>}
-      {[...groups].map(([name, items]) => <section key={name === null ? "missing" : `value:${name}`} className="history-group">
-        <h3>{group === "Sender" ? senderLabel(name) : name ?? "Undated deliveries"}
+      {sections.map(({ name, items, id, key }) => <section id={id} key={key} className="history-group">
+        <h3 tabIndex={-1}>{groupLabel(name, group)}
           {group !== "Time" && <small> · {items.length}</small>}</h3>
         {group === "Sender" && name && senderLabel(name) !== name && <p className="state history-address">{name}</p>}
         {items.length ? <ul>{items.map(row => <li key={row.id}>

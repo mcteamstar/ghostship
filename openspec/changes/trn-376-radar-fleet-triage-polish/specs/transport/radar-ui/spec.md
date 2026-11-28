@@ -56,8 +56,13 @@ Radar SHALL expose one selected crew at a time in an inspector alongside the fle
 - **WHEN** the operator opens a crew from the fleet with no inspector already open
 - **THEN** Radar opens the Messages view and makes Overview available in the same inspector
 
+#### Scenario: Navigate a long crew view on a narrow screen
+- **WHEN** the operator scrolls through a crew view with enough viewport height for pinned navigation
+- **THEN** Back to fleet and any available previous and next crew controls stay reachable
+- **AND** the return-to-heading action moves both scroll and focus to the crew title
+
 ### Requirement: Fleet presentation and header
-Radar SHALL use a full-width header titled Ghostship Radar and display Ghost Academy fleet totals and freshness there. Radar SHALL omit the one-item Fleet sidebar. Gateway health SHALL remain a crew status. List and Cards SHALL share the fleet results and available crew actions. Fleet controls and the result count SHALL sit above the results. List SHALL use a shared set of columns across the Running and Inactive groups when the pane has room for a table. Crew selection, gateway warnings, running task counts and quick actions SHALL remain discoverable in the compact list.
+Radar SHALL use a full-width fleet header titled Ghostship Radar and display Ghost Academy fleet totals and freshness there. A phone inspector MAY condense that header while a crew is selected. Fleet connection errors SHALL remain visible. Radar SHALL omit the one-item Fleet sidebar. Gateway health SHALL remain a crew status. List and Cards SHALL share the fleet results and available crew actions. Fleet controls and the result count SHALL sit above the results. List SHALL use a shared set of columns across the Running and Inactive groups when the pane has room for a table. Crew selection, gateway warnings, running task counts, available last-task times and quick actions SHALL remain discoverable in the compact list.
 
 #### Scenario: Switch presentation while inspecting a crew
 - **WHEN** an operator switches between List and Cards

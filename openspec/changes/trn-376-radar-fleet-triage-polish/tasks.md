@@ -15,3 +15,4 @@
 - [x] 3.1 Consolidate the fleet toolbar and table, align the quick actions, and preserve density and sorting in the split and compact list.
 - [x] 3.2 Separate crew Messages and Overview with shared crew context and actions. Add navigation through the filtered result order and restore fleet focus when closing.
 - [x] 3.3 Check fleet, cards, navigation, focus restoration and Overview at phone, tablet and split desktop widths in both themes.
+- [x] 3.4 Keep last-task times in compact rows and pin narrow crew navigation with a return-to-heading action. Check scrolling, focus, and the transition between crew and fleet.

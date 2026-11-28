@@ -46,6 +46,11 @@ The crew inspector SHALL show message history in a dedicated Messages view, with
 - **THEN** they can still change search, mailbox scope and grouping or refresh the snapshot
 - **AND** they can identify the active date or group without returning to the top
 
+#### Scenario: Jump to a group in the current view
+- **WHEN** multiple nonempty groups match the active query and mailbox scope
+- **THEN** the operator can choose a date, sender or mailbox according to the current grouping and jump directly to its heading
+- **AND** focus moves to that heading in the current view without changing the query, scope or grouping
+
 ### Requirement: Mailbox history loads with the selected crew
 Radar SHALL load history when a crew is selected, retain it while that crew stays selected and avoid loading history for unselected crews. It SHALL allow retry after failure and prevent results from a previous selection from appearing in the current inspector.
 

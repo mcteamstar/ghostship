@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronLeft, ChevronRight, Inbox, PanelsTopLeft, TriangleAlert, X } from "lucide-react";
+import { ArrowLeft, ArrowUpToLine, ChevronLeft, ChevronRight, Inbox, PanelsTopLeft, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { fetchAgents } from "../api/endpoints";
 import type { Crew } from "../api/types";
@@ -65,15 +65,15 @@ export function CrewInspector({ crew, open, outside, close, fleetUpdatedAt, view
   const warning = crew.status === "running" && showsGatewayWarning(crew);
   return (
     <aside className="radar-inspector" id={`details-${crew.crew_id}`} aria-label="Crew details">
-      <header className="radar-inspector-overview">
-        <div className="inspector-command">
-          <button type="button" className="inspector-back" onClick={close}>
-            <ArrowLeft aria-hidden="true" size={16} />Back to fleet
-          </button>
-          <button type="button" className="radar-icon-action inspector-close" onClick={close}
-            aria-label="Close crew details" title="Close crew details">
-            <X aria-hidden="true" size={18} />
-          </button>
+      <div className="inspector-command">
+        <button type="button" className="inspector-back" onClick={close}>
+          <ArrowLeft aria-hidden="true" size={16} />Back to fleet
+        </button>
+        <button type="button" className="radar-icon-action inspector-close" onClick={close}
+          aria-label="Close crew details" title="Close crew details">
+          <X aria-hidden="true" size={18} />
+        </button>
+        <div className="inspector-navigation">
           {position >= 0 && total > 1 && <div className="crew-stepper" role="group" aria-label="Browse filtered crews">
             <button type="button" className="radar-icon-action" aria-label="Previous crew" title={previous?.crew_id}
               disabled={!previous} onClick={() => previous && select(previous.crew_id)}><ChevronLeft aria-hidden="true" size={18} /></button>
@@ -81,7 +81,16 @@ export function CrewInspector({ crew, open, outside, close, fleetUpdatedAt, view
             <button type="button" className="radar-icon-action" aria-label="Next crew" title={next?.crew_id}
               disabled={!next} onClick={() => next && select(next.crew_id)}><ChevronRight aria-hidden="true" size={18} /></button>
           </div>}
+          <button type="button" className="radar-icon-action inspector-top" title="Back to crew heading"
+            aria-label="Back to crew heading" onClick={() => {
+              heading.current?.scrollIntoView?.({ block: "start" });
+              heading.current?.focus({ preventScroll: true });
+            }}>
+            <ArrowUpToLine aria-hidden="true" size={16} />
+          </button>
         </div>
+      </div>
+      <header className="radar-inspector-overview">
         <div className="inspector-identity">
           <h2 className="radar-inspector-title" tabIndex={-1} ref={heading}>{crew.crew_id}</h2>
           <div className="radar-controls inspector-actions">

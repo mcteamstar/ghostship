@@ -425,7 +425,7 @@ body { padding: 0; }
 .radar-fleet, .radar-inspector { min-width: 0; }
 .radar-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
 .radar-controls button:not(.copy-btn), .radar-action, .radar-icon-action,
-.radar-search select, .mailbox-scope select, .inspector-back {
+.radar-search select, .mailbox-scope select, .history-jump select, .inspector-back {
   display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
   min-height: var(--control-height); padding: .25rem .65rem;
   font: inherit; font-size: var(--control-font); color: var(--color-text);
@@ -520,7 +520,7 @@ body { padding: 0; }
 .badge-stopped { background: var(--color-unknown-bg); color: var(--color-unknown); }
 .crew-state, .crew-card-state { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; }
 .crew-state .captain-badge, .crew-card-state .captain-badge, .inspector-state .captain-badge { margin: 0; }
-.compact-task-count { display: none; }
+.compact-task-count, .compact-last-task { display: none; }
 
 .radar-cards {
   list-style: none; padding: 0; margin: .45rem 0 0; display: grid; gap: .65rem;
@@ -543,7 +543,13 @@ body { padding: 0; }
 
 .radar-inspector { background: var(--color-surface); }
 .radar-inspector-overview { padding: .5rem var(--workspace-gutter) 0; border-bottom: 1px solid var(--color-border); }
-.inspector-command { display: flex; align-items: center; justify-content: space-between; gap: .35rem; }
+.inspector-command {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .35rem;
+  padding: .35rem var(--workspace-gutter) 0; background: var(--color-surface);
+}
+.inspector-navigation { display: flex; align-items: center; gap: .2rem; }
+.inspector-top { border-color: transparent; }
+
 .inspector-back { border-color: transparent; padding-inline: .2rem; color: var(--color-link); }
 .inspector-back:hover { background: var(--color-surface-alt); }
 .inspector-command .inspector-close { display: none; }
@@ -586,8 +592,15 @@ body { padding: 0; }
 .history-grouping { font-size: .75rem; color: var(--color-muted); }
 .history-options .snapshot-controls { margin-inline-start: auto; }
 .history-options .snapshot-controls button { min-height: 1.875rem; }
-.history-results { padding: 0 var(--workspace-gutter) 1rem; }
-.history-summary { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .1rem .65rem; padding: .4rem 0; }
+.history-results { padding: .5rem var(--workspace-gutter) 1rem; }
+.history-summary {
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .35rem .65rem;
+  padding: .35rem 0 .15rem; border-top: 1px solid var(--color-border);
+}
+.history-jump { display: flex; align-items: center; min-width: 0; max-width: 100%; gap: .3rem; margin-inline-start: auto; }
+.history-jump select { display: block; width: min(13rem, 100%); min-width: 0; }
+.history-jump button { flex: none; }
+
 .history-summary p { margin: 0; font-size: .75rem; }
 .history-empty { padding: .75rem; border: 1px dashed var(--color-border-strong); border-radius: var(--radius); }
 .history-empty p { margin: 0 0 .35rem; }
@@ -611,7 +624,7 @@ body { padding: 0; }
 @media (min-width: 1100px) {
   .radar-workspace.has-crew { display: grid; grid-template-columns: minmax(0, 43fr) minmax(0, 57fr); }
   .radar-inspector { border-inline-start: 1px solid var(--color-border); }
-  .inspector-command .inspector-back { display: none; }
+  .inspector-command .inspector-back, .inspector-command .inspector-top { display: none; }
   .inspector-command .inspector-close { display: inline-flex; border-color: transparent; order: 1; margin-inline-start: auto; }
 }
 @media (min-width: 1100px) and (min-height: 540px) {
@@ -631,20 +644,33 @@ body { padding: 0; }
 @media (max-width: 1099px) {
   .radar-workspace.has-crew .radar-fleet { display: none; }
 }
+@media (max-width: 1099px) and (min-height: 560px) {
+  .inspector-command {
+    position: sticky; top: 0; z-index: 2; padding-block: .25rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  html:has(.radar-workspace.has-crew) { scroll-padding-block-start: 3.5rem; }
+}
 @media (max-width: 639px) {
   .radar-shell { --control-height: 2.5rem; }
   .radar-header { gap: .25rem .65rem; }
   .radar-header .fleet-summary { order: 1; flex-basis: 100%; gap: .2rem .65rem; font-size: .75rem; }
   .radar-header .status-bar { margin-inline-start: 0; padding: 0; font-size: .7rem; }
   .radar-header .status-bar:has(.error) { order: 2; flex-basis: 100%; }
+  .radar-shell:has(> .has-crew) > .radar-header:not(:has(.error)) {
+    position: absolute; width: 1px; height: 1px; padding: 0; border: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
   .fleet-toolbar { gap: .4rem; }
   .radar-filters button:not(.copy-btn) { padding-inline: .4rem; }
+  .history-jump select { width: min(10.5rem, 100%); }
 }
 @container (min-width: 828px) {
   .radar-list-mobile-sort { display: none; }
 }
 @container (max-width: 827px) {
   .radar-list .fleet-time-col { display: none; }
+  .compact-last-task { display: inline; }
 }
 @container (max-width: 639px) {
   .radar-list .fleet-task-col { display: none; }

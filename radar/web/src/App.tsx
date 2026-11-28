@@ -219,6 +219,7 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
                       </button>
                       <small>{crewComp(crew)} · {crew.acp_backend || "kiro"}
                         {!!taskCount && <span className="compact-task-count"> · {taskCount} active</span>}
+                        {crew.last_task_at && <span className="compact-last-task"> · Last task <Timestamp iso={crew.last_task_at} /></span>}
                       </small>
                     </td>
                     <td data-label="Status"><div className="crew-state">{state(crew)}</div></td>

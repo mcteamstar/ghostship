@@ -7,7 +7,7 @@ Task-qualified sender addresses dominate mailbox rows and messages with missing 
 ## What Changes
 
 - Clarify sender and timestamp presentation.
-- Put the history in the default crew view with a separate scroll area in the desktop inspector.
+- Put the history in the default crew view with a separate scroll area in the desktop inspector and a way to jump directly to a visible group.
 - Search the selected crew’s retained message metadata and narrow the results to a receiving mailbox independently of grouping.
 - Assess whether message previews merit a follow-up.
 
