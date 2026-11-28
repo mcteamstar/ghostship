@@ -481,8 +481,7 @@ body { padding: 0; }
 .history-group h3 { margin: 1rem 0 .2rem; font-size: 1rem; }
 .history-group ul { list-style: none; padding: 0; margin: 0; }
 .history-group li {
-  display: grid; grid-template-columns: minmax(4rem, auto) minmax(0, 1fr);
-  gap: .65rem; border-bottom: 1px solid var(--color-border); padding: .55rem 0;
+  border-bottom: 1px solid var(--color-border); padding: .55rem 0;
 }
 .history-group small, .history-group li span { color: var(--color-muted); }
 .history-group li strong { display: block; overflow-wrap: anywhere; }
@@ -511,3 +510,49 @@ body { padding: 0; }
 @media (min-width: 640px) {
   .radar-list-mobile-sort { display: none; }
 }
+
+/* Fleet controls and data use the system face. Display headings retain Radar's serif face. */
+.radar-shell { font-family: system-ui, sans-serif; }
+.badge-stopped { background: var(--color-unknown-bg); color: var(--color-unknown); }
+.radar-fleet { container-type: inline-size; }
+.radar-crew-name { display: inline-flex; align-items: center; gap: .25rem; max-width: 100%; }
+.radar-list th { white-space: nowrap; }
+.radar-search label { font-size: .85rem; }
+.radar-search select { max-width: 100%; }
+@container (min-width: 640px) and (max-width: 820px) {
+  .radar-list th:nth-child(4), .radar-list td:nth-child(4) { display: none; }
+  .radar-list-mobile-sort { display: inline; }
+}
+@container (max-width: 639px) {
+  .radar-list, .radar-list tbody { display: block; }
+  .radar-list thead { display: none; }
+  .radar-list tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: .25rem .5rem;
+    padding: .5rem;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .radar-list td { display: block; min-width: 0; padding: 0; border: 0; }
+  .radar-list td:first-child { grid-column: 1 / -1; }
+  .radar-list td:nth-child(3), .radar-list td:nth-child(4) { display: none; }
+  .radar-list td[data-label]::before { content: none; }
+  .radar-list td:last-child { grid-column: 2; grid-row: 2; }
+  .radar-list-mobile-sort { display: inline; }
+}
+@media (max-width: 639px) {
+  .radar-header { gap: .25rem .6rem; }
+  .radar-header .fleet-summary { order: 1; flex-basis: 100%; gap: .2rem .65rem; font-size: .75rem; }
+  .radar-header .status-bar { padding: 0; border: 0; background: transparent; font-size: .7rem; }
+  .radar-header .status-bar:has(.error) { order: 2; flex-basis: 100%; }
+}
+.snapshot-controls { margin-block: .35rem; color: var(--color-muted); }
+.snapshot-controls button:disabled { cursor: progress; color: var(--color-muted); }
+
+.history-search { margin-block: .5rem; }
+.history-search .fleet-filter { flex: 1 1 12rem; min-width: 0; width: auto; margin: 0; }
+.history-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: .15rem .75rem; }
+.history-participants, .history-address { overflow-wrap: anywhere; font-size: .82rem; }
+.history-sender { display: inline-block; max-width: 100%; vertical-align: top; }
+.history-sender summary { cursor: pointer; color: var(--color-link); }
+.history-sender span { display: block; }

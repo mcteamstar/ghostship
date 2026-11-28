@@ -23,11 +23,11 @@ export function AgentCountBadge({ count }: { count: number }) {
 
 export function CaptainBadge({ captain }: { captain: CaptainState | null | undefined }) {
   if (!captain) return null;
-  if (!captain.enabled) return <span className="captain-badge captain-off"><Flag aria-hidden="true" size={14} /> paused</span>;
+  if (!captain.enabled) return <span className="captain-badge captain-off"><Flag aria-hidden="true" size={14} /> Captain paused</span>;
   const stale = captainIsStale(captain, Date.now());
   return stale ? (
-    <span className="captain-badge captain-on captain-stale"><Flag aria-hidden="true" size={14} /> captain <CircleAlert aria-hidden="true" size={14} /></span>
+    <span className="captain-badge captain-on captain-stale"><Flag aria-hidden="true" size={14} /> Captain overdue <CircleAlert aria-hidden="true" size={14} /></span>
   ) : (
-    <span className="captain-badge captain-on"><Flag aria-hidden="true" size={14} /> captain</span>
+    <span className="captain-badge captain-on"><Flag aria-hidden="true" size={14} /> Captain active</span>
   );
 }

@@ -258,10 +258,10 @@ describe("fleet table ordering and sections (4.2)", () => {
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     const badge = (id: string) => container.querySelector(`tr[data-crew-id="${id}"] .captain-badge`);
-    expect(badge("on")).toHaveTextContent("captain");
+    expect(badge("on")).toHaveTextContent("Captain active");
     expect(badge("on")).not.toHaveClass("captain-stale");
-    expect(badge("off")).toHaveTextContent("paused");
-    expect(badge("late")).toHaveTextContent("captain");
+    expect(badge("off")).toHaveTextContent("Captain paused");
+    expect(badge("late")).toHaveTextContent("Captain overdue");
     expect(badge("late")).toHaveClass("captain-stale");
     expect(badge("none")).toBeNull();
   });

@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowLeft, ArrowUp, ChevronsUpDown, ChevronDown, ChevronRight, ExternalLink, LayoutGrid, LayoutList, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { fetchFleet } from "./api/endpoints";
+import { fetchAgents, fetchFleet } from "./api/endpoints";
 import type { Crew } from "./api/types";
 import { useAuthRefresh } from "./auth/useAuthRefresh";
 import { CaptainBadge, StatusBadge } from "./components/Badges";
@@ -13,7 +13,9 @@ import { AgentsSection } from "./components/detail/AgentsSection";
 import { CaptainSection } from "./components/detail/CaptainSection";
 import { CredentialsSection } from "./components/detail/CredentialsSection";
 import { MailHistory } from "./components/detail/MailHistory";
-import { useCrewDetail } from "./detail/useCrewDetail";
+import { useSnapshot } from "./detail/useSnapshot";
+import { SnapshotControls } from "./components/detail/SnapshotControls";
+import { FailedSection } from "./components/detail/states";
 import { activeAgents, captainIsStale, crewComp, matchesFilter, showsGatewayWarning } from "./fleet/crewState";
 import { nextSortDir, orderFleet, type SortDir } from "./fleet/order";
 import { useFleet, type FleetFetcher } from "./fleet/useFleet";
@@ -39,10 +41,25 @@ function Dashboard({ crew }: { crew: Crew }) {
     : null;
 }
 
-function Inspector({ crew, open, outside, close }: {
-  crew: Crew; open: boolean; outside: boolean; close: () => void;
+function readTasks(crewId: string, signal: AbortSignal) {
+  return fetchAgents(crewId, { signal });
+}
+
+function RunningTasks({ crew }: { crew: Crew }) {
+  const { snapshot, error, pending, refresh } = useSnapshot(crew.crew_id, readTasks);
+  return <>
+    <AgentsSection crew={crew} detail={snapshot ? { state: "ok", data: snapshot.data }
+      : error ? { state: "failed", error } : { state: "loading" }} />
+    <SnapshotControls label="tasks" receivedAt={snapshot?.receivedAt} refresh={refresh}
+      pending={pending} failed={!!error} />
+    {snapshot && error && <FailedSection error={error}
+      unavailable="Could not refresh tasks. Showing the last successful snapshot." />}
+  </>;
+}
+
+function Inspector({ crew, open, outside, close, fleetUpdatedAt }: {
+  crew: Crew; open: boolean; outside: boolean; close: () => void; fleetUpdatedAt: number | null;
 }) {
-  const detail = useCrewDetail(crew.crew_id, open, crew.status === "running", false);
   const auth = useAuthRefresh(crew.crew_id, open);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
@@ -64,7 +81,10 @@ function Inspector({ crew, open, outside, close }: {
           {crew.crew_image_version && <div><dt>Image</dt><dd>{crew.crew_image_version}</dd></div>}
         </dl>
         {crew.status === "running" && showsGatewayWarning(crew) && <p className="radar-warning">Gateway unreachable</p>}
-        <AgentsSection crew={crew} detail={detail.agents} />
+        {crew.status === "running" ? <RunningTasks crew={crew} /> : <>
+          <AgentsSection crew={crew} detail={{ state: "idle" }} />
+          <SnapshotControls label="tasks" source="Fleet snapshot" receivedAt={fleetUpdatedAt} />
+        </>}
         {crew.captain && <CaptainSection captain={crew.captain} />}
         {crew.status !== "running" && <p className="state">Crew is stopped. Live schedule data is unavailable.</p>}
         <CredentialsSection crewId={crew.crew_id} auth={auth} />
@@ -195,7 +215,7 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
           ))}
         </section>
         {crews.map(crew => <Inspector key={crew.crew_id} crew={crew} open={crew.crew_id === selected}
-          outside={!result.includes(crew)} close={() => select(null)} />)}
+          fleetUpdatedAt={fleet.lastSuccessAt} outside={!result.includes(crew)} close={() => select(null)} />)}
       </div>
     </main>
   );
