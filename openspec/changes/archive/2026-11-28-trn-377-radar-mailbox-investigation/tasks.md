@@ -16,3 +16,4 @@
 - [x] 3.2 Add receiving mailbox scope, combined text search and empty-state recovery. Preserve search, scope and grouping across inspector views for the same selected crew.
 - [x] 3.3 Check scoped search, no matches, address disclosure and long histories at phone, tablet and desktop widths.
 - [x] 3.4 Add a group jump that follows the current search, scope and grouping. Check keyboard activation, focus and scrolling in narrow and desktop inspectors.
+- [x] 3.5 Streamline the message toolbar with short grouping labels and an accessible refresh icon. Check the grouping and refresh controls at narrow and desktop widths.

@@ -25,16 +25,17 @@ describe("narrow layout (6.4)", () => {
     const labels = Array.from(container.querySelectorAll<HTMLElement>('tr[data-crew-id="alpha"] td[data-label]')).map(
       (cell) => cell.dataset.label,
     );
-    expect(labels).toEqual(["Status", "Active tasks", "Last task"]);
+    expect(labels).toEqual(["Active tasks", "Last task"]);
   });
 
-  it("keeps the crew name, status and expand control on every card", async () => {
+  it("keeps the crew name and expand control under a shared status group", async () => {
     routeFetch({ "/api/crews": () => jsonResponse(fleet([crew({ crew_id: "alpha" })])) });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     const row = container.querySelector('tr[data-crew-id="alpha"]') as HTMLElement;
     expect(row.querySelector(".crew-id")).toHaveTextContent("alpha");
     expect(row.querySelector(".expand-btn")).toBeInTheDocument();
-    expect(row.querySelector(".badge")).toHaveTextContent("running");
+    expect(row.closest("tbody")).toHaveAccessibleName("Active 1");
+    expect(row.querySelector(".badge")).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowUpToLine, ChevronLeft, ChevronRight, Inbox, PanelsTopLeft, TriangleAlert, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, ChevronLeft, ChevronRight, Inbox, Info, TriangleAlert, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { fetchAgents } from "../api/endpoints";
 import type { Crew } from "../api/types";
@@ -25,9 +25,9 @@ function RunningTasks({ crew }: { crew: Crew }) {
   const { snapshot, error, pending, refresh } = useSnapshot(crew.crew_id, readTasks);
   return <>
     <AgentsSection crew={crew} detail={snapshot ? { state: "ok", data: snapshot.data }
-      : error ? { state: "failed", error } : { state: "loading" }} />
-    <SnapshotControls label="tasks" receivedAt={snapshot?.receivedAt} refresh={refresh}
-      pending={pending} failed={!!error} />
+      : error ? { state: "failed", error } : { state: "loading" }}
+      controls={<SnapshotControls label="tasks" receivedAt={snapshot?.receivedAt} refresh={refresh}
+        pending={pending} failed={!!error} />} />
     {snapshot && error && <FailedSection error={error}
       unavailable="Could not refresh tasks. Showing the last successful snapshot." />}
   </>;
@@ -66,18 +66,14 @@ export function CrewInspector({ crew, open, outside, close, fleetUpdatedAt, view
   return (
     <aside className="radar-inspector" id={`details-${crew.crew_id}`} aria-label="Crew details">
       <div className="inspector-command">
-        <button type="button" className="inspector-back" onClick={close}>
-          <ArrowLeft aria-hidden="true" size={16} />Back to fleet
-        </button>
-        <button type="button" className="radar-icon-action inspector-close" onClick={close}
-          aria-label="Close crew details" title="Close crew details">
-          <X aria-hidden="true" size={18} />
+        <button type="button" className="inspector-back" onClick={close} aria-label="Back to fleet" title="Back to fleet">
+          <ArrowLeft aria-hidden="true" size={18} />Fleet
         </button>
         <div className="inspector-navigation">
           {position >= 0 && total > 1 && <div className="crew-stepper" role="group" aria-label="Browse filtered crews">
             <button type="button" className="radar-icon-action" aria-label="Previous crew" title={previous?.crew_id}
               disabled={!previous} onClick={() => previous && select(previous.crew_id)}><ChevronLeft aria-hidden="true" size={18} /></button>
-            <span>{position + 1} of {total}</span>
+            <span>{position + 1} / {total}</span>
             <button type="button" className="radar-icon-action" aria-label="Next crew" title={next?.crew_id}
               disabled={!next} onClick={() => next && select(next.crew_id)}><ChevronRight aria-hidden="true" size={18} /></button>
           </div>}
@@ -86,30 +82,36 @@ export function CrewInspector({ crew, open, outside, close, fleetUpdatedAt, view
               heading.current?.scrollIntoView?.({ block: "start" });
               heading.current?.focus({ preventScroll: true });
             }}>
-            <ArrowUpToLine aria-hidden="true" size={16} />
+            <ArrowUp aria-hidden="true" size={16} />
           </button>
         </div>
+        <button type="button" className="radar-icon-action inspector-close" onClick={close}
+          aria-label="Close crew details" title="Close crew details">
+          <X aria-hidden="true" size={18} />
+        </button>
       </div>
       <header className="radar-inspector-overview">
         <div className="inspector-identity">
           <h2 className="radar-inspector-title" tabIndex={-1} ref={heading}>{crew.crew_id}</h2>
-          <div className="radar-controls inspector-actions">
-            <Dashboard crew={crew} />
-            <CopyButton crewId={crew.crew_id} />
-          </div>
         </div>
         <div className="radar-controls inspector-state">
           <StatusBadge status={crew.status} /><CaptainBadge captain={crew.captain} />
           {warning && <span className="radar-warning"><TriangleAlert size={15} aria-hidden="true" />Gateway unreachable</span>}
         </div>
         {outside && <p className="state">This crew is outside the current results.</p>}
-        <div className="radar-controls inspector-views" role="group" aria-label="Crew detail view">
-          {(["Messages", "Overview"] as const).map(name => <button key={name} type="button"
-            id={`view-${crew.crew_id}-${name}`} aria-controls={`panel-${crew.crew_id}-${name}`}
-            aria-pressed={view === name} onClick={() => setView(name)}>
-            {name === "Messages" ? <Inbox size={16} aria-hidden="true" /> : <PanelsTopLeft size={16} aria-hidden="true" />}
-            {name}
-          </button>)}
+        <div className="inspector-viewbar">
+          <div className="radar-controls inspector-views" role="group" aria-label="Crew detail view">
+            {(["Messages", "Overview"] as const).map(name => <button key={name} type="button"
+              id={`view-${crew.crew_id}-${name}`} aria-controls={`panel-${crew.crew_id}-${name}`}
+              aria-pressed={view === name} onClick={() => setView(name)}>
+              {name === "Messages" ? <Inbox size={16} aria-hidden="true" /> : <Info size={16} aria-hidden="true" />}
+              {name}
+            </button>)}
+          </div>
+          <div className="radar-controls inspector-actions" role="group" aria-label="Crew actions">
+            <Dashboard crew={crew} />
+            <CopyButton crewId={crew.crew_id} />
+          </div>
         </div>
       </header>
       <section className="radar-inspector-body inspector-details" id={`panel-${crew.crew_id}-Overview`}
@@ -121,17 +123,18 @@ export function CrewInspector({ crew, open, outside, close, fleetUpdatedAt, view
             <div><dt>{crew.status === "running" ? "Uptime" : "Created"}</dt><dd>{crew.status === "running" ? fmtUptime(crew.uptime_secs) : <Timestamp iso={crew.created_at} />}</dd></div>
             <div><dt>Last task</dt><dd><Timestamp iso={crew.last_task_at} /></dd></div>
             {crew.crew_image_version && <div><dt>Image</dt><dd>{crew.crew_image_version}</dd></div>}
+            {!crew.dashboard_url && <div><dt>Dashboard</dt><dd>Not assigned</dd></div>}
           </dl>
           <div className="overview-block">
-            {crew.status === "running" ? <RunningTasks crew={crew} /> : <>
-              <AgentsSection crew={crew} detail={{ state: "idle" }} />
-              <SnapshotControls label="tasks" source="Fleet snapshot" receivedAt={fleetUpdatedAt} />
-            </>}
+            {crew.status === "running" ? <RunningTasks crew={crew} /> :
+              <AgentsSection crew={crew} detail={{ state: "idle" }}
+                controls={<SnapshotControls label="tasks" source="Fleet snapshot" receivedAt={fleetUpdatedAt} />} />}
+
           </div>
           {crew.captain && <div className="overview-block">
             <CaptainSection captain={crew.captain} />
           </div>}
-          {crew.status !== "running" && <p className="state">Crew is stopped. Live schedule data is unavailable.</p>}
+          {crew.status === "stopped" && <p className="state">Crew is asleep. Live schedule data is unavailable.</p>}
           <div className="overview-block"><CredentialsSection crewId={crew.crew_id} auth={auth} /></div>
         </div>
       </section>

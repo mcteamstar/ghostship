@@ -222,7 +222,7 @@ describe("detail failure states (6.7)", () => {
     await screen.findByText("Handoff: TRN-371");
     expect(callsTo(mock, AGENTS_URL)).toHaveLength(0);
     expect(crewProxyCalls(mock)).toHaveLength(0);
-    expect(screen.getByText(/Crew is stopped. Live schedule data is unavailable\./)).toBeInTheDocument();
+    expect(screen.getByText(/Crew is asleep. Live schedule data is unavailable\./)).toBeInTheDocument();
   });
 });
 

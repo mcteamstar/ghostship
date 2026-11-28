@@ -86,7 +86,7 @@ it("opens cards from their metadata and keeps card actions independent", async (
   await screen.findByRole("button", { name: "Expand details for alpha" });
   fireEvent.click(screen.getByRole("button", { name: "Cards" }));
   const card = screen.getByRole("listitem");
-  const dashboard = within(card).getByRole("link", { name: "Open dashboard" });
+  const dashboard = within(card).getByRole("link", { name: "Wake and open dashboard" });
   expect(dashboard).toHaveAttribute("href", "http://localhost:8443/");
   dashboard.addEventListener("click", event => event.preventDefault(), { once: true });
   fireEvent.click(dashboard);

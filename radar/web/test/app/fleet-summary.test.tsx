@@ -22,16 +22,17 @@ function summaryValue(label: string): string | null {
 }
 
 describe("fleet summary (6.2)", () => {
-  it("shows running and stopped counts, capacity against the maximum, and free memory", async () => {
+  it("combines the running count and maximum, with separate stopped count and free memory", async () => {
     await renderFleet(
       fleet(
         [crew({ crew_id: "a" }), crew({ crew_id: "b" }), crew({ crew_id: "c", status: "stopped" })],
         { active_crews: 2, max_active_crews: 3, host_memory_available_gb: 4.06 },
       ),
     );
-    expect(summaryValue("Running")).toBe("2");
-    expect(summaryValue("Stopped")).toBe("1");
-    expect(summaryValue("Capacity")).toBe("2 / 3 crews");
+    expect(summaryValue("Running")).toBeNull();
+    expect(summaryValue("Asleep")).toBe("1");
+    expect(summaryValue("Capacity")).toBeNull();
+    expect(summaryValue("Active")).toBe("2 / 3");
     expect(summaryValue("Free memory")).toBe("4.1 GB");
   });
 
@@ -39,7 +40,7 @@ describe("fleet summary (6.2)", () => {
     await renderFleet(fleet([crew()], { active_crews: null, max_active_crews: null }));
     expect(summaryValue("Capacity")).toBeNull();
     expect(screen.queryByText("Capacity")).toBeNull();
-    expect(summaryValue("Running")).toBe("1");
+    expect(summaryValue("Active")).toBe("1");
   });
 
   it("omits free memory when the fleet does not report it", async () => {

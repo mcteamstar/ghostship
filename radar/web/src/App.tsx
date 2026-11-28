@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronRight, ChevronsUpDown, LayoutGrid, LayoutList, Radar, Search, TriangleAlert } from "lucide-react";
+import { ChevronRight, LayoutGrid, LayoutList, Radar, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { fetchFleet } from "./api/endpoints";
 import type { Crew } from "./api/types";
@@ -11,16 +11,16 @@ import { Timestamp } from "./components/Timestamp";
 import { CrewInspector, type DetailView } from "./components/CrewInspector";
 import { Dashboard } from "./components/DashboardLink";
 import { activeAgents, captainIsStale, crewComp, matchesFilter, showsGatewayWarning } from "./fleet/crewState";
-import { nextSortDir, orderFleet, type SortDir } from "./fleet/order";
+import { orderFleet, type SortDir } from "./fleet/order";
 import { useFleet, type FleetFetcher } from "./fleet/useFleet";
 
-const filters = ["All", "Running", "Inactive", "Needs attention"] as const;
+const filters = ["All", "Active", "Asleep", "Needs attention"] as const;
 type Filter = typeof filters[number];
 
 function matchesStatus(crew: Crew, filter: Filter) {
   if (filter === "All") return true;
-  if (filter === "Running") return crew.status === "running";
-  if (filter === "Inactive") return crew.status !== "running";
+  if (filter === "Active") return crew.status === "running";
+  if (filter === "Asleep") return crew.status === "stopped";
   return (crew.status === "running" && showsGatewayWarning(crew)) || captainIsStale(crew.captain, Date.now());
 }
 
@@ -51,7 +51,7 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
 
   useEffect(() => {
     if (!fleet.data) return;
-    document.title = `Fleet Radar (${fleet.data.crews.filter(c => c.status === "running").length} running)`;
+    document.title = `Fleet Radar (${fleet.data.crews.filter(c => c.status === "running").length} active)`;
     if (selected && !fleet.data.crews.some(c => c.crew_id === selected)) {
       history.replaceState(null, "", location.pathname + location.search);
       setNotice("The selected crew is no longer in the fleet.");
@@ -87,10 +87,14 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
   const crewCount = `${crews.length} ${crews.length === 1 ? "crew" : "crews"}`;
   const active = crews.find(crew => crew.crew_id === selected);
   const fleetGroups = [
-    { label: "Running", crews: groups.running },
-    { label: "Inactive", crews: groups.inactive },
+    { label: "Active", crews: groups.running, showStatus: false },
+    { label: "Asleep", crews: groups.inactive.filter(crew => crew.status === "stopped"), showStatus: false },
+    { label: "Other", crews: groups.inactive.filter(crew => crew.status !== "stopped"), showStatus: true },
   ].filter(group => group.crews.length > 0);
-  const ordered = [...groups.running, ...groups.inactive];
+  const ordered = fleetGroups.flatMap(group => group.crews);
+  const showsWarning = (crew: Crew) => crew.status === "running" && showsGatewayWarning(crew);
+  const hasSignals = (crew: Crew, showStatus: boolean) => showStatus || !!crew.captain || showsWarning(crew);
+  const showSignalsColumn = fleetGroups.some(group => group.crews.some(crew => hasSignals(crew, group.showStatus)));
   const position = ordered.findIndex(crew => crew.crew_id === selected);
   const navigation = {
     position,
@@ -106,13 +110,13 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
     "aria-controls": selected === crew.crew_id ? `details-${crew.crew_id}` : undefined,
     "aria-label": `${selected === crew.crew_id ? "Collapse" : "Expand"} details for ${crew.crew_id}`,
   });
-  const state = (crew: Crew) => <>
-    <StatusBadge status={crew.status} /><CaptainBadge captain={crew.captain} />
-    {crew.status === "running" && showsGatewayWarning(crew) &&
+  const signals = (crew: Crew, showStatus: boolean) => <>
+    {showStatus && <StatusBadge status={crew.status} />}<CaptainBadge captain={crew.captain} />
+    {showsWarning(crew) &&
       <span className="radar-warning"><TriangleAlert aria-hidden="true" size={15} />Gateway unreachable</span>}
   </>;
-  const actions = (crew: Crew, compact = false) => <div className="radar-controls">
-    <Dashboard crew={crew} compact={compact} /><CopyButton crewId={crew.crew_id} />
+  const actions = (crew: Crew) => <div className="radar-controls">
+    <Dashboard crew={crew} /><CopyButton crewId={crew.crew_id} />
   </div>;
 
   return (
@@ -135,17 +139,16 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
               </div>
               <div className="radar-controls segmented-control fleet-layout" role="group" aria-label="Fleet layout">
                 {(["List", "Cards"] as const).map(name => <button type="button" key={name} aria-pressed={mode === name}
-                  onClick={() => setMode(name)}>
-                  {name === "List" ? <LayoutList aria-hidden="true" size={16} /> : <LayoutGrid aria-hidden="true" size={16} />}
-                  {name}
+                  aria-label={name} title={`${name} view`} onClick={() => setMode(name)}>
+                  {name === "List" ? <LayoutList aria-hidden="true" size={18} /> : <LayoutGrid aria-hidden="true" size={18} />}
                 </button>)}
               </div>
             </div>
             <div className="radar-controls radar-search">
               <div className="fleet-search-field">
-                <Search size={16} aria-hidden="true" /><FleetFilter value={search} onChange={setSearch} />
+                <FleetFilter value={search} onChange={setSearch} />
               </div>
-              <label className={mode === "List" ? "radar-list-mobile-sort" : undefined}>
+              <label>
                 <span className="visually-hidden">Sort</span>
                 <select value={sort ?? ""} onChange={event => {
                   const order = event.target.value;
@@ -181,9 +184,9 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
                   {group.crews.map(crew => <li key={crew.crew_id} className={crew.crew_id === selected ? "selected" : ""}>
                     <button {...expandProps(crew)} type="button" className="crew-card-select" onClick={() => toggleCrew(crew)}>
                       <span className="crew-card-heading"><span className="crew-id">{crew.crew_id}</span><ChevronRight aria-hidden="true" size={16} /></span>
-                      <span className="crew-card-state">
-                        {state(crew)}
-                      </span>
+                      {hasSignals(crew, group.showStatus) && <span className="crew-card-state">
+                        {signals(crew, group.showStatus)}
+                      </span>}
                       <span>{crewComp(crew)} · {crew.acp_backend || "kiro"}</span>
                       <span>{activeAgents(crew.agents).length} active · Last task <Timestamp iso={crew.last_task_at} /></span>
                     </button>
@@ -194,19 +197,17 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
             )) : !!result.length && <table className="radar-list" aria-label="Fleet crews">
               <thead><tr>
                 <th scope="col">Crew</th>
-                <th scope="col">Status</th>
+                {showSignalsColumn && <th scope="col">Status</th>}
                 <th scope="col" className="fleet-task-col">Active tasks</th>
                 <th scope="col" className="fleet-time-col" aria-sort={sort === "desc" ? "descending" : sort === "asc" ? "ascending" : "none"}>
-                  <button type="button" className="sort-btn radar-column-sort" onClick={() => setSort(nextSortDir)}>
-                    Last task {sort === "desc" ? <ArrowDown aria-hidden="true" size={14} />
-                      : sort === "asc" ? <ArrowUp aria-hidden="true" size={14} />
-                      : <ChevronsUpDown aria-hidden="true" size={14} />}
-                  </button>
+                  Last task
                 </th>
                 <th scope="col" className="fleet-actions-col">Actions</th>
               </tr></thead>
-              {fleetGroups.map(group => <tbody key={group.label}>
-                <tr className="fleet-group-row"><td colSpan={5}><h3>{group.label} <span>{group.crews.length}</span></h3></td></tr>
+              {fleetGroups.map(group => <tbody key={group.label} aria-labelledby={`fleet-group-${group.label}`}>
+                <tr className="fleet-group-row"><td colSpan={showSignalsColumn ? 5 : 4}>
+                  <h3 id={`fleet-group-${group.label}`}>{group.label} <span>{group.crews.length}</span></h3>
+                </td></tr>
                 {group.crews.map(crew => {
                   const taskCount = activeAgents(crew.agents).length;
                   return <tr key={crew.crew_id} data-crew-id={crew.crew_id}
@@ -222,10 +223,10 @@ export function App({ fetcher = fetchFleet }: { fetcher?: FleetFetcher }) {
                         {crew.last_task_at && <span className="compact-last-task"> · Last task <Timestamp iso={crew.last_task_at} /></span>}
                       </small>
                     </td>
-                    <td data-label="Status"><div className="crew-state">{state(crew)}</div></td>
+                    {showSignalsColumn && <td data-label="Status"><div className="crew-state">{signals(crew, group.showStatus)}</div></td>}
                     <td className="fleet-task-col" data-label="Active tasks">{taskCount}</td>
                     <td className="fleet-time-col" data-label="Last task"><Timestamp iso={crew.last_task_at} /></td>
-                    <td className="fleet-actions-col">{actions(crew, true)}</td>
+                    <td className="fleet-actions-col">{actions(crew)}</td>
                   </tr>;
                 })}
               </tbody>)}

@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { type ReactNode, useId } from "react";
 import type { AgentTask, AgentsPayload, Crew } from "../../api/types";
 import { PERSONA_AGENTS } from "../../api/types";
 import { fmtUptime, shortId } from "../../format";
@@ -83,8 +83,14 @@ export function AgentGroups({ tasks }: { tasks: AgentTask[] }) {
  * The agent tasks of a crew. A running crew shows its live list once that request has
  * answered. A stopped crew shows the list the fleet reported for it.
  */
-export function AgentsSection({ crew, detail }: { crew: Crew; detail: Section<AgentsPayload> }) {
-  const heading = <h2 className="detail-section">Active tasks</h2>;
+export function AgentsSection({ crew, detail, controls }: {
+  crew: Crew;
+  detail: Section<AgentsPayload>;
+  controls?: ReactNode;
+}) {
+  const heading = <div className="task-section-heading">
+    <h2 className="detail-section">Active tasks</h2>{controls}
+  </div>;
   if (crew.status !== "running") {
     return (
       <>

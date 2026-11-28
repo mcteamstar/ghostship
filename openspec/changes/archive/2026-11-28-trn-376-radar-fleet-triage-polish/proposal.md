@@ -6,9 +6,11 @@ An all-stopped fleet looks like a fault, the list gets cramped when inspecting a
 
 ## What Changes
 
-- Distinguish routine stops from warnings.
+- Use Active and Asleep consistently for known states, and keep warnings and other states visible.
+- Use the same explicit sort choices in List and Cards.
 - Organize fleet controls above a single grouped table with aligned row actions. Preserve the card layout.
 - Make the crew inspector a workspace with shared crew actions, separate Messages and Overview views, and previous and next controls that follow the visible fleet order.
+- Explain when a dashboard link wakes a stopped crew and show when no dashboard is assigned.
 - Improve fleet density at narrow and split pane widths. Keep available last-task times in compact rows and keep crew navigation accessible during a long read on narrow screens.
 - Show independent freshness and refresh controls for task and mailbox snapshots.
 

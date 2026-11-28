@@ -439,7 +439,11 @@ body { padding: 0; }
   color: var(--color-link); background: var(--color-captain-bg); border-color: var(--color-accent);
 }
 .radar-shell svg { flex: none; vertical-align: middle; }
-.radar-icon-action, .radar-shell .copy-btn { padding: 0; inline-size: var(--control-height); min-block-size: var(--control-height); }
+.radar-icon-action, .radar-controls button.radar-icon-action:not(.copy-btn), .radar-shell .copy-btn {
+  padding: 0; inline-size: var(--control-height); min-block-size: var(--control-height);
+}
+.dashboard-action { white-space: nowrap; }
+
 .radar-shell .copy-btn { display: inline-grid; place-items: center; border-radius: var(--radius-sm); }
 .radar-shell .copy-btn:hover { background: var(--color-surface-alt); }
 .radar-icon-action:disabled { cursor: default; opacity: .5; }
@@ -448,6 +452,7 @@ body { padding: 0; }
   border: 1px solid var(--color-border); border-radius: var(--radius);
 }
 .segmented-control button:not(.copy-btn) { min-height: 1.875rem; border-color: transparent; background: transparent; }
+.fleet-layout button:not(.copy-btn) { min-width: var(--control-height); padding-inline: .45rem; }
 .segmented-control button[aria-pressed="true"] {
   background: var(--color-surface); border-color: var(--color-border); font-weight: 600;
 }
@@ -515,7 +520,6 @@ body { padding: 0; }
 .radar-list tr.data-row.selected, .radar-cards li.selected {
   background: var(--color-captain-bg); box-shadow: inset 3px 0 var(--color-accent);
 }
-.radar-column-sort { display: inline-flex; align-items: center; gap: .25rem; }
 .radar-warning { display: inline-flex; align-items: center; gap: .3rem; color: var(--color-warn); font-size: .77rem; font-weight: 600; }
 .badge-stopped { background: var(--color-unknown-bg); color: var(--color-unknown); }
 .crew-state, .crew-card-state { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; }
@@ -557,7 +561,11 @@ body { padding: 0; }
 .crew-stepper .radar-icon-action { border-color: transparent; }
 .inspector-identity { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .35rem .75rem; margin-block: .15rem .35rem; }
 .radar-inspector-title { max-width: 100%; }
-.inspector-actions { margin-inline-start: auto; }
+.inspector-viewbar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .25rem .65rem;
+}
+.inspector-actions { margin-inline-start: auto; padding-block: .15rem; gap: .2rem; }
+
 .inspector-state { margin-block-end: .25rem; }
 .inspector-views { gap: 1rem; }
 .inspector-views button:not(.copy-btn) { padding: .4rem .1rem; border: 0; border-radius: 0; border-bottom: 2px solid transparent; }
@@ -575,6 +583,14 @@ body { padding: 0; }
 .overview-block > h2:first-child { margin-top: 0; }
 .snapshot-controls { color: var(--color-muted); gap: .35rem .6rem; padding-block: .25rem; }
 .snapshot-controls button:disabled { cursor: progress; color: var(--color-muted); }
+.task-section-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .25rem; }
+.task-section-heading .detail-section { margin: 0; }
+.snapshot-refresh:disabled svg { animation: radar-spin 1s linear infinite; }
+@keyframes radar-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .snapshot-refresh:disabled svg { animation: none; }
+}
+
 
 .history-load-state { padding: .65rem var(--workspace-gutter); }
 .history-toolbar {
@@ -583,15 +599,15 @@ body { padding: 0; }
 }
 .history-query, .history-options { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; }
 .history-search { flex: 1 1 10rem; }
-.history-search input[type="search"] { padding-inline-end: 2.1rem; }
+.fleet-search-field:has(.clear-search) input, .history-search:has(.clear-search) input { padding-inline-end: 2.1rem; }
 .history-search input::-webkit-search-cancel-button { display: none; }
-.clear-mail-search {
+.clear-search {
   position: absolute; inset-inline-end: .15rem; inset-block: .15rem;
-  min-height: 0; inline-size: 1.85rem; border-color: transparent;
+  min-block-size: 0; inline-size: 1.85rem; border-color: transparent;
 }
 .history-grouping { font-size: .75rem; color: var(--color-muted); }
 .history-options .snapshot-controls { margin-inline-start: auto; }
-.history-options .snapshot-controls button { min-height: 1.875rem; }
+
 .history-results { padding: .5rem var(--workspace-gutter) 1rem; }
 .history-summary {
   display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .35rem .65rem;
@@ -625,7 +641,7 @@ body { padding: 0; }
   .radar-workspace.has-crew { display: grid; grid-template-columns: minmax(0, 43fr) minmax(0, 57fr); }
   .radar-inspector { border-inline-start: 1px solid var(--color-border); }
   .inspector-command .inspector-back, .inspector-command .inspector-top { display: none; }
-  .inspector-command .inspector-close { display: inline-flex; border-color: transparent; order: 1; margin-inline-start: auto; }
+  .inspector-command .inspector-close { display: inline-flex; border-color: transparent; margin-inline-start: auto; }
 }
 @media (min-width: 1100px) and (min-height: 540px) {
   .radar-shell { height: 100dvh; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
@@ -664,9 +680,9 @@ body { padding: 0; }
   .fleet-toolbar { gap: .4rem; }
   .radar-filters button:not(.copy-btn) { padding-inline: .4rem; }
   .history-jump select { width: min(10.5rem, 100%); }
-}
-@container (min-width: 828px) {
-  .radar-list-mobile-sort { display: none; }
+  .history-options .snapshot-source { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .history-grouping button:not(.copy-btn) { padding-inline: .45rem; }
+  .inspector-views { gap: .65rem; }
 }
 @container (max-width: 827px) {
   .radar-list .fleet-time-col { display: none; }
@@ -687,7 +703,7 @@ body { padding: 0; }
   }
   .radar-list tbody:last-child .data-row:last-child { border-bottom: 0; }
   .radar-list .data-row td { display: block; padding: 0; min-width: 0; border: 0; }
-  .radar-list .data-row td:first-child { grid-column: 1 / -1; }
+  .radar-list .data-row td:first-child { grid-column: 1; }
   .radar-list .data-row .fleet-task-col, .radar-list .data-row .fleet-time-col { display: none; }
-  .radar-list .fleet-actions-col { width: auto; }
+  .radar-list .data-row .fleet-actions-col { grid-column: 2; grid-row: 1 / span 2; width: auto; }
 }

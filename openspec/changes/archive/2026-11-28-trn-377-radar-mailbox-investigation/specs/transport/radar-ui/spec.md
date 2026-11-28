@@ -26,10 +26,10 @@ Radar SHALL provide case-insensitive search over retained subjects, sender ident
 ## MODIFIED Requirements
 
 ### Requirement: Crew mailbox history
-The crew inspector SHALL show message history in a dedicated Messages view, with crew identity, status and actions available in the shared header. When the desktop inspector has room for independent scrolling, the history controls SHALL remain above the scrolling results and the current group heading SHALL remain visible as its rows scroll. Message history SHALL default to a newest-first timeline and offer grouping by sender or receiving mailbox, with newest first within groups. Each delivery SHALL show its subject, time, sender and recipient when available. The history read SHALL be authenticated as applicable to the portal, scoped to the selected crew, read-only and bounded. It SHALL exclude message bodies and attachments.
+The crew inspector SHALL show message history in a dedicated Messages view, with crew identity, status and actions available in the shared header. When the desktop inspector has room for independent scrolling, the history controls SHALL remain above the scrolling results and the current group heading SHALL remain visible as its rows scroll. Time, From and To SHALL group deliveries by date, sender and receiving mailbox respectively. The refresh icon SHALL have an accessible name and a visible snapshot time when one is available. Message history SHALL default to a newest-first timeline and offer grouping by sender or receiving mailbox, with newest first within groups. Each delivery SHALL show its subject, time, sender and recipient when available. The history read SHALL be authenticated as applicable to the portal, scoped to the selected crew, read-only and bounded. It SHALL exclude message bodies and attachments.
 
 #### Scenario: Regroup history
-- **WHEN** the operator switches from Time to Sender or Recipient
+- **WHEN** the operator switches from Time to From or To
 - **THEN** Radar regroups the same deliveries with consistent ordering and wraps long subjects
 
 #### Scenario: Metadata missing from retained mail
@@ -71,3 +71,22 @@ Radar SHALL load history when a crew is selected, retain it while that crew stay
 #### Scenario: Review crew details and return to messages
 - **WHEN** the operator switches to Overview and back while the same crew remains selected
 - **THEN** the loaded history, search, mailbox scope and grouping remain available without a repeat mail read
+
+### Requirement: Mailbox subjects are grouped by mailbox
+Radar SHALL provide receiving mailbox grouping as an option in history. Each group SHALL show its mailbox name and delivery count. Subjects SHALL wrap.
+
+#### Scenario: Group history by receiving mailbox
+- **WHEN** the operator selects To
+- **THEN** Radar groups the available deliveries by their receiving mailbox with a count for each group
+
+#### Scenario: Mailboxes with and without subjects
+- **WHEN** the operator views unfiltered history grouped by receiving mailbox and `captain` holds 2 subjects and `ghost` holds none
+- **THEN** the `captain` section shows a count of 2 and both subjects, and the `ghost` section shows `No messages.`
+
+#### Scenario: Long subject
+- **WHEN** a subject is 200 characters long
+- **THEN** the full subject is readable by wrapping, without horizontal scrolling
+
+#### Scenario: Mailboxes cannot be read
+- **WHEN** the history read fails
+- **THEN** Radar shows a single unavailable state for the crew’s mailbox history

@@ -1,4 +1,4 @@
-import { ArrowDownToLine, Search, X } from "lucide-react";
+import { ArrowDown, ArrowDownLeft, ArrowUpRight, Clock, Search, X } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { getJson, RequestError } from "../../api/request";
 import { MAILBOX_ORDER, PERSONA_AGENTS } from "../../api/types";
@@ -10,6 +10,11 @@ type Delivery = { subject: string | null; sender: string | null; timestamp: stri
 type Snapshot = { mailboxes: Record<string, Delivery[]>; capped: boolean };
 type Group = "Time" | "Sender" | "Recipient";
 type Mailbox = typeof MAILBOX_ORDER[number];
+const groupChoices = [
+  { name: "Time", text: "Time", icon: Clock },
+  { name: "Sender", text: "From", icon: ArrowUpRight },
+  { name: "Recipient", text: "To", icon: ArrowDownLeft },
+] as const;
 const jumpTarget = { Time: "date", Sender: "sender", Recipient: "mailbox" } as const;
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 const clock = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
@@ -127,7 +132,7 @@ export function MailHistory({ crewId }: { crewId: string }) {
               setQuery(event.target.value);
               resetScroll();
             }} />
-          {query && <button className="radar-icon-action clear-mail-search" type="button" title="Clear search"
+          {query && <button className="radar-icon-action clear-search" type="button" title="Clear search"
             aria-label="Clear search" onClick={() => {
               setQuery("");
               resetScroll();
@@ -147,15 +152,13 @@ export function MailHistory({ crewId }: { crewId: string }) {
         </div>
       </div>
       <div className="history-options">
-        <div className="radar-controls history-grouping">
-          <span>Group by</span>
-          <div className="radar-controls segmented-control" role="group" aria-label="Group mailbox history by">
-            {(["Time", "Sender", "Recipient"] as const).map(name =>
-              <button type="button" key={name} aria-pressed={group === name} onClick={() => {
+        <div className="radar-controls segmented-control history-grouping" role="group" aria-label="Group mailbox history by">
+          {groupChoices.map(({ name, text, icon: Icon }) =>
+            <button type="button" key={name} aria-pressed={group === name} aria-label={name}
+              title={`Group by ${name.toLowerCase()}`} onClick={() => {
                 setGroup(name);
                 resetScroll();
-              }}>{name}</button>)}
-          </div>
+              }}><Icon size={14} aria-hidden="true" />{text}</button>)}
         </div>
         {controls}
       </div>
@@ -181,7 +184,7 @@ export function MailHistory({ crewId }: { crewId: string }) {
               </option>)}
           </select>
           <button className="radar-icon-action" type="submit" disabled={!destination} aria-label="Go to message group" title="Go to message group">
-            <ArrowDownToLine size={15} aria-hidden="true" />
+            <ArrowDown size={16} aria-hidden="true" />
           </button>
         </form>}
       </div>

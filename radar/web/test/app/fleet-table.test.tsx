@@ -46,7 +46,7 @@ describe("fleet page shell (4.1)", () => {
     expect(screen.getByRole("heading", { name: /Ghostship Radar/ })).toBeInTheDocument();
     await screen.findByText(/Refreshed at:/);
     // The title is set in an effect that runs after the status line renders, so wait for it.
-    await waitFor(() => expect(document.title).toBe("Fleet Radar (2 running)"));
+    await waitFor(() => expect(document.title).toBe("Fleet Radar (2 active)"));
     expect(rowIds(container)).toEqual(["alpha", "beta", "gamma"]);
   });
 
@@ -125,13 +125,13 @@ describe("fleet page shell (4.1)", () => {
     routeFetch({ [FLEET_URL]: () => jsonResponse(fleet([])) });
     render(<App />);
     expect(await screen.findByText("No crews registered.")).toBeInTheDocument();
-    expect(document.title).toBe("Fleet Radar (0 running)");
+    expect(document.title).toBe("Fleet Radar (0 active)");
   });
 
-  it("shows capacity and free memory in the summary when the fleet reports them", async () => {
+  it("shows the running row count against capacity even if the reported active count differs", async () => {
     routeFetch({ [FLEET_URL]: () => jsonResponse(fleet([crew()], { active_crews: 2, max_active_crews: 3, host_memory_available_gb: 4.06 })) });
     render(<App />);
-    expect(await screen.findByText("2 / 3 crews")).toBeInTheDocument();
+    expect(await screen.findByText("1 / 3")).toBeInTheDocument();
     expect(screen.getByText("4.1 GB")).toBeInTheDocument();
   });
 });
@@ -161,7 +161,7 @@ describe("fleet table ordering and sections (4.2)", () => {
     expect(visibleRowIds(container)).toEqual(before);
   });
 
-  it("lists running crews first and divides them from the inactive ones", async () => {
+  it("lists running crews first and divides them from the asleep crews", async () => {
     routeFetch({
       [FLEET_URL]: () =>
         jsonResponse(fleet([
@@ -171,17 +171,17 @@ describe("fleet table ordering and sections (4.2)", () => {
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    const divider = screen.getByRole("heading", { name: "Inactive 1" });
-    expect(divider).toHaveTextContent("Inactive");
+    const divider = screen.getByRole("heading", { name: "Asleep 1" });
+    expect(divider).toHaveTextContent("Asleep");
     expect(divider).not.toHaveAttribute("hidden");
     expect(rowIds(container)).toEqual(["running-one", "stopped-one"]);
   });
 
-  it("hides the Inactive divider when no inactive crew is visible", async () => {
+  it("hides the Asleep divider when no asleep crew is visible", async () => {
     routeFetch({ [FLEET_URL]: () => jsonResponse(fleet([crew({ crew_id: "only", status: "running" })])) });
     render(<App />);
     await screen.findByText(/Refreshed at:/);
-    expect(screen.queryByRole("heading", { name: /Inactive/ })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /Asleep/ })).toBeNull();
   });
 
   it("orders each section newest created first, with invalid dates last", async () => {
@@ -201,7 +201,7 @@ describe("fleet table ordering and sections (4.2)", () => {
     expect(rowIds(container)).toEqual(["new", "old", "broken", "missing", "stopped-new", "stopped-old"]);
   });
 
-  it("sorts each section by last task when the Last Task header is chosen, cycling back to the default", async () => {
+  it("sorts by the explicit Last task choices and restores creation order", async () => {
     routeFetch({
       [FLEET_URL]: () =>
         jsonResponse(fleet([
@@ -212,17 +212,17 @@ describe("fleet table ordering and sections (4.2)", () => {
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    const sortButton = screen.getByRole("button", { name: "Last task" });
+    const sort = screen.getByRole("combobox", { name: "Sort" });
     // Default: newest created first (b 11-05, c 11-02, a 11-01).
     expect(rowIds(container)).toEqual(["b", "c", "a"]);
 
-    fireEvent.click(sortButton);
+    fireEvent.change(sort, { target: { value: "desc" } });
     expect(rowIds(container)).toEqual(["c", "a", "b"]);
 
-    fireEvent.click(sortButton);
+    fireEvent.change(sort, { target: { value: "asc" } });
     expect(rowIds(container)).toEqual(["a", "c", "b"]);
 
-    fireEvent.click(sortButton);
+    fireEvent.change(sort, { target: { value: "" } });
     expect(rowIds(container)).toEqual(["b", "c", "a"]);
   });
 
@@ -241,7 +241,7 @@ describe("fleet table ordering and sections (4.2)", () => {
     expect(warning("healthy")).toBeNull();
     expect(warning("sick")).toHaveTextContent("Gateway unreachable");
     expect(warning("parked")).toBeNull();
-    expect(container.querySelector('tr[data-crew-id="parked"]')).toHaveTextContent("stopped");
+    expect(container.querySelector('tr[data-crew-id="parked"]')?.closest("tbody")).toHaveAccessibleName("Asleep 1");
   });
 
   it("shows the captain as active, paused or stale", async () => {

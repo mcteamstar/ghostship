@@ -16,3 +16,7 @@
 - [x] 3.2 Separate crew Messages and Overview with shared crew context and actions. Add navigation through the filtered result order and restore fleet focus when closing.
 - [x] 3.3 Check fleet, cards, navigation, focus restoration and Overview at phone, tablet and split desktop widths in both themes.
 - [x] 3.4 Keep last-task times in compact rows and pin narrow crew navigation with a return-to-heading action. Check scrolling, focus, and the transition between crew and fleet.
+- [x] 3.5 Clarify dashboard wake and assignment states. Verify the real Corsair dashboard and gateway connection from local Radar.
+- [x] 3.6 Consolidate crew actions, use named icons for familiar controls, and restore focus after clearing crew search.
+- [x] 3.7 Combine the running count and capacity in the fleet summary and preserve the plain count when capacity is absent.
+- [x] 3.8 Align fleet labels, use one sort menu, and remove duplicate status badges while preserving warnings and unknown states.

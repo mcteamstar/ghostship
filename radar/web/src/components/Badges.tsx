@@ -5,7 +5,8 @@ import { captainIsStale } from "../fleet/crewState";
 export function StatusBadge({ status }: { status: string }) {
   const tone =
     status === "running" ? "badge-running" : status === "stopped" ? "badge-stopped" : "badge-unknown";
-  return <span className={`badge ${tone}`}>{status}</span>;
+  const label = status === "running" ? "Active" : status === "stopped" ? "Asleep" : status || "Unknown";
+  return <span className={`badge ${tone}`}>{label}</span>;
 }
 
 export function GatewayWarning() {
