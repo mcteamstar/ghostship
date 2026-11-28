@@ -19,6 +19,7 @@ async function openWithTasks(agents: () => Response | Promise<Response>): Promis
   const { container } = render(<App />);
   await screen.findByText(/Refreshed at:/);
   fireEvent.click(container.querySelector(ROW) as HTMLElement);
+  fireEvent.click(screen.getByRole("button", { name: "Overview" }));
   return container;
 }
 

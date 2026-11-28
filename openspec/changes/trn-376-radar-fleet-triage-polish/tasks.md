@@ -9,3 +9,9 @@
 
 - [x] 2.1 Add timestamps, refresh and retry to running tasks and mail history, preserve prior data on failure, and suppress duplicate and late requests.
 - [x] 2.2 Use fleet freshness for stopped tasks and verify list, cards and inspector at phone, tablet and split desktop widths with stopped, running and degraded fixtures.
+
+## 3. Workspace redesign
+
+- [x] 3.1 Consolidate the fleet toolbar and table, align the quick actions, and preserve density and sorting in the split and compact list.
+- [x] 3.2 Separate crew Messages and Overview with shared crew context and actions. Add navigation through the filtered result order and restore fleet focus when closing.
+- [x] 3.3 Check fleet, cards, navigation, focus restoration and Overview at phone, tablet and split desktop widths in both themes.

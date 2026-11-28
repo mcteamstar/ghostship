@@ -13,7 +13,7 @@ Radar SHALL prioritize the subject, show sender and recipient clearly, and make 
 - **THEN** the chronological view places it in a clearly labeled undated group after dated deliveries
 
 ### Requirement: Search retained mailbox history
-Radar SHALL provide case-insensitive search over retained subjects, sender identities and recipients in the selected crew.
+Radar SHALL provide case-insensitive search over retained subjects, sender identities and recipients in the selected crew. Radar SHALL allow filtering to a receiving mailbox independently from grouping, apply that scope together with search, and report the count of retained deliveries that match.
 
 #### Scenario: Search with grouping enabled
 - **WHEN** the operator searches in any grouping mode
@@ -21,4 +21,48 @@ Radar SHALL provide case-insensitive search over retained subjects, sender ident
 
 #### Scenario: No deliveries match
 - **WHEN** a query produces no matches in a nonempty snapshot
-- **THEN** Radar shows a no-match state and a clear-search action
+- **THEN** Radar shows a no-match state and lets the operator clear message filters
+
+## MODIFIED Requirements
+
+### Requirement: Crew mailbox history
+The crew inspector SHALL show message history in a dedicated Messages view, with crew identity, status and actions available in the shared header. When the desktop inspector has room for independent scrolling, the history controls SHALL remain above the scrolling results and the current group heading SHALL remain visible as its rows scroll. Message history SHALL default to a newest-first timeline and offer grouping by sender or receiving mailbox, with newest first within groups. Each delivery SHALL show its subject, time, sender and recipient when available. The history read SHALL be authenticated as applicable to the portal, scoped to the selected crew, read-only and bounded. It SHALL exclude message bodies and attachments.
+
+#### Scenario: Regroup history
+- **WHEN** the operator switches from Time to Sender or Recipient
+- **THEN** Radar regroups the same deliveries with consistent ordering and wraps long subjects
+
+#### Scenario: Metadata missing from retained mail
+- **WHEN** a delivery has no usable sender, timestamp or subject
+- **THEN** Radar labels the missing values, keeps the delivery visible and places undated deliveries after dated ones
+
+#### Scenario: History is unavailable or capped
+- **WHEN** the history read fails or reaches its configured limit
+- **THEN** Radar distinguishes an unavailable response from an empty mailbox and indicates when a successful snapshot is limited
+
+
+#### Scenario: Read a long message history
+- **WHEN** the operator scrolls mail in the desktop inspector
+- **THEN** they can still change search, mailbox scope and grouping or refresh the snapshot
+- **AND** they can identify the active date or group without returning to the top
+
+### Requirement: Mailbox history loads with the selected crew
+Radar SHALL load history when a crew is selected, retain it while that crew stays selected and avoid loading history for unselected crews. It SHALL allow retry after failure and prevent results from a previous selection from appearing in the current inspector.
+
+#### Scenario: Inspect a crew
+- **WHEN** the operator opens a crew
+- **THEN** the inspector opens Messages when entering from the fleet
+- **AND** one mailbox history request is sent for the selected crew
+
+#### Scenario: Keep the selected history
+- **WHEN** the selected crew remains open while the fleet polls
+- **THEN** Radar retains the loaded history and grouping without a duplicate read
+
+#### Scenario: Switch crews while history is loading
+- **WHEN** the operator switches crews before the history response arrives
+- **THEN** Radar cancels the pending read and never renders the previous crew's response in the new inspector
+
+
+#### Scenario: Review crew details and return to messages
+- **WHEN** the operator switches to Overview and back while the same crew remains selected
+- **THEN** the loaded history, search, mailbox scope and grouping remain available without a repeat mail read

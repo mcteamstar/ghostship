@@ -7,6 +7,8 @@ An all-stopped fleet looks like a fault, the list gets cramped when inspecting a
 ## What Changes
 
 - Distinguish routine stops from warnings.
+- Organize fleet controls above a single grouped table with aligned row actions. Preserve the card layout.
+- Make the crew inspector a workspace with shared crew actions, separate Messages and Overview views, and previous and next controls that follow the visible fleet order.
 - Improve fleet density and data typography at narrow and split pane widths.
 - Show independent freshness and refresh controls for task and mailbox snapshots.
 

@@ -13,8 +13,9 @@ Message bodies, attachments and server-side search are outside implementation sc
 ## Decisions
 
 - Keep the subject prominent and show recognizable local personas with the exact sender address available through an accessible disclosure. Preserve distinct full addresses in sender grouping.
+- Keep search, mailbox scope, grouping and snapshot refresh above the independently scrolling desktop history. Lay out each entry with its subject first and participants and time as secondary details. Keep the current day or group heading visible while scrolling through that section. On smaller screens, let the controls wrap and history scroll with the page.
 - Place undated deliveries after dated ones in the chronological view. Make the unknown-date section clear without inventing timestamps.
-- Match case-insensitive text against subject, full and displayed sender, and recipient before grouping. Preserve the retained-history limit notice and distinguish no results from an empty mailbox. Keep query state local to the selected crew.
+- Match case-insensitive text against subject, full and displayed sender, and recipient before grouping. Combine text search with the receiving mailbox selector. Show the total or matching delivery count, and reset the desktop results scroll when the search, mailbox or grouping changes. Preserve the retained-history limit notice and distinguish no results from an empty mailbox. Keep query state local to the selected crew.
 
 ## Risks / Trade-offs
 

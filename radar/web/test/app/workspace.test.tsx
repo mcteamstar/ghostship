@@ -29,8 +29,11 @@ it("preserves fleet filters and inspection across presentation modes", async () 
   const inspector = screen.getByRole("complementary", { name: "Crew details" });
   expect(within(inspector).getByRole("heading", { name: "alpha", level: 2 })).toBeVisible();
   expect(within(inspector).getByRole("region", { name: "Messages" })).toBeVisible();
-  expect(within(inspector).queryByRole("button", { name: "Overview" })).toBeNull();
-  expect(within(inspector).queryByRole("button", { name: "Mailbox" })).toBeNull();
+  expect(within(inspector).getByRole("button", { name: "Messages", pressed: true })).toBeVisible();
+  expect(within(inspector).queryByRole("region", { name: "Crew overview" })).toBeNull();
+  fireEvent.click(within(inspector).getByRole("button", { name: "Overview" }));
+  expect(within(inspector).getByRole("region", { name: "Crew overview" })).toBeVisible();
+  expect(within(inspector).queryByRole("region", { name: "Messages" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Expand details for beta" })).toBeNull();
 });
 

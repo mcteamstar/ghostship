@@ -30,6 +30,7 @@ describe("accessibility (6.8)", () => {
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     fireEvent.click(container.querySelector('tr[data-crew-id="alpha"]') as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Overview" }));
     fireEvent.click(screen.getByRole("button", { name: "Refresh auth" }));
     await waitFor(() => expect(screen.getByText("Already current.")).toBeInTheDocument());
     for (const name of ["Active tasks", "Captain", "Credentials"]) {

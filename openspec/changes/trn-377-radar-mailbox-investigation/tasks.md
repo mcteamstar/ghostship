@@ -9,3 +9,9 @@
 ## 2. Preview feasibility
 
 - [x] 2.1 Record whether a follow-up could retrieve a bounded plain-text preview using the existing crew authorization boundary, including content and retention limits.
+
+## 3. Message workspace
+
+- [x] 3.1 Arrange the history as a subject-first feed with distinct group headers, participant and time metadata, and controls above the results.
+- [x] 3.2 Add receiving mailbox scope, combined text search and empty-state recovery. Preserve search, scope and grouping across inspector views for the same selected crew.
+- [x] 3.3 Check scoped search, no matches, address disclosure and long histories at phone, tablet and desktop widths.
