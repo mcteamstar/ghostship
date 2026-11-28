@@ -6,12 +6,12 @@ import { crew, callsTo, fleet, jsonResponse, mailboxes, routeFetch } from "../su
 
 const FLEET_URL = "/api/crews";
 const AGENTS_URL = "/api/crews/alpha/agents";
-const MAIL_URL = "/api/crews/alpha/mail-subjects";
+const MAIL_URL = "/api/crews/alpha/mail-history";
 const ROW_ALPHA = 'tr[data-crew-id="alpha"]';
 
 const liveAgents = () =>
   jsonResponse({ agents: [{ task_id: "live-task-1", agent: "ghost", done: false, elapsed_secs: 47 }] });
-const mailSubjects = () => jsonResponse({ mailboxes: mailboxes({ ghost: ["Handoff: TRN-371"] }) });
+const mailSubjects = () => jsonResponse({ capped: false, mailboxes: Object.fromEntries(Object.entries(mailboxes({ ghost: ["Handoff: TRN-371"] })).map(([name, subjects]) => [name, subjects.map(subject => ({ subject, sender: null, timestamp: null }))])) });
 
 /** Requests under /crews/, the crew proxy path. No Radar section reads it any more. */
 function crewProxyCalls(mock: Mock): unknown[] {
@@ -23,7 +23,7 @@ function renderWith(overrides: Record<string, () => Response> = {}, fleetCrews =
   const routes: Record<string, () => Response> = { [FLEET_URL]: () => jsonResponse(fleet(fleetCrews)) };
   for (const { crew_id: id } of fleetCrews) {
     routes[`/api/crews/${id}/agents`] = liveAgents;
-    routes[`/api/crews/${id}/mail-subjects`] = mailSubjects;
+    routes[`/api/crews/${id}/mail-history`] = mailSubjects;
   }
   Object.assign(routes, overrides);
   const mock = routeFetch(routes);
@@ -52,7 +52,7 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     expect(row.querySelector("button.expand-btn")).toHaveAttribute("aria-expanded", "true");
     expect(window.location.hash).toBe("#crew=alpha");
     await waitFor(() => expect(screen.getByText("live-task-1")).toBeInTheDocument());
-    expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument();
+    expect(await screen.findByText("Handoff: TRN-371")).toBeInTheDocument();
   });
 
   it("collapses on a second click and clears the crew from the URL", async () => {
@@ -64,7 +64,7 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     fireEvent.click(row);
     expect(row.querySelector("button.expand-btn")).toHaveAttribute("aria-expanded", "false");
     expect(window.location.hash).toBe("");
-    expect(container.querySelector("tr#detail-alpha")).toHaveAttribute("hidden");
+    expect(screen.queryByRole("complementary", { name: "Crew details" })).toBeNull();
   });
 
   it("opens the crew named in the deep link after the first load, with its detail requests", async () => {
@@ -73,10 +73,10 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     mock.mockClear();
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    await waitFor(() => expect(container.querySelector('tr[data-crew-id="beta"]')).toHaveClass("open"));
-    expect(container.querySelector('tr[data-crew-id="alpha"]')).not.toHaveClass("open");
-    await waitFor(() => expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument());
-    expect(callsTo(mock, "/api/crews/beta/mail-subjects")).toHaveLength(1);
+    await waitFor(() => expect(container.querySelector('tr[data-crew-id="beta"]')).toHaveClass("selected"));
+    expect(container.querySelector('tr[data-crew-id="alpha"]')).not.toHaveClass("selected");
+    await screen.findByText("Handoff: TRN-371");
+    expect(callsTo(mock, "/api/crews/beta/mail-history")).toHaveLength(1);
   });
 
   it("ignores a deep link to a crew that is not listed", async () => {
@@ -84,10 +84,10 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     renderWith();
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    expect(container.querySelector("tr.data-row.open")).toBeNull();
+    expect(container.querySelector("tr.data-row.selected")).toBeNull();
   });
 
-  it("keeps an open row open and sends no detail request when a fleet refresh arrives", async () => {
+  it("keeps open details stable across a fleet refresh without repeating their requests", async () => {
     vi.useFakeTimers();
     const { mock } = renderWith();
     const { container } = render(<App />);
@@ -104,7 +104,7 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
       await vi.advanceTimersByTimeAsync(25_000);
     });
     expect(callsTo(mock, FLEET_URL).length).toBeGreaterThan(1);
-    expect(container.querySelector(ROW_ALPHA)).toHaveClass("open");
+    expect(container.querySelector(ROW_ALPHA)).toHaveClass("selected");
     expect(screen.getByText("live-task-1")).toBeInTheDocument();
     expect(callsTo(mock, AGENTS_URL)).toHaveLength(1);
     expect(callsTo(mock, MAIL_URL)).toHaveLength(1);
@@ -142,8 +142,8 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     expect(copy.tagName).toBe("BUTTON");
     await user.click(copy);
     expect(writeText).toHaveBeenCalledWith("alpha");
-    expect(copy).toHaveTextContent("✓");
-    expect(container.querySelector(ROW_ALPHA)).not.toHaveClass("open");
+    expect(await screen.findByText("Copied crew ID alpha")).toBeInTheDocument();
+    expect(container.querySelector(ROW_ALPHA)).not.toHaveClass("selected");
     expect(window.location.hash).toBe("");
     Reflect.deleteProperty(navigator, "clipboard");
   });
@@ -160,24 +160,25 @@ describe("row expansion, deep link and copy (4.3 and 4.5)", () => {
     const copy = container.querySelector(`${ROW_ALPHA} .copy-btn`) as HTMLElement;
     fireEvent.click(copy);
     expect(writeText).toHaveBeenCalledWith("alpha");
-    expect(copy).toHaveTextContent("✓");
-    expect(container.querySelector(ROW_ALPHA)).not.toHaveClass("open");
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText("Copied crew ID alpha")).toBeInTheDocument();
+    expect(container.querySelector(ROW_ALPHA)).not.toHaveClass("selected");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);
     });
-    expect(copy).toHaveTextContent("⧉");
+    expect(screen.queryByText("Copied crew ID alpha")).toBeNull();
     Reflect.deleteProperty(navigator, "clipboard");
   });
 
-  it("still confirms when the clipboard is unavailable", async () => {
+  it("announces when the clipboard is unavailable instead of claiming success", async () => {
     Reflect.deleteProperty(navigator, "clipboard");
     renderWith();
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     const copy = container.querySelector(`${ROW_ALPHA} .copy-btn`) as HTMLElement;
     fireEvent.click(copy);
-    expect(copy).toHaveTextContent("✓");
-    expect(container.querySelector(ROW_ALPHA)).not.toHaveClass("open");
+    expect(screen.getByText("Could not copy crew ID alpha. Clipboard access is unavailable.")).toBeInTheDocument();
+    expect(container.querySelector(ROW_ALPHA)).not.toHaveClass("selected");
   });
 });
 
@@ -206,7 +207,7 @@ describe("detail failure states (6.7)", () => {
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     fireEvent.click(container.querySelector(ROW_ALPHA) as HTMLElement);
-    await waitFor(() => expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument());
+    await screen.findByText("Handoff: TRN-371");
     expect(screen.queryByRole("heading", { name: "Scheduled jobs" })).toBeNull();
     expect(screen.queryByText("Session expired, sign in again")).toBeNull();
     expect(crewProxyCalls(mock)).toHaveLength(0);
@@ -218,10 +219,10 @@ describe("detail failure states (6.7)", () => {
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     fireEvent.click(container.querySelector(ROW_ALPHA) as HTMLElement);
-    await waitFor(() => expect(screen.getByText("Handoff: TRN-371")).toBeInTheDocument());
+    await screen.findByText("Handoff: TRN-371");
     expect(callsTo(mock, AGENTS_URL)).toHaveLength(0);
     expect(crewProxyCalls(mock)).toHaveLength(0);
-    expect(screen.getByText(/Crew is stopped — live schedule data unavailable\./)).toBeInTheDocument();
+    expect(screen.getByText(/Crew is stopped. Live schedule data is unavailable\./)).toBeInTheDocument();
   });
 });
 

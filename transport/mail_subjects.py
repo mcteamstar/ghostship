@@ -270,3 +270,77 @@ def read_crew_mail_subjects(podman: Any, container: str, *, running: bool) -> di
     if running:
         return read_running_crew(podman, container)
     return read_stopped_crew(podman, container)
+
+
+def _history_header(stream) -> dict[str, str | None]:
+    """Project only display metadata from a bounded header prefix."""
+    from email.utils import parseaddr, parsedate_to_datetime
+
+    message = email.parser.BytesHeaderParser().parsebytes(stream.read(_HEADER_READ_LIMIT))
+    sender = parseaddr(str(message.get("From", "")))[1]
+    try:
+        date = parsedate_to_datetime(str(message.get("Date", "")))
+        timestamp = date.isoformat() if date.tzinfo is not None else None
+    except (ValueError, TypeError, OverflowError):
+        timestamp = None
+    return {
+        "subject": _clean_subject(str(message.get("Subject", ""))) or None,
+        "sender": _clean_subject(sender) or None,
+        "timestamp": timestamp,
+    }
+
+
+_HISTORY_ARCHIVE_LIMIT = 64 * 1024 * 1024
+
+
+def _history_archive(podman: Any, container: str, name: str) -> tuple[list[dict], bool]:
+    try:
+        response = podman.container_archive_get(container, f"{MAIL_ROOT}/{name}")
+    except ArchivePathNotFound:
+        return [], False
+    with io.BytesIO() as archive:
+        try:
+            for chunk in response.iter_bytes():
+                if archive.tell() + len(chunk) > _HISTORY_ARCHIVE_LIMIT:
+                    raise MailSubjectsUnavailable("mailbox archive exceeds read limit")
+                archive.write(chunk)
+        finally:
+            response.close()
+        archive.seek(0)
+        with tarfile.open(fileobj=archive, mode="r:*") as tf:
+            members = tf.getmembers()
+            if any(_is_maildir_layout_member(m.name) for m in members):
+                messages = sorted(
+                    (m for m in members if m.isreg() and _is_maildir_message(m.name)),
+                    key=lambda m: (_maildir_sort_key(posixpath.basename(m.name)), m.name),
+                    reverse=True,
+                )
+                return [_history_header(_extract(tf, m)) for m in messages[:SUBJECT_LIMIT]], len(messages) > SUBJECT_LIMIT
+            regular = [m for m in members if m.isreg()]
+            if not regular:
+                return [], False
+            if len(regular) != 1 or regular[0].size > _HISTORY_ARCHIVE_LIMIT:
+                raise MailSubjectsUnavailable("unsupported mailbox archive")
+            raw = _extract(tf, regular[0]).read()
+            chunks = [chunk for chunk in re.split(rb"(?m)^From ", raw) if chunk.strip()]
+            records = []
+            for chunk in reversed(chunks[-SUBJECT_LIMIT:]):
+                first, _, rest = chunk.partition(b"\n")
+                headers = chunk if re.match(rb"^[!-9;-~]+:", first) else rest
+                records.append(_history_header(io.BytesIO(headers)))
+            return records, len(chunks) > SUBJECT_LIMIT
+
+
+def read_crew_mail_history(podman: Any, container: str) -> dict:
+    """Read retained deliveries without waking a stopped crew."""
+    if not podman.container_exists(container):
+        raise MailSubjectsUnavailable("crew container not found")
+    mailboxes = {}
+    capped = False
+    for name in MAILBOXES:
+        deliveries, limited = _history_archive(podman, container, name)
+        mailboxes[name] = deliveries
+        capped |= limited
+    if not podman.container_exists(container):
+        raise MailSubjectsUnavailable("crew container removed during read")
+    return {"mailboxes": mailboxes, "capped": capped}

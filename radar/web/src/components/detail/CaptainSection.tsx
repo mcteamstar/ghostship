@@ -1,3 +1,4 @@
+import { TriangleAlert } from "lucide-react";
 import type { CaptainState } from "../../api/types";
 import { captainIsStale, minutesSinceCheckin } from "../../fleet/crewState";
 import { shortId } from "../../format";
@@ -34,7 +35,7 @@ export function CaptainSection({ captain }: { captain: CaptainState }) {
           {stale && minutes !== null ? (
             <tr>
               <td colSpan={3} className="captain-stale-warn">
-                ⚠ No check-in for {minutes}m — captain may be stalled
+                <TriangleAlert aria-hidden="true" size={15} /> No check-in for {minutes}m — captain may be stalled
               </td>
             </tr>
           ) : null}

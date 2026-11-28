@@ -442,12 +442,14 @@ describe("Refresh auth (TRN-367 client port)", () => {
       const crews = [crew({ crew_id: "alpha" }), crew({ crew_id: "bravo" })];
       const mock = setup(() => held.promise, crews);
       const container = await openRow();
+      fireEvent.click(refreshButton(container));
       fireEvent.click(rowFor(container, "bravo"));
       await waitFor(() => expect(refreshButton(container, "bravo")).toBeInTheDocument());
-      fireEvent.click(refreshButton(container));
       fireEvent.click(refreshButton(container, "bravo"));
       expect(callsTo(mock, REFRESH_URL)).toHaveLength(1);
       expect(callsTo(mock, "/api/crews/bravo/auth/refresh")).toHaveLength(1);
+      fireEvent.click(rowFor(container, "alpha"));
+      expect(refreshButton(container)).toBeDisabled();
       held.settle(jsonResponse({ status: "refreshed" }));
       await waitFor(() => expect(refreshButton(container)).not.toBeDisabled());
     });

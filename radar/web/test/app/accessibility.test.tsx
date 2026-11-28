@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import axe from "axe-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/App";
-import { crew, fleet, jsonResponse, mailboxes, routeFetch } from "../support/fixtures";
+import { crew, fleet, jsonResponse, routeFetch } from "../support/fixtures";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -25,16 +25,14 @@ describe("accessibility (6.8)", () => {
           { active_crews: 1, max_active_crews: 3, host_memory_available_gb: 4.1 },
         )),
       "/api/crews/alpha/agents": () => jsonResponse({ agents: [{ task_id: "t1", agent: "ghost", done: false, elapsed_secs: 3 }] }),
-      "/api/crews/alpha/mail-subjects": () => jsonResponse({ mailboxes: mailboxes({ ghost: ["Handoff"] }) }),
       "/api/crews/alpha/auth/refresh": () => jsonResponse({ status: "current" }),
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     fireEvent.click(container.querySelector('tr[data-crew-id="alpha"]') as HTMLElement);
-    await waitFor(() => expect(screen.getByText("Handoff")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Refresh auth" }));
     await waitFor(() => expect(screen.getByText("Already current.")).toBeInTheDocument());
-    for (const name of ["Active tasks", "Captain", "Mailbox subjects", "Credentials"]) {
+    for (const name of ["Active tasks", "Captain", "Credentials"]) {
       expect(screen.getByRole("heading", { name, level: 2 })).toBeInTheDocument();
     }
 
@@ -53,10 +51,10 @@ describe("accessibility (6.8)", () => {
     expect(expand).toHaveAttribute("aria-label", "Expand details for alpha");
     expect(screen.getByRole("button", { name: "Copy crew ID alpha" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Filter crews" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: /Last Task/ })).toHaveAttribute("aria-sort", "none");
-    expect(document.getElementById("status-bar")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getByRole("combobox", { name: "Sort" })).toHaveValue("");
+    expect(document.getElementById("status-left")).toHaveAttribute("aria-live", "polite");
     expect(screen.getAllByRole("status").length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: /Last Task/ }));
-    expect(screen.getByRole("columnheader", { name: /Last Task/ })).toHaveAttribute("aria-sort", "descending");
+    fireEvent.change(screen.getByRole("combobox", { name: "Sort" }), { target: { value: "desc" } });
+    expect(screen.getByRole("combobox", { name: "Sort" })).toHaveValue("desc");
   });
 });

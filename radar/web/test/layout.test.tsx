@@ -25,7 +25,7 @@ describe("narrow layout (6.4)", () => {
     const labels = Array.from(container.querySelectorAll<HTMLElement>('tr[data-crew-id="alpha"] td[data-label]')).map(
       (cell) => cell.dataset.label,
     );
-    expect(labels).toEqual(["Status", "Backend", "Comp", "Uptime", "Last task", "Dashboard"]);
+    expect(labels).toEqual(["Status", "Active tasks", "Last task"]);
   });
 
   it("keeps the crew name, status and expand control on every card", async () => {

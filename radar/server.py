@@ -189,6 +189,23 @@ async def api_crew_mail_subjects(request: Request) -> Response:
 # transport path it is proxied to.
 _CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,48}[a-z0-9]$|^[a-z0-9]$")
 
+async def api_crew_mail_history(request: Request) -> Response:
+    crew_id = request.path_params["crew_id"]
+    if not _CREW_ID_RE.fullmatch(crew_id):
+        return JSONResponse({"error": "crew not found"}, status_code=404)
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{TRANSPORT_URL}/internal/crews/{crew_id}/mail-history",
+                headers={"X-Transport-Token": _TRANSPORT_SECRET},
+            )
+    except httpx.RequestError:
+        return JSONResponse({"error": "mailbox history unavailable"}, status_code=502)
+    if response.status_code != 200:
+        return JSONResponse({"error": "mailbox history unavailable"}, status_code=502)
+    return Response(response.content, media_type="application/json")
+
+
 # The refresh checks the stored profile, compares the container and may exec into
 # it, behind the credential lock. The transport runs these steps one after another:
 # its Podman client allows 120 s per request, the exec read has no timeout, and the
@@ -322,6 +339,7 @@ def build_app(static_dir: Path) -> Starlette:
             Route("/api/crews", api_crews),
             Route("/api/crews/{crew_id}/agents", api_crew_agents),
             Route("/api/crews/{crew_id}/mail-subjects", api_crew_mail_subjects),
+            Route("/api/crews/{crew_id}/mail-history", api_crew_mail_history),
             Route("/api/crews/{crew_id}/auth/refresh", api_crew_auth_refresh, methods=["POST"]),
             Route("/", index),
             Mount(

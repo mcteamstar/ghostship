@@ -51,11 +51,11 @@ function settle<T>(
  * and `running` only, so a poll that leaves the crew's status unchanged leaves the open
  * detail alone.
  */
-export function useCrewDetail(crewId: string, open: boolean, running: boolean): CrewDetailState {
+export function useCrewDetail(crewId: string, open: boolean, running: boolean, subjects = true): CrewDetailState {
   const [detail, setDetail] = useState<CrewDetailState>(IDLE);
 
   useEffect(() => {
-    if (!open) {
+    if (!open || !subjects) {
       setDetail(IDLE);
       return undefined;
     }
@@ -63,7 +63,7 @@ export function useCrewDetail(crewId: string, open: boolean, running: boolean): 
     setDetail({ agents: { state: "idle" }, mail: { state: "loading" } });
     settle(controller.signal, fetchMailSubjects(crewId, { signal: controller.signal }), "mail", setDetail);
     return () => controller.abort();
-  }, [crewId, open]);
+  }, [crewId, open, subjects]);
 
   // Declared after the effect above, so when both run in one commit this loading state wins.
   useEffect(() => {

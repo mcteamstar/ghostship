@@ -559,9 +559,9 @@ class BearerAuthMiddleware(AsyncMiddlewareBase):
             and len(_parts) == 4
             and _parts[0] == "internal"
             and _parts[1] == "crews"
-            and _parts[3] == "mail-subjects"
+            and _parts[3] in ("mail-subjects", "mail-history")
         ):
-            subjects_handler = self._public_routes.get(("GET", "/internal/crews/*/mail-subjects"))
+            subjects_handler = self._public_routes.get(("GET", f"/internal/crews/*/{_parts[3]}"))
             if subjects_handler is not None:
                 request = Request(scope, receive)
                 response = await subjects_handler(request)

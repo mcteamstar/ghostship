@@ -43,7 +43,7 @@ describe("fleet page shell (4.1)", () => {
         ])),
     });
     const { container } = render(<App />);
-    expect(screen.getByRole("heading", { name: /Ghostship Fleet Radar/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Ghostship Radar/ })).toBeInTheDocument();
     await screen.findByText(/Refreshed at:/);
     // The title is set in an effect that runs after the status line renders, so wait for it.
     await waitFor(() => expect(document.title).toBe("Fleet Radar (2 running)"));
@@ -171,7 +171,7 @@ describe("fleet table ordering and sections (4.2)", () => {
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    const divider = container.querySelector("tr.section-divider") as HTMLElement;
+    const divider = screen.getByRole("heading", { name: "Inactive 1" });
     expect(divider).toHaveTextContent("Inactive");
     expect(divider).not.toHaveAttribute("hidden");
     expect(rowIds(container)).toEqual(["running-one", "stopped-one"]);
@@ -179,9 +179,9 @@ describe("fleet table ordering and sections (4.2)", () => {
 
   it("hides the Inactive divider when no inactive crew is visible", async () => {
     routeFetch({ [FLEET_URL]: () => jsonResponse(fleet([crew({ crew_id: "only", status: "running" })])) });
-    const { container } = render(<App />);
+    render(<App />);
     await screen.findByText(/Refreshed at:/);
-    expect(container.querySelector("tr.section-divider")).toHaveAttribute("hidden");
+    expect(screen.queryByRole("heading", { name: /Inactive/ })).toBeNull();
   });
 
   it("orders each section newest created first, with invalid dates last", async () => {
@@ -212,20 +212,17 @@ describe("fleet table ordering and sections (4.2)", () => {
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    const sortButton = screen.getByRole("button", { name: /Last Task/ });
+    const sortButton = screen.getByRole("button", { name: "Last task" });
     // Default: newest created first (b 11-05, c 11-02, a 11-01).
     expect(rowIds(container)).toEqual(["b", "c", "a"]);
 
     fireEvent.click(sortButton);
-    expect(sortButton).toHaveTextContent("Last Task ▼");
     expect(rowIds(container)).toEqual(["c", "a", "b"]);
 
     fireEvent.click(sortButton);
-    expect(sortButton).toHaveTextContent("Last Task ▲");
     expect(rowIds(container)).toEqual(["a", "c", "b"]);
 
     fireEvent.click(sortButton);
-    expect(sortButton).toHaveTextContent(/^Last Task$/);
     expect(rowIds(container)).toEqual(["b", "c", "a"]);
   });
 
@@ -240,9 +237,9 @@ describe("fleet table ordering and sections (4.2)", () => {
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    const warning = (id: string) => container.querySelector(`tr[data-crew-id="${id}"] .badge-warn`);
+    const warning = (id: string) => container.querySelector(`tr[data-crew-id="${id}"] .radar-warning`);
     expect(warning("healthy")).toBeNull();
-    expect(warning("sick")).toHaveAttribute("title", "Gateway unreachable");
+    expect(warning("sick")).toHaveTextContent("Gateway unreachable");
     expect(warning("parked")).toBeNull();
     expect(container.querySelector('tr[data-crew-id="parked"]')).toHaveTextContent("stopped");
   });
@@ -261,10 +258,10 @@ describe("fleet table ordering and sections (4.2)", () => {
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
     const badge = (id: string) => container.querySelector(`tr[data-crew-id="${id}"] .captain-badge`);
-    expect(badge("on")).toHaveTextContent("⚑ captain");
+    expect(badge("on")).toHaveTextContent("captain");
     expect(badge("on")).not.toHaveClass("captain-stale");
-    expect(badge("off")).toHaveTextContent("⚑ paused");
-    expect(badge("late")).toHaveTextContent("⚑ captain ⚠");
+    expect(badge("off")).toHaveTextContent("paused");
+    expect(badge("late")).toHaveTextContent("captain");
     expect(badge("late")).toHaveClass("captain-stale");
     expect(badge("none")).toBeNull();
   });
@@ -303,7 +300,7 @@ describe("fleet table ordering and sections (4.2)", () => {
     });
     const { container } = render(<App />);
     await screen.findByText(/Refreshed at:/);
-    expect(container.querySelector('tr[data-crew-id="busy"] .agent-count')).toHaveTextContent("1 active");
+    expect(container.querySelector('tr[data-crew-id="busy"] [data-label="Active tasks"]')).toHaveTextContent(/^1$/);
   });
 
   it("shows the crew filter only above eight crews and narrows rows by crew ID and comp", async () => {

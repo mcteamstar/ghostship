@@ -1,3 +1,4 @@
+import { CircleAlert, Flag, TriangleAlert } from "lucide-react";
 import type { CaptainState } from "../api/types";
 import { captainIsStale } from "../fleet/crewState";
 
@@ -10,7 +11,7 @@ export function StatusBadge({ status }: { status: string }) {
 export function GatewayWarning() {
   return (
     <span className="badge badge-warn" title="Gateway unreachable">
-      ⚠
+      <TriangleAlert aria-hidden="true" size={14} />
     </span>
   );
 }
@@ -22,11 +23,11 @@ export function AgentCountBadge({ count }: { count: number }) {
 
 export function CaptainBadge({ captain }: { captain: CaptainState | null | undefined }) {
   if (!captain) return null;
-  if (!captain.enabled) return <span className="captain-badge captain-off">⚑ paused</span>;
+  if (!captain.enabled) return <span className="captain-badge captain-off"><Flag aria-hidden="true" size={14} /> paused</span>;
   const stale = captainIsStale(captain, Date.now());
   return stale ? (
-    <span className="captain-badge captain-on captain-stale">⚑ captain ⚠</span>
+    <span className="captain-badge captain-on captain-stale"><Flag aria-hidden="true" size={14} /> captain <CircleAlert aria-hidden="true" size={14} /></span>
   ) : (
-    <span className="captain-badge captain-on">⚑ captain</span>
+    <span className="captain-badge captain-on"><Flag aria-hidden="true" size={14} /> captain</span>
   );
 }

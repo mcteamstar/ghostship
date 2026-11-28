@@ -357,9 +357,18 @@ components:
       - {kind: manual, path: radar/web/package.json, term: '"react": "19.3.1"'}
       - {kind: manual, path: radar/web/package.json, term: '"react-dom": "19.3.1"'}
     source: {type: npm, package: react}
-    version_policy: Exact pins in radar/web/package.json, recorded in package-lock.json; the only runtime code in the bundle besides the Radar source.
+    version_policy: Exact pins in radar/web/package.json, recorded in package-lock.json.
     compatibility: {status: unknown, evidence: null}
     review: {owner: Ghostship maintainers, last_reviewed: 2026-11-26, outcome: pinned-lockfile-built-and-tested-on-host-node-24, next_review: 2026-12-26, evidence: openspec/changes/trn-371-migrate-radar-to-react/design.md}
+  - id: radar-web-icons
+    name: Lucide React (Radar UI)
+    category: frontend runtime dependency
+    declarations:
+      - {kind: manual, path: radar/web/package.json, term: '"lucide-react": "1.82.0"'}
+    source: {type: npm, package: lucide-react}
+    version_policy: Exact pin with named icon imports.
+    compatibility: {status: unknown, evidence: null}
+    review: {owner: Ghostship maintainers, last_reviewed: 2026-11-28, outcome: pinned-lockfile, next_review: 2026-12-28, evidence: radar/web/package-lock.json}
   - id: radar-web-build
     name: Vite, Vite React plugin and TypeScript (Radar UI build)
     category: frontend build dependency

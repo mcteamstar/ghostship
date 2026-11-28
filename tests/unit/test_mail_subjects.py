@@ -585,6 +585,8 @@ class TestHandler(unittest.TestCase):
 class TestInternalRouteAuth(unittest.TestCase):
     """The internal path dispatches on the transport secret, with no bearer key."""
 
+    endpoint = "mail-subjects"
+
     def _app(self):
         from transport.auth import BearerAuthMiddleware, TransportSecretMiddleware
         from starlette.responses import JSONResponse
@@ -598,7 +600,7 @@ class TestInternalRouteAuth(unittest.TestCase):
         bearer = BearerAuthMiddleware(
             _inner,
             api_key="operator-key",
-            public_routes={("GET", "/internal/crews/*/mail-subjects"): _handler},
+            public_routes={("GET", f"/internal/crews/*/{self.endpoint}"): _handler},
         )
         return TransportSecretMiddleware(bearer, transport_secret="portal-secret")
 
@@ -606,7 +608,7 @@ class TestInternalRouteAuth(unittest.TestCase):
         scope = {
             "type": "http",
             "method": "GET",
-            "path": "/internal/crews/alpha/mail-subjects",
+            "path": f"/internal/crews/alpha/{self.endpoint}",
             "query_string": b"",
             "headers": headers,
         }
@@ -643,5 +645,42 @@ class TestInternalRouteAuth(unittest.TestCase):
         self.assertEqual(json.loads(body), {"mailboxes": {}})
 
 
+class TestInternalHistoryRouteAuth(TestInternalRouteAuth):
+    endpoint = "mail-history"
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_history_caps_retained_deliveries_and_exposes_only_metadata():
+    header = (
+        b"From: Raven <raven@localhost>\n"
+        b"To: forged@localhost\n"
+        b"Date: Sat, 28 Nov 2026 03:00:00 +0000\n"
+        b"Subject: Review ready\n\nprivate body"
+    )
+    podman = _Podman(archives={"/var/mail/ghost": _maildir_tar("ghost", {
+        f"new/{1700000000 + index}.1.delivery.host": header for index in range(51)
+    })})
+
+    history = ms.read_crew_mail_history(podman, "crew-alpha")
+    assert history["capped"] is True
+    assert history["mailboxes"]["ghost"] == [{
+        "subject": "Review ready",
+        "sender": "raven@localhost",
+        "timestamp": "2026-11-28T03:00:00+00:00",
+    }] * 50
+    assert history["mailboxes"]["captain"] == []
+    assert all(call[0] != "container_exec_checked" for call in podman.calls)
+
+
+def test_history_keeps_delivery_with_missing_or_malformed_headers():
+    podman = _Podman(archives={"/var/mail/ghost": _maildir_tar("ghost", {
+        "cur/1700000000.1.delivery.host": b"Date: invalid\nFrom: <>\n\nbody"
+    })})
+    history = ms.read_crew_mail_history(podman, "crew-alpha")
+    assert history["mailboxes"]["ghost"] == [{
+        "subject": None, "sender": None, "timestamp": None,
+    }]
+    assert history["capped"] is False

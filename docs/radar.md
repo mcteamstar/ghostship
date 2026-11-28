@@ -13,45 +13,19 @@ https://your-portal-hostname/    # production (API key required)
 
 When `GA_API_KEY` is set, you will be redirected to `/dashboard/login` first. Log in once; the `gs_session` cookie covers all subsequent dashboard and Radar requests in the same browser session.
 
-## What it shows
+## Fleet and crew views
 
-| Column | Description |
-|:-------|:------------|
-| Crew | Crew ID with activity badges (see below) |
-| Status | `running` (green glow) or `stopped` (dimmed row) |
-| Backend | `kiro`, `claude`, or `codex` |
-| Comp | e.g. `spec-ops` |
-| Uptime | Running time for live crews; the creation date for stopped crews |
-| Last Task | Relative time since last dispatch (e.g. `3m ago`) |
-| Dashboard | Link to per-crew KC dashboard (when `dashboard=True` at launch) |
+The sidebar opens Fleet. The Ghost Academy header shows running and stopped totals, available capacity and memory when reported, and the last successful refresh. `Capacity` and `Free memory` are omitted if the fleet does not report them. Radar follows the system colour preference.
 
-**Activity badges** on the crew name:
-- `N active` (cyan) — the crew has N running agent tasks
-- `⚑ captain` (purple) — an active Captain schedule is running
-- `⚑ paused` (muted) — a Captain schedule exists but is paused
+Search stays visible whenever the fleet is shown. With zero matches Radar shows `No crews match filter.` and offers to clear filters. Below 640 px, List uses stacked rows.
 
-Click any row to expand per-crew detail. [Crew detail](#crew-detail) describes what the expanded panel shows.
+Choose **List** or **Cards** to change how the same crews are displayed. Search by crew ID or comp, combine search with a status filter, and choose newest created or either Last Task order. In List, use the Last task column heading to cycle through the sort orders. Cards and narrow lists show a Sort dropdown beside search. **Needs attention** includes an unhealthy gateway on a running crew or a stale enabled Captain. A stopped crew alone does not need attention.
 
-The table polls `GET /api/crews` every 5 seconds. Open rows stay open across refreshes.
+Select a crew to open its inspector. At wide widths it appears beside the fleet. At narrow widths **Back to fleet** returns to the previous list position. The selected crew, filters and presentation survive polling. A link ending in `#crew=<id>` opens that crew directly.
 
-## Layout, summary and filter
+**Overview** shows crew metadata, active and finished agent tasks, Captain details and **Refresh auth**. Tasks appear under `Running · N` and `Finished · N`. A missing agent name reads `unknown agent`, and an empty running group reads `No active tasks.` The inspector header provides available dashboard and copy actions. A failed task read shows `Active tasks unavailable.` and a pending read shows `Loading tasks…`.
 
-Radar follows the system colour preference. It is light by default and switches to dark when the system asks for dark, without a reload. Text and status colours meet WCAG AA contrast in both themes.
-
-Above the table, a summary shows the `Running` and `Stopped` counts. When the fleet reports them, it also shows `Capacity` (active crews against the maximum) and `Free memory`. A value the fleet does not report is left out.
-
-The filter above the table is always shown. It matches crew ID and comp, ignoring case. When nothing matches, Radar shows `No crews match filter.`
-
-Below 640 px, each crew becomes a card, and each value is labelled with its column name. The page does not scroll sideways at 360 px.
-
-## Crew detail
-
-Expanding a row shows, in order: the crew's image version, its active tasks, its Captain state, its credentials, and its mailbox subjects.
-
-- **Active tasks** lists running tasks as cards under a `Running · N` heading. Finished tasks sit behind a `Finished · N` disclosure, which opens from the keyboard or the pointer. Each card shows the agent name, the short task ID, whether the task is running or done, and its elapsed time. The six persona agents each have an accent colour. Any other name is shown on a neutral card, and an empty name is labelled `unknown agent`. A running crew with no running tasks shows `No active tasks.`
-- **Mailbox subjects** has one section per mailbox, in the order listed under [Mailbox subjects](#mailbox-subjects), with the mailbox name and its subject count. Long subjects wrap in full.
-
-Each section shows its own state. While its request is pending, a section shows a loading line: `Loading tasks…` or `Loading mailbox subjects…`. If the agents or mailbox request fails, that section shows `Active tasks unavailable.` or `Mailbox subjects unavailable.`. A failed section never shows an empty list in its place. A request redirected to sign-in, or answered with HTTP 200 and an HTML page, shows `Session expired, sign in again`, with a **Sign in** link. Any other answer that is not JSON, such as an empty 200, is a failed request for its section and never shows that note. The other sections are not affected.
+**Mailbox** shows retained delivery metadata as a newest-first timeline. Choose **Sender** or **Recipient** to group the same deliveries. Recipient is the receiving mailbox. Subjects wrap and missing values are labeled. Empty mailboxes show `No messages.`, and an unreadable history shows `Mailbox history unavailable.` While waiting, Radar says `Loading mailbox history…`. Expired sessions show `Session expired, sign in again`; other non-JSON responses show a request failure. A successful snapshot displays a note when it reaches the per-mailbox limit.
 
 ## REST API
 
@@ -102,7 +76,7 @@ Response shape:
 
 ## Mailbox subjects
 
-Expanding a crew row also loads the subject lines of its eight mailboxes: `ghost`, `spectre`, `banshee`, `wraith`, `reaper`, `raven`, `captain`, and `admiral`. Radar groups them by mailbox. An empty mailbox shows `No messages.`. If the crew's mailboxes cannot be read completely, the section shows one `Mailbox subjects unavailable.` state for the whole crew. It never shows a partial list or a false empty state.
+The existing `GET /api/crews/{crew_id}/mail-subjects` endpoint remains available for compatibility. The inspector uses `GET /api/crews/{crew_id}/mail-history` under the same portal session. It returns up to 50 retained deliveries per mailbox, each with nullable `subject`, `sender` and `timestamp`, plus a `capped` flag. The mailbox key identifies the recipient. Both endpoints exclude mail bodies and attachments and can read stopped crews without waking them.
 
 - Subjects load only when the row is expanded, not on each five-second fleet poll. Reopening the row fetches a fresh snapshot.
 - Running and stopped crews both work. A stopped crew is read from its filesystem and is not started.

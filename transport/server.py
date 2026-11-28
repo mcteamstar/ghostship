@@ -1743,6 +1743,29 @@ async def _handle_internal_crew_mail_subjects_get(request: Request) -> Response:
     return JSONResponse({"mailboxes": mailboxes})
 
 
+async def _handle_internal_crew_mail_history_get(request: Request) -> Response:
+    """Read retained delivery metadata through the internal transport boundary."""
+    from starlette.concurrency import run_in_threadpool
+
+    crew_id = request.url.path.split("/")[3]
+    try:
+        info = _get_crew(crew_id)
+    except KeyError:
+        return JSONResponse({"error": "crew not found"}, status_code=404)
+    try:
+        try:
+            from podman import _get_podman
+            from mail_subjects import read_crew_mail_history
+        except ModuleNotFoundError:
+            from transport.podman import _get_podman
+            from transport.mail_subjects import read_crew_mail_history
+        history = await run_in_threadpool(read_crew_mail_history, _get_podman(), info["container"])
+    except Exception:
+        logger.warning("Mailbox history unavailable for crew %s", crew_id)
+        return JSONResponse({"error": "mailbox history unavailable"}, status_code=503)
+    return JSONResponse(history)
+
+
 async def _run_crew_auth_refresh(crew_id: str) -> Response:
     """Run the shared credential refresh for *crew_id* and shape the HTTP reply (TRN-367).
 
@@ -2031,6 +2054,7 @@ if __name__ == "__main__":
         ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
         # Per-crew mailbox subjects for Radar (TRN-370) — transport-secret-only.
         ("GET",  "/internal/crews/*/mail-subjects"): _handle_internal_crew_mail_subjects_get,
+        ("GET",  "/internal/crews/*/mail-history"): _handle_internal_crew_mail_history_get,
         # Per-crew credential refresh for Radar (TRN-367) — transport-secret-only.
         ("POST", "/internal/crews/*/auth/refresh"): _handle_internal_crew_auth_refresh_post,
     }
@@ -2093,6 +2117,7 @@ if __name__ == "__main__":
             ("GET",  "/internal/crews/*/agents"): _handle_internal_crew_agents_get,
             # Per-crew mailbox subjects for Radar (TRN-370) — transport-secret-only.
             ("GET",  "/internal/crews/*/mail-subjects"): _handle_internal_crew_mail_subjects_get,
+            ("GET",  "/internal/crews/*/mail-history"): _handle_internal_crew_mail_history_get,
             # Per-crew credential refresh for Radar (TRN-367) — transport-secret-only.
             ("POST", "/internal/crews/*/auth/refresh"): _handle_internal_crew_auth_refresh_post,
         },

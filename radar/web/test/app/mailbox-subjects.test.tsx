@@ -7,7 +7,15 @@ import { crew, callsTo, fleet, jsonResponse, mailboxes, routeFetch } from "../su
 import { MAILBOX_ORDER } from "../../src/api/types";
 
 const FLEET_URL = "/api/crews";
-const MAIL_URL = "/api/crews/alpha/mail-subjects";
+const MAIL_URL = "/api/crews/alpha/mail-history";
+function historyPayload(subjects: Record<string, string[]> = {}) {
+  return { capped: false, mailboxes: Object.fromEntries(
+    Object.entries(mailboxes(subjects)).map(([name, entries]) => [
+      name, entries.map(subject => ({ subject, sender: null, timestamp: null })),
+    ]),
+  ) };
+}
+
 const ROW = 'tr[data-crew-id="alpha"]';
 
 const ESCAPED_SUBJECT = "<img src=x onerror=alert(1)> hi";
@@ -16,15 +24,17 @@ function fleetRoute(): () => Response {
   return () => jsonResponse(fleet([crew({ crew_id: "alpha", status: "running" })]));
 }
 
-/** Opens the alpha row and waits for its mailbox section to settle. */
+/** Opens the alpha inspector and waits for its message body to settle. */
 async function openAlpha(container: HTMLElement): Promise<void> {
   fireEvent.click(container.querySelector(ROW) as HTMLElement);
   await waitFor(() =>
     expect(
-      screen.queryByText("Mailbox subjects unavailable.") ??
-        container.querySelector(".mail-mailbox"),
+      screen.queryByText("Mailbox history unavailable.") ??
+        container.querySelector(".history-group"),
     ).not.toBeNull(),
   );
+  const recipient = screen.queryByRole("button", { name: "Recipient" });
+  if (recipient) fireEvent.click(recipient);
 }
 
 async function renderAlpha(mailRoute: () => Response | Promise<Response>): Promise<{ container: HTMLElement; mock: Mock }> {
@@ -50,9 +60,7 @@ describe("mailbox subjects (TRN-370 client port)", () => {
 
   describe("rendering", () => {
     const subjectsRoute = () =>
-      jsonResponse({
-        mailboxes: mailboxes({ ghost: [ESCAPED_SUBJECT], banshee: ["plain"] }),
-      });
+      jsonResponse(historyPayload({ ghost: [ESCAPED_SUBJECT], banshee: ["plain"] }));
 
     it("requests the subjects with session credentials", async () => {
       const { mock } = await renderAlpha(subjectsRoute);
@@ -62,7 +70,7 @@ describe("mailbox subjects (TRN-370 client port)", () => {
 
     it("renders all eight mailboxes in the transport order", async () => {
       const { container } = await renderAlpha(subjectsRoute);
-      const names = Array.from(container.querySelectorAll(".mail-mailbox-name")).map((n) => n.textContent);
+      const names = Array.from(container.querySelectorAll(".history-group h3")).map((n) => n.textContent?.split(" · ")[0]);
       expect(names).toEqual([...MAILBOX_ORDER]);
     });
 
@@ -75,14 +83,14 @@ describe("mailbox subjects (TRN-370 client port)", () => {
     it("shows the explicit empty state for each empty mailbox", async () => {
       const { container } = await renderAlpha(subjectsRoute);
       expect(screen.getAllByText("No messages.")).toHaveLength(6);
-      expect(screen.getByText("plain").tagName).toBe("LI");
-      expect(container.querySelectorAll(".mail-subjects li")).toHaveLength(2);
+      expect(screen.getByText("plain").tagName).toBe("STRONG");
+      expect(container.querySelectorAll(".history-group li")).toHaveLength(2);
     });
 
     it("gives every mailbox its own section, with its subjects inside it", async () => {
       const { container } = await renderAlpha(subjectsRoute);
-      const ghost = Array.from(container.querySelectorAll(".mail-mailbox")).find(
-        (section) => section.querySelector(".mail-mailbox-name")?.textContent === "ghost",
+      const ghost = Array.from(container.querySelectorAll(".history-group")).find(
+        (section) => section.querySelector(".history-group h3")?.textContent?.split(" · ")[0] === "ghost",
       ) as HTMLElement;
       expect(within(ghost).getByText(ESCAPED_SUBJECT)).toBeInTheDocument();
     });
@@ -91,31 +99,31 @@ describe("mailbox subjects (TRN-370 client port)", () => {
   describe("unavailable state", () => {
     it("shows one unavailable state on an HTTP error, and no mailbox as empty", async () => {
       const { container } = await renderAlpha(() => new Response("{}", { status: 503, headers: { "content-type": "application/json" } }));
-      expect(screen.getByText("Mailbox subjects unavailable.")).toBeInTheDocument();
+      expect(screen.getByText("Mailbox history unavailable.")).toBeInTheDocument();
       expect(screen.queryByText("No messages.")).toBeNull();
-      expect(container.querySelector(".mail-mailbox strong")).toBeNull();
+      expect(container.querySelector(".history-group strong")).toBeNull();
     });
 
     it("shows the unavailable state on a network error", async () => {
       const { container } = await renderAlpha(() => {
         throw new TypeError("offline");
       });
-      expect(screen.getByText("Mailbox subjects unavailable.")).toBeInTheDocument();
+      expect(screen.getByText("Mailbox history unavailable.")).toBeInTheDocument();
       expect(screen.queryByText("No messages.")).toBeNull();
-      expect(container.querySelector(".mail-mailbox")).toBeNull();
+      expect(container.querySelector(".history-group")).toBeNull();
     });
 
     it("shows the unavailable state for a payload without mailboxes", async () => {
       await renderAlpha(() => jsonResponse({ error: "x" }));
-      expect(screen.getByText("Mailbox subjects unavailable.")).toBeInTheDocument();
+      expect(screen.getByText("Mailbox history unavailable.")).toBeInTheDocument();
       expect(screen.queryByText("No messages.")).toBeNull();
     });
 
     it("shows the unavailable state, not a partial list, when one mailbox is missing", async () => {
-      const partial = mailboxes({ ghost: ["hello"] });
-      delete (partial as Record<string, unknown>).admiral;
-      await renderAlpha(() => jsonResponse({ mailboxes: partial }));
-      expect(screen.getByText("Mailbox subjects unavailable.")).toBeInTheDocument();
+      const partial = historyPayload({ ghost: ["hello"] });
+      delete partial.mailboxes.admiral;
+      await renderAlpha(() => jsonResponse(partial));
+      expect(screen.getByText("Mailbox history unavailable.")).toBeInTheDocument();
       expect(screen.queryByText("hello")).toBeNull();
     });
   });
@@ -125,7 +133,7 @@ describe("mailbox subjects (TRN-370 client port)", () => {
       vi.useFakeTimers();
       const mock = routeFetch({
         [FLEET_URL]: fleetRoute(),
-        [MAIL_URL]: () => jsonResponse({ mailboxes: mailboxes({ banshee: ["plain"], ghost: [ESCAPED_SUBJECT] }) }),
+        [MAIL_URL]: () => jsonResponse(historyPayload({ banshee: ["plain"], ghost: [ESCAPED_SUBJECT] })),
       });
       const { container } = render(<App />);
       await act(async () => {
@@ -160,11 +168,11 @@ describe("mailbox subjects (TRN-370 client port)", () => {
         fireEvent.click(container.querySelector(ROW) as HTMLElement);
         await vi.advanceTimersByTimeAsync(0);
       });
-      expect(screen.getByText("Mailbox subjects unavailable.")).toBeInTheDocument();
+      expect(screen.getByText("Mailbox history unavailable.")).toBeInTheDocument();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(25_000);
       });
-      expect(screen.getByText("Mailbox subjects unavailable.")).toBeInTheDocument();
+      expect(screen.getByText("Mailbox history unavailable.")).toBeInTheDocument();
       expect(screen.queryByText("No messages.")).toBeNull();
       expect(callsTo(mock, MAIL_URL)).toHaveLength(1);
     });
@@ -172,7 +180,7 @@ describe("mailbox subjects (TRN-370 client port)", () => {
     it("drops the subjects when the row is collapsed, and fetches a fresh snapshot on reopen", async () => {
       const mock = routeFetch({
         [FLEET_URL]: fleetRoute(),
-        [MAIL_URL]: () => jsonResponse({ mailboxes: mailboxes({ banshee: ["plain"] }) }),
+        [MAIL_URL]: () => jsonResponse(historyPayload({ banshee: ["plain"] })),
       });
       const { container } = render(<App />);
       await screen.findByText(/Refreshed at:/);
@@ -193,7 +201,7 @@ describe("mailbox subjects (TRN-370 client port)", () => {
       vi.useFakeTimers();
       const mock = routeFetch({
         [FLEET_URL]: fleetRoute(),
-        [MAIL_URL]: () => jsonResponse({ mailboxes: mailboxes() }),
+        [MAIL_URL]: () => jsonResponse(historyPayload()),
       });
       render(<App />);
       await act(async () => {
